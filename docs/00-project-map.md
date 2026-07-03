@@ -46,6 +46,11 @@ src/
     AgentRemoting.fs           Bolero remote service for the SpaceTraders dashboard —
                                every call routed through RequestQueue.fs
   SpaceKids.Core/           Domain, DSL, validation, scheduling (framework-free, per §14)
+    Dsl/
+      Types.fs                   The DSL itself (§10) — Expr, Instruction, CompiledProgram
+      BlocklyJson.fs               Parses Blockly's serialized workspace JSON
+      Compiler.fs                   Blockly workspace -> DSL, expression linearization
+      Validator.fs                  Static checks (§11) + the §9 signature-mismatch check
   SpaceKids.SpaceTraders/   SpaceTraders API client (Types.fs, Client.fs) — verified
                              field-by-field against the real OpenAPI spec
   SpaceKids.FakeSpaceTraders/  In-process fake API (§13a) — App.fs (endpoints) +
@@ -79,6 +84,8 @@ structure. See `plan.md` §19 for what each milestone covers.
 - **Milestone 3 (Blockly in German, full integration): done.** Full 20-block German
   catalog + `docs/04-block-catalog.md`, 6-category toolbox, save/restore (already
   proven), highlight-during-simulated-run. See `docs/decisions.md`.
-- **Milestone 4 (DSL and validation)** onward: not started. The catalog blocks and stock
-  control-flow blocks have no execution semantics yet — that's what Milestone 4 gives
-  them.
+- **Milestone 4 (DSL and validation): done.** `SpaceKids.Core/Dsl/` compiles Blockly
+  workspace JSON into the internal DSL with expression linearization, and statically
+  validates it (§10/§11). Pure library, no UI/Server wiring — see `docs/decisions.md`.
+- **Milestone 5 (request queue)** onward: not started. The Milestone 2 queue stub still
+  has no priorities, retries, or fault-injection testing.

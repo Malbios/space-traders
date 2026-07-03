@@ -31,17 +31,30 @@ See `docs/05-agent-handoff.md` for full context on each of these.
 - [x] Save/restore workspace JSON from SQLite (mechanism already proven in Milestone 0).
 - [x] Highlight the selected block during a fake/simulated run.
 
-## Milestone 4: DSL and validation
+## Milestone 4: DSL and validation — done
 
-- [ ] Define DSL types: custom-block collection, `callCustomBlock` instruction shape,
+- [x] Defined DSL types: custom-block collection, `callCustomBlock` instruction shape,
       `resultTarget` (§10).
-- [ ] Compile a Blockly workspace into DSL, including expression linearization (hoist
-      effectful value blocks into instructions writing frame-local temporaries; enforce
-      "inline arguments are pure") (§10).
-- [ ] Validate DSL: scope checks, custom-block structural mismatch check, transitive-
-      closure completeness, cycle detection (§9, §11).
-- [ ] Return German validation errors.
+- [x] Compiled Blockly workspace JSON into the DSL, including expression linearization
+      (hoist effectful value blocks into instructions writing frame-local temporaries;
+      enforce "inline arguments are pure") (§10).
+- [x] Validated the DSL: scope checks, custom-block structural mismatch check,
+      transitive-closure completeness, cycle detection (§9, §11).
+- [x] Returned German validation errors.
+
+## Milestone 5: Request queue
+
+- [ ] Enrich the Milestone 2 queue stub — growth, not a rewrite.
+- [ ] Add priority levels and aging capped at priority 2 (§13).
+- [ ] Add 429 handling.
+- [ ] Add retry logic split into definite vs ambiguous failure classes (§13).
+- [ ] Add request history.
+- [ ] Add queue status UI.
+- [ ] Add server-reset detection (§13), after checking the current reset cadence in
+      SpaceTraders' docs.
+- [ ] Add the API-unreachable state with German messaging, distinct from resets (§13);
+      exercise both via the fake's fault injection.
 
 ## Later milestones
 
-See `plan.md` §19 for the full milestone list (5 through 10).
+See `plan.md` §19 for the full milestone list (6 through 10).

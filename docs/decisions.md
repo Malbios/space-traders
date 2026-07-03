@@ -339,3 +339,70 @@ visible, Speichern → reload → Laden round-trips it through the real `workspa
 errors. `tsc --noEmit` (the `typecheck` npm script, not wired into the build — esbuild
 doesn't type-check) run explicitly to catch type errors the bundler would silently
 swallow.
+
+## Milestone 4: DSL and validation (§10/§11, §19)
+
+**No UI/Server wiring — `SpaceKids.Core/Dsl/` is a pure compiler+validator library,
+verified via unit tests only.** This milestone's own bullet list has no button/endpoint
+item; Milestone 6+ is where a runner/interpreter UI naturally lands. If a "Kompilieren"
+button is wanted sooner, that's a small addition on top of `Compiler.compileWorkspace`.
+
+**Blockly 13.1.0's serialized JSON shape was verified empirically**, not guessed: built
+a small real program via Playwright against the running dev server and read back
+`window.spaceKids.serializeWorkspace`'s actual output. A block is `{type, id, x, y}`
+plus `inputs`/`next`/`fields`/`extraState` only when populated; value/statement inputs
+and `next` always nest their target under a `"block"` key (`BlocklyJson.fs`). Exact
+per-block-type `extraState` shapes (e.g. `controls_if`'s `elseIfCount`/`hasElse`) were
+reasoned from Blockly's documented JSON-mutator migration rather than independently
+re-verified per type — worth spot-checking against a real workspace if a specific
+control block misbehaves.
+
+**Custom-block calls use a placeholder convention, not the Milestone 0 spike's
+`sk_call_<id>` naming.** The compiler recognizes a `callCustomBlock` block type with
+`extraState: {"customBlockId": "..."}`, whose value inputs are named exactly like the
+signature's parameter names — good enough for Milestone 4's own testing needs
+(`Compiler.resolveCustomBlockCall`, tested with an in-memory `Map`-backed lookup) without
+coupling this real compiler to the throwaway spike's naming scheme, which Milestone 9
+will redesign anyway when it builds the actual Blockwerkstatt UI. Real caller blocks on
+a real canvas don't exist yet — that's Milestone 9.
+
+**Custom-block call arguments are compiled leniently, not strictly.** A regular catalog
+block's missing required input is a genuine compile-time structural error (`compileInput`),
+but a custom-block call's missing argument is *not* — §11 assigns "call arguments match
+the signature (arity and types)" to the *validator*, not the compiler, so
+`compileCustomBlockCall` uses a separate lenient helper (`compileInputOptional`) that
+just omits the key rather than erroring, letting `Validator.validate` produce one focused
+arity/type message instead of the compiler's generic "Eingabe fehlt".
+
+**Type-checking custom-block call arguments is a shallow, literal-only heuristic.**
+`Expr` carries no static type information, so `Validator`'s arg-type check only catches
+the case where a literal's own kind obviously doesn't match the declared input type
+(e.g. a string literal passed where "Zahl" is expected) — it can't (and doesn't try to)
+type-check a variable/temp/accessor reference. A real type system is out of scope for
+this milestone; revisit if this proves too weak once Milestone 9's real typed inputs
+(Schiff/Wegpunkt/Ware/...) are in play.
+
+**Scope check is existence-based, not ordering-based.** §11 says "variables exist in the
+scope where they are used" — `Validator.checkScope` collects every declared name across
+a whole instruction list first, then checks references against that full set, rather
+than enforcing "declared before used" at any particular point. A forward reference
+inside the same scope is accepted; this matches the plan's own wording and keeps the
+check simple.
+
+**No `System.Text.Json` (de)serializer for the DSL types themselves yet** — `Expr`/
+`Instruction`/`CompiledProgram` structurally mirror §10's JSON example (same field
+names in spirit) but nothing persists this JSON until a later milestone actually reads/
+writes `programs.compiled_dsl_json`. Writing a serializer now would be speculative.
+
+**Nesting-depth limit:** custom-block call chains are capped at 20 levels
+(`Validator.maxCustomBlockDepth`) — an arbitrary but reasonable "sane maximum," per §11's
+own wording; no specific number is mandated by the plan.
+
+Verified via `dotnet test`: 10 new Core.Tests covering a simple action-only compile, the
+exact §10 hoisting example (info block inside `Setze Variable` → `InfoRead` + `$t1` +
+`SetVariable` referencing `TempRef "$t1"`), nested `controls_repeat_ext`/`sk_wait`,
+rejecting an unknown block type and a missing start block, an out-of-scope variable
+reference, `resolveCustomBlockCall`'s transitive closure and cycle detection (against an
+in-memory fake lookup, not real Blockly JSON for the call site), a custom-block call
+missing a required argument, and `revalidateAgainstCurrentDefinitions` catching a
+signature that changed after the original compile.

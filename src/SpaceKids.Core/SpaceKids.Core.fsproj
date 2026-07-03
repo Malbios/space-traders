@@ -6,7 +6,10 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="Library.fs" />
+    <Compile Include="Dsl/Types.fs" />
+    <Compile Include="Dsl/BlocklyJson.fs" />
+    <Compile Include="Dsl/Compiler.fs" />
+    <Compile Include="Dsl/Validator.fs" />
   </ItemGroup>
 
 </Project>

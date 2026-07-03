@@ -55,14 +55,26 @@
   categories render, a catalog block drags/connects/saves/reloads correctly, simulate-run
   completes, zero console errors, and the Milestone 0 Part C mutator spike still works
   untouched.
+- DSL compiler and static validator (§10/§11, Milestone 4): `SpaceKids.Core/Dsl/`
+  compiles Blockly workspace JSON into a small internal DSL and validates it — pure
+  library, no UI/Server wiring (that's a later milestone). `Compiler.compileWorkspace`
+  recognizes all 20 catalog blocks plus the stock control/math/logic/list/variable
+  blocks and `sk_show_message`/`sk_wait`, linearizing expressions per §10 (effectful
+  info-block reads hoisted into `InfoRead` instructions writing `$tN` temps).
+  `Validator.validate` covers §11's static checks (start block, scope, custom-block call
+  arity/types, transitive closure, cycle detection); `revalidateAgainstCurrentDefinitions`
+  is the separate §9 signature-mismatch check. Custom blocks (§9) have no real
+  workshop/persistence UI yet (Milestone 9) — the compiler is built against a
+  `customBlockLookup` function so it doesn't depend on one, tested via
+  `Compiler.resolveCustomBlockCall` against an in-memory fake. Verified via 10 new
+  Core.Tests (no browser check applies — see `docs/decisions.md` for why).
 
 ## Changed this session
 
-Milestone 3 work: `docs/04-block-catalog.md`, `SpaceKids.Client/Blockly/blocks-catalog.ts`,
-`toolbox-de.ts` rewritten (`buildTrivialToolbox` → `buildCatalogToolbox`),
-`blockly-host.ts` (registers catalog blocks, adds `simulateRun`), and a Simulate button
-in `Main.fs`. Everything before that was created in earlier sessions (Milestones 0–2) —
-see git history.
+Milestone 4 work: `SpaceKids.Core/Dsl/{Types,BlocklyJson,Compiler,Validator}.fs`,
+replacing the placeholder `Library.fs`, plus real coverage in
+`tests/SpaceKids.Core.Tests/Tests.fs`. Everything before that was created in earlier
+sessions (Milestones 0–3) — see git history.
 
 ## Known issues
 
@@ -89,14 +101,25 @@ see git history.
   (Schiff/Wegpunkt/Ware/...) — typed sockets are Milestone 9 scope.
 - `docs/06-localization.md` and the other docs listed in `plan.md` §17 don't exist yet —
   they're created as their milestones start.
+- No accessor blocks exist yet (§8: "Wegpunkt aus Schiff", "Preis aus Handelsware", ...) —
+  §6/§7's 20-block catalog never included them, so `Expr.Accessor` exists in the DSL type
+  but nothing compiles into it today.
+- Custom-block call compilation uses a placeholder `callCustomBlock`/`customBlockId`
+  convention invented for Milestone 4's own testing needs, not the Milestone 0 spike's
+  `sk_call_<id>` naming — Milestone 9 defines the real mechanism when it builds the
+  actual Blockwerkstatt UI (see `docs/decisions.md`).
+- Custom-block argument type-checking is a shallow literal-only heuristic (`Expr` has no
+  static type system) — revisit once Milestone 9's real typed inputs exist.
+- `lists_getIndex`/`lists_setIndex` only support the common "get/append at a plain index"
+  shape — other WHERE modes (FROM_END/FIRST/LAST/RANDOM) aren't compiled yet.
 
 ## Next tasks
 
-1. Milestone 4: DSL types (including `callCustomBlock`/`resultTarget`, §10), compile a
-   Blockly workspace into DSL (expression linearization — hoist effectful value blocks
-   per §10's "inline arguments are pure" invariant), validate it (scope checks, cycle
-   detection, §9/§11), return German validation errors. This is what finally gives the
-   20 catalog blocks and stock control-flow blocks real semantics.
+1. Milestone 5: enrich the Milestone 2 request queue stub — priority levels + aging
+   capped at priority 2, 429 handling, retry logic split into definite-vs-ambiguous
+   failure classes, request history, queue status UI, server-reset detection, and the
+   API-unreachable state (§13), exercised against the fake's fault injection (not yet
+   built — `docs/decisions.md` notes it was deliberately deferred past Milestone 2).
 
 ## Commands
 
