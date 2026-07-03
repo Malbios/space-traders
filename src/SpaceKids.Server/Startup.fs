@@ -1,5 +1,6 @@
 module SpaceKids.Server.Program
 
+open System
 open Microsoft.AspNetCore
 open Microsoft.AspNetCore.Authentication.Cookies
 open Microsoft.AspNetCore.Builder
@@ -10,6 +11,7 @@ open Bolero
 open Bolero.Remoting.Server
 open Bolero.Server
 open SpaceKids
+open SpaceKids.SpaceTraders
 open Bolero.Templating.Server
 
 [<EntryPoint>]
@@ -25,6 +27,10 @@ let main args =
     builder.Services.AddControllersWithViews() |> ignore
     builder.Services.AddBoleroComponents() |> ignore
     builder.Services.AddBoleroRemoting<WorkspaceRemoting.WorkspaceRemoteHandler>() |> ignore
+    builder.Services.AddBoleroRemoting<AgentRemoting.AgentRemoteHandler>() |> ignore
+    builder.Services.AddHttpClient<SpaceTradersClient>(fun client ->
+        client.BaseAddress <- Uri(builder.Configuration["SpaceTraders:BaseUrl"]))
+    |> ignore
     builder.Services.AddHostedService<Persistence.Backup.BackupService>() |> ignore
 #if DEBUG
     builder.Services.AddHotReload(templateDir = __SOURCE_DIRECTORY__ + "/../SpaceKids.Client") |> ignore

@@ -10,8 +10,11 @@
     <Compile Include="Persistence/Database.fs" />
     <Compile Include="Persistence/MigrationRunner.fs" />
     <Compile Include="Persistence/WorkspaceRepository.fs" />
+    <Compile Include="Persistence/AgentRepository.fs" />
     <Compile Include="Persistence/Backup.fs" />
+    <Compile Include="RequestQueue.fs" />
     <Compile Include="WorkspaceRemoting.fs" />
+    <Compile Include="AgentRemoting.fs" />
     <Compile Include="Index.fs" />
     <Compile Include="Startup.fs" />
   </ItemGroup>

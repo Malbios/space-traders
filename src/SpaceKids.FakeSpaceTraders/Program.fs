@@ -1,15 +1,18 @@
-open System
+module SpaceKids.FakeSpaceTraders.EntryPoint
+
 open Microsoft.AspNetCore.Builder
-open Microsoft.Extensions.Hosting
+
+/// Marker type only — the standard workaround so `WebApplicationFactory<Program>`
+/// (IntegrationTests) can locate this assembly's entry point. F# minimal-hosting
+/// `[<EntryPoint>] let main` doesn't generate a public `Program` class the way C#
+/// top-level statements do.
+type Program() =
+    class end
 
 [<EntryPoint>]
 let main args =
     let builder = WebApplication.CreateBuilder(args)
     let app = builder.Build()
-
-    app.MapGet("/", Func<string>(fun () -> "Hello World!")) |> ignore
-
+    App.configureApp app |> ignore
     app.Run()
-
-    0 // Exit code
-
+    0

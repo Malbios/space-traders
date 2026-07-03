@@ -5,7 +5,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="App.fs" />
     <Compile Include="Program.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SpaceKids.SpaceTraders\SpaceKids.SpaceTraders.fsproj" />
   </ItemGroup>
 
 </Project>
