@@ -9,6 +9,7 @@ open Bolero.Html
 open Bolero.Remoting
 open Bolero.Remoting.Client
 open Microsoft.JSInterop
+open SpaceKids.SpaceTraders
 
 /// Remote service for the Milestone 0 spike only (§12 Persistence lands the real
 /// `workspaces` table etc. in Milestone 1) — proves workspace JSON round-trips through
@@ -22,6 +23,26 @@ type WorkspaceService =
     interface IRemoteService with
         member this.BasePath = "/spike-workspaces"
 
+/// Milestone 2 (§19): the shared client/server remoting contract for real SpaceTraders
+/// data. Every field here is read through the server's request queue stub (§13).
+type DashboardState =
+    {
+        agent: Agent
+        ships: Ship list
+        contracts: Contract list
+        waypoints: Waypoint list
+        markets: Market list
+    }
+
+type AgentService =
+    {
+        submitToken: string -> Async<Result<DashboardState, string>>
+        loadDashboard: unit -> Async<DashboardState option>
+    }
+
+    interface IRemoteService with
+        member this.BasePath = "/agent"
+
 type Model =
     {
         containerId: string
@@ -30,6 +51,10 @@ type Model =
         readOnly: bool
         status: string
         publishedCustomBlockId: string option
+        tokenInput: string
+        dashboard: DashboardState option
+        dashboardLoading: bool
+        dashboardError: string option
     }
 
 let initModel =
@@ -40,6 +65,10 @@ let initModel =
         readOnly = false
         status = "Bereit."
         publishedCustomBlockId = None
+        tokenInput = ""
+        dashboard = None
+        dashboardLoading = false
+        dashboardError = None
     }
 
 type Message =
@@ -56,6 +85,13 @@ type Message =
     | ReadOnlyToggled
     | PublishSignature
     | Published of string
+    | SimulateRun
+    | Simulated
+    | TokenInputChanged of string
+    | SubmitToken
+    | TokenSubmitted of Result<DashboardState, string>
+    | LoadDashboard
+    | DashboardLoaded of DashboardState option
 
 let private callVoid (js: IJSRuntime) (identifier: string) (args: obj[]) : Async<unit> =
     js.InvokeVoidAsync(identifier, args).AsTask() |> Async.AwaitTask
@@ -63,7 +99,7 @@ let private callVoid (js: IJSRuntime) (identifier: string) (args: obj[]) : Async
 let private call<'a> (js: IJSRuntime) (identifier: string) (args: obj[]) : Async<'a> =
     js.InvokeAsync<'a>(identifier, args).AsTask() |> Async.AwaitTask
 
-let update (js: IJSRuntime) (remote: WorkspaceService) message model =
+let update (js: IJSRuntime) (remote: WorkspaceService) (agentRemote: AgentService) message model =
     match message with
     | Init ->
         let initBoth = async {
@@ -121,6 +157,77 @@ let update (js: IJSRuntime) (remote: WorkspaceService) message model =
     | Published customBlockId ->
         { model with publishedCustomBlockId = Some customBlockId; status = "Signatur an Programm-Werkstatt übergeben." }, Cmd.none
 
+    | SimulateRun ->
+        { model with status = "Simuliere Ausführung..." },
+        Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.simulateRun" [| box model.containerId |]) () (fun () -> Simulated)
+    | Simulated ->
+        { model with status = "Simulation beendet." }, Cmd.none
+
+    | TokenInputChanged value ->
+        { model with tokenInput = value }, Cmd.none
+    | SubmitToken ->
+        { model with dashboardLoading = true; dashboardError = None },
+        Cmd.OfAsync.perform (fun () -> agentRemote.submitToken model.tokenInput) () TokenSubmitted
+    | TokenSubmitted(Ok state) ->
+        { model with dashboard = Some state; dashboardLoading = false; dashboardError = None }, Cmd.none
+    | TokenSubmitted(Error message) ->
+        { model with dashboardLoading = false; dashboardError = Some message }, Cmd.none
+    | LoadDashboard ->
+        { model with dashboardLoading = true }, Cmd.OfAsync.perform (fun () -> agentRemote.loadDashboard ()) () DashboardLoaded
+    | DashboardLoaded stateOpt ->
+        { model with dashboard = stateOpt; dashboardLoading = false }, Cmd.none
+
+let private viewDashboard model dispatch =
+    div {
+        h2 { "Echte SpaceTraders-Daten (Milestone 2)" }
+        if model.dashboardLoading then
+            p { "Lädt..." }
+        match model.dashboardError with
+        | Some err -> p { $"Fehler: {err}" }
+        | None -> ()
+        match model.dashboard with
+        | None ->
+            div {
+                input {
+                    attr.``type`` "text"
+                    attr.placeholder "SpaceTraders-Token einfügen"
+                    attr.value model.tokenInput
+                    on.change (fun e -> dispatch (TokenInputChanged(string e.Value)))
+                }
+                button { on.click (fun _ -> dispatch SubmitToken); "Anmelden" }
+            }
+        | Some state ->
+            div {
+                h3 { $"Pilot: {state.agent.symbol}" }
+                p { $"Kontostand: {state.agent.credits} Credits" }
+                p { $"Hauptquartier: {state.agent.headquarters}" }
+                h3 { "Schiffe" }
+                ul {
+                    for ship in state.ships do
+                        li { $"{ship.symbol} — {ship.registration.role} — {ship.nav.status} bei {ship.nav.waypointSymbol}" }
+                }
+                h3 { "Aufträge" }
+                ul {
+                    for contract in state.contracts do
+                        li { $"{contract.id} ({contract.``type``}) — angenommen: {contract.accepted}, erfüllt: {contract.fulfilled}" }
+                }
+                h3 { "Wegpunkte" }
+                ul {
+                    for waypoint in state.waypoints do
+                        li { $"{waypoint.symbol} ({waypoint.``type``})" }
+                }
+                h3 { "Markt" }
+                for market in state.markets do
+                    div {
+                        p { $"Markt bei {market.symbol}" }
+                        ul {
+                            for good in market.exports do
+                                li { $"Export: {good.name}" }
+                        }
+                    }
+            }
+    }
+
 let view model dispatch =
     div {
         attr.style "font-family: sans-serif; padding: 1rem"
@@ -134,6 +241,7 @@ let view model dispatch =
                 on.click (fun _ -> dispatch ToggleReadOnly)
                 if model.readOnly then "Bearbeiten erlauben" else "Nur ansehen"
             }
+            button { on.click (fun _ -> dispatch SimulateRun); "Simuliere Ausführung" }
         }
         h2 { "Programm" }
         div {
@@ -149,6 +257,7 @@ let view model dispatch =
             attr.id model.workshopContainerId
             attr.style "height: 360px; width: 100%; border: 1px solid #ccc; margin-top: 0.5rem"
         }
+        viewDashboard model dispatch
     }
 
 type MyApp() =
@@ -157,4 +266,5 @@ type MyApp() =
     override this.Program =
         let js = this.JSRuntime
         let remote = this.Remote<WorkspaceService>()
-        Program.mkProgram (fun _ -> initModel, Cmd.ofMsg Init) (update js remote) view
+        let agentRemote = this.Remote<AgentService>()
+        Program.mkProgram (fun _ -> initModel, Cmd.batch [ Cmd.ofMsg Init; Cmd.ofMsg LoadDashboard ]) (update js remote agentRemote) view

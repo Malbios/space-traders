@@ -223,3 +223,119 @@ against the real `workspaces` table instead.
 database file locked on Windows even after every `SqliteConnection` in a test is
 disposed. Tests that delete their temp `.db` file in a `finally` block must call
 `SqliteConnection.ClearAllPools()` first (see `tests/SpaceKids.Server.Tests/Tests.fs`).
+
+## Milestone 2: real data, no Blockly yet (§19)
+
+**Token flow: paste an existing token, not self-registration.** Confirmed with the user
+rather than guessed. `docs.spacetraders.io`'s prose pages (quickstart, API authorization)
+are JS-rendered — WebFetch only ever returned navigation shells across several attempts,
+never real content — so the current `/register` request/response contract couldn't be
+verified safely. `api.spacetraders.io/v2` itself (a plain JSON status endpoint) and
+`api.spacetraders.io/v2/documentation/json` (the OpenAPI spec) are *not* JS-rendered and
+fetched fine — that's how the `Agent`/`Ship`/`Contract`/`Waypoint`/`Market` field shapes
+below were verified. If self-registration is wanted later, get the current `/register`
+contract from the user or a real response example rather than re-attempting the docs
+site.
+
+**Field shapes:** `SpaceKids.SpaceTraders/Types.fs` defines minimal subsets of the real
+schemas (verified field-by-field against the OpenAPI spec) — e.g. `Ship` only carries
+`symbol`, `registration.role`, `nav.{systemSymbol,waypointSymbol,status}`,
+`fuel.{current,capacity}`, not the full nav/crew/frame/reactor/engine/modules/mounts/
+cargo/cooldown shape. Deserialized with `System.Text.Json` +
+`PropertyNameCaseInsensitive = true` — no extra JSON library, and unmapped extra fields
+in the real API's response are silently ignored, which is exactly what's wanted for a
+deliberately partial subset.
+
+**`DataEnvelope<'a>` must be public, not `internal`.** System.Text.Json's default
+reflection-based converter only uses a type's constructor if the constructor itself is
+accessible (public here); an `internal` record's implicit constructor made deserialization
+throw `NotSupportedException` at runtime, not compile time — caught by the integration
+tests immediately. If a future envelope/DTO type needs to stay non-public, it would need
+a `[<JsonConstructor>]`-annotated public constructor instead.
+
+**Market waypoint assumption:** the market fetched is always the agent's own
+headquarters waypoint, not discovered via `Waypoint.traits`. True for most starting
+waypoints in this game; a real limitation if a given account's HQ isn't a marketplace.
+Waypoint-trait-based market discovery is a natural follow-up, not required for
+Milestone 2's "done when."
+
+**Request queue stub (§13):** `SpaceKids.Server/RequestQueue.fs` is a single static
+`SemaphoreSlim(1,1)` gate wrapping every SpaceTraders call, logging one row per call to
+`request_queue_events` (endpoint name, status, and — on failure — the exception message
+as `response_metadata_json`). No priorities, no backoff, no aging — that's Milestone 5.
+The important thing locked in now: there is no ad hoc HTTP path anywhere that bypasses
+this, so nothing needs rewiring when the real queue lands.
+
+**`SpaceKids.FakeSpaceTraders` testing setup:** F# `[<EntryPoint>] let main` doesn't
+generate a public `Program` class the way C# top-level statements do, so
+`WebApplicationFactory<T>` (used by `SpaceKids.IntegrationTests`) has nothing to target
+by default. Fixed with the standard workaround: a marker `type Program() = class end` in
+`Program.fs`, with the actual endpoint wiring factored into `App.configureApp` so both
+the marker-carrying entry point and tests can use it. The fake's endpoints are mounted
+at bare paths (`/my/agent`, not `/v2/my/agent`) — `WebApplicationFactory`'s default
+`HttpClient` base address (`http://localhost/`) has no `/v2` segment to match, and adding
+one would only be cosmetic since the client's relative paths resolve against whatever
+base address it's given either way.
+
+**Verified live, not just against the fake:** with a real user-provided SpaceTraders
+token (never written to any tracked file — the app persists it only in the gitignored
+local `spacekids.db`), a real `submitToken` call round-tripped against
+`https://api.spacetraders.io/v2/` and returned real agent/ship/waypoint/market data, with
+all 5 calls correctly logged in `request_queue_events`. An earlier version of
+`AgentRemoting.fs` called `GET /my/agent` twice per `submitToken` (once to validate the
+token, once again inside the shared data-loading helper) — caught during this live
+verification and fixed by threading the already-fetched `Agent` through instead of
+re-fetching it, since every avoidable call against a rate-limited third-party API is
+worth avoiding.
+
+## Milestone 3: Blockly in German, full integration (§19)
+
+**Scope-reducing finding: most of §6's 14 "programming" blocks are stock Blockly, not
+new custom blocks.** Only the 20 SpaceTraders-specific action/information blocks needed
+new `Blockly.Blocks[type]` definitions (`SpaceKids.Client/Blockly/blocks-catalog.ts`).
+`Wenn`/`Wenn sonst` are the *same* stock block (`controls_if` — "sonst" is its own
+built-in mutator, not a separate type); `Wiederhole` → `controls_repeat_ext`,
+`Wiederhole bis` → `controls_whileUntil`, `Für jedes Element` → `controls_forEach`,
+`Vergleiche Werte` → `logic_compare`, `Rechne` → `math_arithmetic`,
+`Erstelle/Füge-zu/Hole-aus Liste` → `lists_create_with`/`lists_setIndex`/
+`lists_getIndex`, `Setze`/`Ändere Variable` → `variables_set`/`math_change`. All are
+already registered by the existing `import "blockly/blocks"` and already German via the
+existing `blockly/msg/de` locale — no new registration code, just toolbox references.
+`Zeige Nachricht`/`Warte` are the Milestone 0 spike's `sk_show_message`/`sk_wait`,
+reused unchanged.
+
+**Variables use Blockly's dynamic `{kind: "variables", custom: "VARIABLE"}` toolbox
+category** (auto-generates the "create variable" button plus `variables_get`/
+`variables_set` blocks matching declared variables) rather than manually listing
+`variables_set`. `math_change` ("Ändere Variable") isn't part of that dynamic category
+in Blockly core, so it's listed explicitly in the "Programmierung" category instead.
+
+**One toolbox for both workspaces:** `buildCatalogToolbox(callerBlockTypes)` replaced
+`buildTrivialToolbox` with the same signature, so it serves both the main "Programm"
+workspace and the "Blockwerkstatt" mutator-spike workspace identically — a custom
+block's body should have the same primitives available as the main program, and this
+avoids inventing a second toolbox variant for no reason. The Milestone 0 Part C mutator
+spike (`sk_custom_block_def`, `publishCustomBlockSignature`) is completely untouched;
+custom-block *calling* is still Milestone 9 scope.
+
+**"Simulate run" is not DSL execution.** `simulateRun` (`blockly-host.ts`) walks
+`getTopBlocks(true)[0]` and its `.getNextBlock()` chain, highlighting each with a 700ms
+pause via the existing `highlightBlock`/`clearHighlight`. It has no notion of branches,
+loops, or the DSL at all — it proves highlighting works across the full catalog ahead of
+Milestone 4's real compiler/interpreter, per the milestone's own "fake/simulated run"
+wording.
+
+**Inputs are plain value sockets, not typed ones.** Every catalog block's input (e.g.
+`navigate`'s `destination`) accepts any value block for now — dedicated typed sockets
+(Schiff/Wegpunkt/Ware/...) are Milestone 9 scope, consistent with the existing note on
+the Milestone 0 mutator spike above.
+
+Verified in a real browser (Playwright): all 6 toolbox categories render with correct
+German labels (Aktionen, Informationen, Programmierung, Variablen, Eigener Block, Eigene
+Blöcke), a `navigate` block drags onto the canvas with its `Wegpunkt` input socket
+visible, Speichern → reload → Laden round-trips it through the real `workspaces` table,
+"Simuliere Ausführung" completes without error, and the Milestone 2 dashboard section
+(unrelated to this milestone) still renders correctly on the same page. Zero console
+errors. `tsc --noEmit` (the `typecheck` npm script, not wired into the build — esbuild
+doesn't type-check) run explicitly to catch type errors the bundler would silently
+swallow.

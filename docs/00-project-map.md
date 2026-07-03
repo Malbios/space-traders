@@ -20,7 +20,14 @@ SpaceKids.slnx
 src/
   SpaceKids.Client/        Bolero WASM client
     Blockly/                 The TS seam (§3a) — sole owner of every Blockly instance
-    Main.fs                  Elmish app (currently: Milestone 0 spike page only)
+      blocks.ts                 Milestone 0 spike blocks (sk_show_message, sk_wait) +
+                                 the custom-block mutator spike (§9 mini-spike)
+      blocks-catalog.ts          The real 20-block German catalog (§6/§7, Milestone 3)
+      toolbox-de.ts               buildCatalogToolbox — 6 categories, both workspaces
+    Main.fs                  Elmish app — Milestone 0/2/3 work all on one non-routed
+                               page (Blockly editor + mutator workshop + SpaceTraders
+                               dashboard). Real routing/dashboards come with the DSL
+                               milestones, not before.
   SpaceKids.Server/         ASP.NET Core host
     Startup.fs                Classic Blazor WASM hosting wiring — see docs/decisions.md
                                before changing this
@@ -31,18 +38,27 @@ src/
       MigrationRunner.fs            Applies pending migrations, tracked in schema_versions
       Database.fs                   Connection + busy_timeout pragma
       WorkspaceRepository.fs        Real `workspaces` table save/load
+      AgentRepository.fs            Real `agents`/`api_tokens` save/load
       Backup.fs                     Hourly VACUUM INTO + retention (BackgroundService)
+    RequestQueue.fs            Single-lane queue stub (§13) — logs to request_queue_events
     WorkspaceRemoting.fs       Bolero remote service backing the spike page's save/load,
                                now via Persistence/WorkspaceRepository.fs
+    AgentRemoting.fs           Bolero remote service for the SpaceTraders dashboard —
+                               every call routed through RequestQueue.fs
   SpaceKids.Core/           Domain, DSL, validation, scheduling (framework-free, per §14)
-  SpaceKids.SpaceTraders/   SpaceTraders API client
-  SpaceKids.FakeSpaceTraders/  In-process fake API (§13a) for deterministic tests
+  SpaceKids.SpaceTraders/   SpaceTraders API client (Types.fs, Client.fs) — verified
+                             field-by-field against the real OpenAPI spec
+  SpaceKids.FakeSpaceTraders/  In-process fake API (§13a) — App.fs (endpoints) +
+                             Program.fs (testable entry point) for deterministic tests
 tests/
   SpaceKids.Core.Tests/
   SpaceKids.Server.Tests/
-  SpaceKids.IntegrationTests/   Runs against SpaceKids.FakeSpaceTraders
+  SpaceKids.IntegrationTests/   Runs SpaceTradersClient against SpaceKids.FakeSpaceTraders
 docs/
   decisions.md              Hard-to-reverse calls and why
+  04-block-catalog.md        The German block catalog (§6/§7) — consumed by the
+                               toolbox build (M3) and will be consumed again by the
+                               DSL compiler (M4)
   05-agent-handoff.md        Current state / next tasks (update every session)
   (other docs listed in plan.md §17 are created as their milestones start)
 ```
@@ -56,5 +72,13 @@ structure. See `plan.md` §19 for what each milestone covers.
   proven and the hosting-model/version-pin issues that ate most of the time.
 - **Milestone 1 (foundation): done.** Real SQLite schema, migrations, WAL/busy_timeout,
   hourly `VACUUM INTO` backups. See `docs/decisions.md`.
-- **Milestone 2 (real data, no Blockly yet)** onward: not started. `Main.fs`'s spike page
-  is still throwaway — Milestone 3 replaces the client UI.
+- **Milestone 2 (real data, no Blockly yet): done.** Token flow (paste-token), real
+  SpaceTraders API client, single-lane request queue stub, grown
+  `SpaceKids.FakeSpaceTraders`, verified against the real live API. See
+  `docs/decisions.md`.
+- **Milestone 3 (Blockly in German, full integration): done.** Full 20-block German
+  catalog + `docs/04-block-catalog.md`, 6-category toolbox, save/restore (already
+  proven), highlight-during-simulated-run. See `docs/decisions.md`.
+- **Milestone 4 (DSL and validation)** onward: not started. The catalog blocks and stock
+  control-flow blocks have no execution semantics yet — that's what Milestone 4 gives
+  them.

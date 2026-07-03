@@ -30,12 +30,39 @@
 - Blockly pinned to exact version 13.1.0; confirmed procedure blocks live in core at
   this version (irrelevant either way — this project never uses them, see
   `docs/decisions.md`).
+- Real SpaceTraders data (§19, Milestone 2): `SpaceKids.SpaceTraders` is a minimal API
+  client (`getAgent`/`listShips`/`listContracts`/`listWaypoints`/`getMarket`) verified
+  field-by-field against the real OpenAPI spec. Every call is routed through
+  `SpaceKids.Server/RequestQueue.fs` (a single-lane stub logging to
+  `request_queue_events`, per §13's "no ad hoc HTTP path" principle). Token flow is
+  paste-an-existing-token (confirmed with the user, not self-registration — see
+  `docs/decisions.md` for why). `SpaceKids.FakeSpaceTraders` now serves the same 5
+  endpoints with a seeded fixture, and `SpaceKids.IntegrationTests` exercises the real
+  client code against it via `WebApplicationFactory`. **Verified against the live API**
+  with a real user-provided token: agent/ships/waypoints/market rendered correctly on
+  the Milestone 0 spike page's new dashboard section, all 5 calls logged, and the
+  persisted token survives a server restart (`loadDashboard`).
+- Full German block catalog (§6/§7, Milestone 3): all 20 SpaceTraders-specific
+  action/information blocks defined in `SpaceKids.Client/Blockly/blocks-catalog.ts`,
+  documented in `docs/04-block-catalog.md`. The remaining 14 "programming" blocks from
+  §6 turned out to already be stock Blockly blocks (already registered, already German
+  via the existing locale) — no new code needed for those, just toolbox references. The
+  main "Programm" workspace's toolbox (`buildCatalogToolbox` in `toolbox-de.ts`) now has
+  6 categories: Aktionen, Informationen, Programmierung, Variablen, Eigener Block, Eigene
+  Blöcke. A "Simuliere Ausführung" button walks and highlights the first block stack in
+  sequence (`simulateRun` in `blockly-host.ts`) — a fake/simulated run, not real DSL
+  execution (that's Milestone 4). Verified in a real browser (Playwright): all
+  categories render, a catalog block drags/connects/saves/reloads correctly, simulate-run
+  completes, zero console errors, and the Milestone 0 Part C mutator spike still works
+  untouched.
 
 ## Changed this session
 
-Everything above was created this session — first commit-worthy state of the repo.
-Key files: `SpaceKids.slnx`, all `src/*` and `tests/*` projects, `docs/decisions.md`,
-`docs/00-project-map.md`, this file, `README.md`, `TODO.md`.
+Milestone 3 work: `docs/04-block-catalog.md`, `SpaceKids.Client/Blockly/blocks-catalog.ts`,
+`toolbox-de.ts` rewritten (`buildTrivialToolbox` → `buildCatalogToolbox`),
+`blockly-host.ts` (registers catalog blocks, adds `simulateRun`), and a Simulate button
+in `Main.fs`. Everything before that was created in earlier sessions (Milestones 0–2) —
+see git history.
 
 ## Known issues
 
@@ -46,25 +73,30 @@ Key files: `SpaceKids.slnx`, all `src/*` and `tests/*` projects, `docs/decisions
   (`UseBlazorFrameworkFiles` + `MapFallbackToBolero`, hand-written bootstrap `<script>`
   tag, no `boleroScript`). A build succeeding is not evidence this still works — verify
   in an actual browser.
-- `SpaceKids.Client/Main.fs` is still the throwaway Milestone 0 spike page (Save/Load/
-  Highlight/Read-only over one workspace) — Milestone 3 replaces it with the real client
-  UI. Its persistence backing (`WorkspaceRepository.fs`) is real now, but the page itself
-  isn't the product.
-- Most tables in the §12 schema (`agents`, `api_tokens`, `programs`, `custom_blocks`,
-  `custom_block_versions`, `jobs`, `job_logs`, `ship_locks`, `api_cache`,
-  `request_queue_events`) exist but are unused — their columns are provisional until the
-  milestone that actually writes to them (see `docs/decisions.md`).
-- `docs/04-block-catalog.md`, `docs/06-localization.md`, and the other docs listed in
-  `plan.md` §17 don't exist yet — they're created as their milestones start.
+- `SpaceKids.Client/Main.fs` is still a single non-routed page combining the Milestone
+  0/2/3 spikes (Blockly editor + mutator workshop + SpaceTraders dashboard, all on one
+  page). Its persistence and catalog are real now, but there's no routing, no fleet/job/
+  mission-control dashboards yet — that's later milestones (real UI structure isn't
+  called for until the DSL/job model exists to show something meaningful).
+- Most tables in the §12 schema (`programs`, `custom_blocks`, `custom_block_versions`,
+  `jobs`, `job_logs`, `ship_locks`, `api_cache`) still exist but are unused — their
+  columns are provisional until the milestone that actually writes to them (see
+  `docs/decisions.md`). `agents`/`api_tokens`/`request_queue_events` are now live.
+- The market fetched is always the agent's own headquarters waypoint, not discovered via
+  waypoint traits — a documented simplifying assumption (see `docs/decisions.md`), fine
+  for most starting waypoints but a real limitation otherwise.
+- Catalog block inputs are plain value sockets (accept any block), not typed
+  (Schiff/Wegpunkt/Ware/...) — typed sockets are Milestone 9 scope.
+- `docs/06-localization.md` and the other docs listed in `plan.md` §17 don't exist yet —
+  they're created as their milestones start.
 
 ## Next tasks
 
-1. Milestone 2: token flow, real SpaceTraders API client, minimal single-lane request
-   queue stub (§13's non-negotiable queue principle applies from day one, not just once
-   the full queue is built in Milestone 5).
-2. Milestone 2: read agent, ships, contracts, waypoints, markets from the real API; grow
-   `SpaceKids.FakeSpaceTraders` to cover the endpoints consumed so far and point the
-   first integration tests at it.
+1. Milestone 4: DSL types (including `callCustomBlock`/`resultTarget`, §10), compile a
+   Blockly workspace into DSL (expression linearization — hoist effectful value blocks
+   per §10's "inline arguments are pure" invariant), validate it (scope checks, cycle
+   detection, §9/§11), return German validation errors. This is what finally gives the
+   20 catalog blocks and stock control-flow blocks real semantics.
 
 ## Commands
 

@@ -2,7 +2,8 @@ import * as Blockly from "blockly/core";
 import "blockly/blocks";
 import { applyGermanLocale } from "./i18n-locale";
 import { registerTrivialBlocks, registerDefinitionShellBlock, registerCallerBlock, readSignature, CustomBlockSignature } from "./blocks";
-import { buildTrivialToolbox } from "./toolbox-de";
+import { registerCatalogBlocks } from "./blocks-catalog";
+import { buildCatalogToolbox } from "./toolbox-de";
 import { serializeWorkspace as serialize, loadWorkspace as load } from "./workspace-serialization";
 
 /**
@@ -14,6 +15,7 @@ import { serializeWorkspace as serialize, loadWorkspace as load } from "./worksp
 applyGermanLocale();
 registerTrivialBlocks();
 registerDefinitionShellBlock();
+registerCatalogBlocks();
 
 const workspaces = new Map<string, Blockly.WorkspaceSvg>();
 /** Per-workspace list of generated custom-block caller types currently injected into that workspace's "Eigene Blöcke" category (§9b). */
@@ -32,7 +34,7 @@ function requireWorkspace(containerId: string): Blockly.WorkspaceSvg {
 function refreshToolbox(containerId: string): void {
     const ws = requireWorkspace(containerId);
     const callerTypes = callerBlockTypesByContainer.get(containerId) ?? [];
-    ws.updateToolbox(buildTrivialToolbox(callerTypes) as Blockly.utils.toolbox.ToolboxDefinition);
+    ws.updateToolbox(buildCatalogToolbox(callerTypes) as Blockly.utils.toolbox.ToolboxDefinition);
 }
 
 function initWorkspace(containerId: string, readOnly: boolean): void {
@@ -46,7 +48,7 @@ function initWorkspace(containerId: string, readOnly: boolean): void {
     callerBlockTypesByContainer.set(containerId, []);
     changeLogByContainer.set(containerId, []);
     const ws = Blockly.inject(el, {
-        toolbox: buildTrivialToolbox([]) as Blockly.utils.toolbox.ToolboxDefinition,
+        toolbox: buildCatalogToolbox([]) as Blockly.utils.toolbox.ToolboxDefinition,
         readOnly,
     });
     workspaces.set(containerId, ws);
@@ -115,6 +117,24 @@ function firstBlockId(containerId: string): string | null {
     return blocks[0]?.id ?? null;
 }
 
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Milestone 3 (§19): highlights each block of the first top-level statement stack in
+ * sequence, with a short pause between each — a fake/simulated run to prove highlighting
+ * works across the full catalog. Not real DSL execution (Milestone 4 builds that).
+ */
+async function simulateRun(containerId: string): Promise<void> {
+    const ws = requireWorkspace(containerId);
+    let block = ws.getTopBlocks(true)[0] ?? null;
+    while (block) {
+        highlightBlock(containerId, block.id);
+        await sleep(700);
+        block = block.getNextBlock();
+    }
+    clearHighlight(containerId);
+}
+
 let nextCustomBlockSeq = 1;
 
 /**
@@ -153,6 +173,7 @@ interface SpaceKidsHost {
     firstBlockId: typeof firstBlockId;
     getChangeLog: typeof getChangeLog;
     publishCustomBlockSignature: typeof publishCustomBlockSignature;
+    simulateRun: typeof simulateRun;
 }
 
 declare global {
@@ -172,4 +193,5 @@ window.spaceKids = {
     firstBlockId,
     getChangeLog,
     publishCustomBlockSignature,
+    simulateRun,
 };
