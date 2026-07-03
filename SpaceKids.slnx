@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SpaceKids.Client/SpaceKids.Client.fsproj" />
+    <Project Path="src/SpaceKids.Core/SpaceKids.Core.fsproj" />
+    <Project Path="src/SpaceKids.FakeSpaceTraders/SpaceKids.FakeSpaceTraders.fsproj" />
+    <Project Path="src/SpaceKids.Server/SpaceKids.Server.fsproj" />
+    <Project Path="src/SpaceKids.SpaceTraders/SpaceKids.SpaceTraders.fsproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SpaceKids.Core.Tests/SpaceKids.Core.Tests.fsproj" />
+    <Project Path="tests/SpaceKids.IntegrationTests/SpaceKids.IntegrationTests.fsproj" />
+    <Project Path="tests/SpaceKids.Server.Tests/SpaceKids.Server.Tests.fsproj" />
+  </Folder>
+</Solution>

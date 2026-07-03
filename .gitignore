@@ -1,0 +1,23 @@
+# .NET
+bin/
+obj/
+*.user
+
+# Node / npm
+node_modules/
+npm-debug.log*
+
+# Generated TS bundle (rebuilt by MSBuild on every `dotnet build` — see
+# SpaceKids.Client.fsproj)
+src/SpaceKids.Client/wwwroot/js/
+
+# SQLite (Milestone 0 spike DB; real DB path/backups policy comes in Milestone 1)
+*.db
+*.db-shm
+*.db-wal
+
+# Editor / OS
+.vs/
+.vscode/
+*.swp
+.DS_Store

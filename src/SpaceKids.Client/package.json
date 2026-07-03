@@ -1,0 +1,18 @@
+{
+  "name": "spacekids.client",
+  "version": "1.0.0",
+  "description": "TypeScript seam that owns all Blockly instances for SpaceKids (see plan.md §3a). Bundled to wwwroot/js/blockly-host.js and never touched by Elmish directly.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "blockly": "13.1.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1",
+    "typescript": "6.0.3"
+  }
+}

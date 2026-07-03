@@ -1,0 +1,36 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk.BlazorWebAssembly">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Main.fs" />
+    <Compile Include="Startup.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Bolero" Version="0.*" />
+    <PackageReference Include="Bolero.Build" Version="0.*" />
+    <PackageReference Include="Bolero.HotReload" Version="0.*" />
+    <!-- Bolero pins its own (older, 8.0.0) transitive version of this package. That skews
+         against the net10.0 WASM runtime/SDK pack actually in use, breaking the WASM boot
+         (dotnet.js tries to dynamically import a bogus module path) — pin directly to
+         match. See docs/decisions.md. -->
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.9" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="10.0.9" />
+  </ItemGroup>
+
+  <!--
+    Wires the TS seam bundle (§3b) into the standard dotnet build so a fresh checkout
+    needs no extra manual step. `npm ci` only runs when node_modules is missing/stale
+    (tracked via package-lock.json's timestamp) to keep incremental builds fast.
+  -->
+  <Target Name="NpmInstall" BeforeTargets="BeforeBuild" Inputs="package-lock.json" Outputs="node_modules/.install-stamp">
+    <Exec Command="npm ci" WorkingDirectory="$(MSBuildProjectDirectory)" />
+    <Touch Files="node_modules/.install-stamp" AlwaysCreate="true" />
+  </Target>
+
+  <Target Name="BuildBlocklyHostBundle" BeforeTargets="BeforeBuild" DependsOnTargets="NpmInstall"
+          Inputs="Blockly/**/*.ts" Outputs="wwwroot/js/blockly-host.js">
+    <Exec Command="npm run build" WorkingDirectory="$(MSBuildProjectDirectory)" />
+  </Target>
+</Project>

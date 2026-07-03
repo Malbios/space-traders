@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # The Blockly TS seam bundle (SpaceKids.Client/wwwroot/js/blockly-host.js) is
+      # produced by MSBuild targets wired into `dotnet build` itself (npm ci + esbuild) —
+      # see SpaceKids.Client.fsproj. No separate step needed here; this job exists to
+      # prove that wiring actually works on a clean checkout, not to duplicate it.
+      - name: Build
+        run: dotnet build SpaceKids.slnx --configuration Release
+
+      - name: Test
+        run: dotnet test SpaceKids.slnx --configuration Release --no-build
