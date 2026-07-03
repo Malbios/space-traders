@@ -25,9 +25,12 @@ let main args =
     builder.Services.AddControllersWithViews() |> ignore
     builder.Services.AddBoleroComponents() |> ignore
     builder.Services.AddBoleroRemoting<WorkspaceRemoting.WorkspaceRemoteHandler>() |> ignore
+    builder.Services.AddHostedService<Persistence.Backup.BackupService>() |> ignore
 #if DEBUG
     builder.Services.AddHotReload(templateDir = __SOURCE_DIRECTORY__ + "/../SpaceKids.Client") |> ignore
 #endif
+
+    Persistence.MigrationRunner.run Persistence.Database.defaultDbPath
 
     let app = builder.Build()
 

@@ -25,8 +25,15 @@ src/
     Startup.fs                Classic Blazor WASM hosting wiring — see docs/decisions.md
                                before changing this
     Index.fs                  The server-rendered page shell
-    Persistence.fs            SQLite access (currently: Milestone 0 spike table only)
-    WorkspaceRemoting.fs       Bolero remote service backing the spike's save/load
+    Persistence/               Migrations, WAL/busy_timeout, backups (§12) — see
+                               docs/decisions.md
+      Migrations/0001_initial.sql  Full 12-table core schema
+      MigrationRunner.fs            Applies pending migrations, tracked in schema_versions
+      Database.fs                   Connection + busy_timeout pragma
+      WorkspaceRepository.fs        Real `workspaces` table save/load
+      Backup.fs                     Hourly VACUUM INTO + retention (BackgroundService)
+    WorkspaceRemoting.fs       Bolero remote service backing the spike page's save/load,
+                               now via Persistence/WorkspaceRepository.fs
   SpaceKids.Core/           Domain, DSL, validation, scheduling (framework-free, per §14)
   SpaceKids.SpaceTraders/   SpaceTraders API client
   SpaceKids.FakeSpaceTraders/  In-process fake API (§13a) for deterministic tests
@@ -47,6 +54,7 @@ structure. See `plan.md` §19 for what each milestone covers.
 
 - **Milestone 0 (toolchain + interop spike): done.** See `docs/decisions.md` for what was
   proven and the hosting-model/version-pin issues that ate most of the time.
-- **Milestone 1 (foundation)** onward: not started. `Persistence.fs`'s spike table and
-  `Main.fs`'s spike page are throwaway — Milestone 1 replaces both with the real schema
-  (§12) and Milestone 3 replaces the client UI.
+- **Milestone 1 (foundation): done.** Real SQLite schema, migrations, WAL/busy_timeout,
+  hourly `VACUUM INTO` backups. See `docs/decisions.md`.
+- **Milestone 2 (real data, no Blockly yet)** onward: not started. `Main.fs`'s spike page
+  is still throwaway — Milestone 3 replaces the client UI.

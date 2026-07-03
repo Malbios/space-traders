@@ -11,10 +11,11 @@ npm-debug.log*
 # SpaceKids.Client.fsproj)
 src/SpaceKids.Client/wwwroot/js/
 
-# SQLite (Milestone 0 spike DB; real DB path/backups policy comes in Milestone 1)
+# SQLite
 *.db
 *.db-shm
 *.db-wal
+backups/
 
 # Editor / OS
 .vs/

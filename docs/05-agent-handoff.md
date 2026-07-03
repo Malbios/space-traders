@@ -6,6 +6,15 @@
   Core host), `SpaceKids.Core`, `SpaceKids.SpaceTraders`, `SpaceKids.FakeSpaceTraders`,
   plus `Core.Tests`/`Server.Tests`/`IntegrationTests`. Builds clean with `dotnet build
   SpaceKids.slnx`, no warnings.
+- Real persistence foundation (§12, Milestone 1): `SpaceKids.Server/Persistence/` has a
+  hand-rolled SQL migration runner (`MigrationRunner.fs`, tracked in `schema_versions`),
+  the full 12-table core schema (`Migrations/0001_initial.sql`), WAL mode + busy_timeout
+  (`Database.fs`), and an hourly `VACUUM INTO` backup task with 7-file retention
+  (`Backup.fs`, runs on start/hourly/clean-shutdown). Verified end-to-end: `dotnet run`
+  produces `spacekids.db` and an immediate `backups/backup_<timestamp>.db`; the
+  Milestone 0 spike page's Speichern/Laden still round-trips, now via the real
+  `workspaces` table (`WorkspaceRepository.fs`) instead of the retired
+  `spike_workspaces` table. Details and the design rationale in `docs/decisions.md`.
 - Blockly TS seam (`SpaceKids.Client/Blockly/blockly-host.ts`) bundled automatically as
   part of `dotnet build` (no manual npm step). Exposes `window.spaceKids.*` for F# to
   call via `IJSRuntime`.
@@ -37,27 +46,25 @@ Key files: `SpaceKids.slnx`, all `src/*` and `tests/*` projects, `docs/decisions
   (`UseBlazorFrameworkFiles` + `MapFallbackToBolero`, hand-written bootstrap `<script>`
   tag, no `boleroScript`). A build succeeding is not evidence this still works — verify
   in an actual browser.
-- Everything under `SpaceKids.Client/Main.fs` and `SpaceKids.Server/Persistence.fs` /
-  `WorkspaceRemoting.fs` is throwaway Milestone 0 spike code (a single hardcoded
-  `spike_workspaces` SQLite table, no migrations, no WAL/busy_timeout). Milestone 1
-  replaces the persistence layer with the real schema (§12); Milestone 3 replaces the
-  client UI. Don't build on top of the spike table — replace it.
-- No CI wiring yet beyond `dotnet build`/`dotnet test` working locally (see Commands
-  below) — no GitHub Actions workflow file exists yet.
+- `SpaceKids.Client/Main.fs` is still the throwaway Milestone 0 spike page (Save/Load/
+  Highlight/Read-only over one workspace) — Milestone 3 replaces it with the real client
+  UI. Its persistence backing (`WorkspaceRepository.fs`) is real now, but the page itself
+  isn't the product.
+- Most tables in the §12 schema (`agents`, `api_tokens`, `programs`, `custom_blocks`,
+  `custom_block_versions`, `jobs`, `job_logs`, `ship_locks`, `api_cache`,
+  `request_queue_events`) exist but are unused — their columns are provisional until the
+  milestone that actually writes to them (see `docs/decisions.md`).
 - `docs/04-block-catalog.md`, `docs/06-localization.md`, and the other docs listed in
   `plan.md` §17 don't exist yet — they're created as their milestones start.
 
 ## Next tasks
 
-1. Milestone 1: real SQLite schema (§12) — `workspaces`, `programs`, `jobs`, etc. tables,
-   WAL mode + `busy_timeout` pragma, migrations, the hourly `VACUUM INTO` backup task.
-   Delete the spike's `spike_workspaces` table/`Persistence.fs` once superseded.
-2. Milestone 1: CI build+test workflow (a `.github/workflows/ci.yml` or equivalent) that
-   runs `dotnet build` and `dotnet test` on a fresh checkout — prove the npm/esbuild
-   MSBuild wiring in `SpaceKids.Client.fsproj` works without any manual setup step.
-3. Milestone 2: token flow, real SpaceTraders API client, minimal single-lane request
+1. Milestone 2: token flow, real SpaceTraders API client, minimal single-lane request
    queue stub (§13's non-negotiable queue principle applies from day one, not just once
    the full queue is built in Milestone 5).
+2. Milestone 2: read agent, ships, contracts, waypoints, markets from the real API; grow
+   `SpaceKids.FakeSpaceTraders` to cover the endpoints consumed so far and point the
+   first integration tests at it.
 
 ## Commands
 
@@ -68,9 +75,9 @@ dotnet run --project src/SpaceKids.Server --urls http://localhost:5290
                                    Run the app
 ```
 
-No database reset command yet — the spike's SQLite file is
-`src/SpaceKids.Server/spacekids.spike.db`; delete it to reset. Real migrations start in
-Milestone 1.
+No database reset command yet — delete `src/SpaceKids.Server/spacekids.db*` (and
+optionally `src/SpaceKids.Server/backups/`) to reset; migrations reapply from scratch on
+the next `dotnet run`.
 
 ## Important constraints
 

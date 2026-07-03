@@ -2,16 +2,15 @@
 
 See `docs/05-agent-handoff.md` for full context on each of these.
 
-## Milestone 1: Foundation
+## Milestone 1: Foundation — done
 
-- [ ] Real SQLite schema (§12): `workspaces`, `programs`, `custom_blocks`, `jobs`,
-      `ship_locks`, `api_cache`, `request_queue_events`, `schema_versions`.
-- [ ] WAL mode + `busy_timeout` pragma.
-- [ ] Migrations.
-- [ ] Hourly `VACUUM INTO` backup task with retention.
-- [ ] Delete the Milestone 0 spike's `spike_workspaces` table / `Persistence.fs` /
-      `WorkspaceRemoting.fs` once superseded.
-- [ ] CI build+test workflow.
+- [x] Real SQLite schema (§12): full 12-table set, `schema_versions`-tracked migrations.
+- [x] WAL mode + `busy_timeout` pragma.
+- [x] Migrations (hand-rolled `.sql` + `MigrationRunner.fs`).
+- [x] Hourly `VACUUM INTO` backup task with retention.
+- [x] Retired the Milestone 0 spike's `spike_workspaces` table / `Persistence.fs`;
+      `WorkspaceRemoting.fs` now backed by the real `workspaces` table.
+- [x] CI build+test workflow.
 
 ## Milestone 2: Real data, no Blockly yet
 

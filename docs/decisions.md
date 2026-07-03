@@ -183,3 +183,43 @@ Milestone 0 spike. If this needs re-verifying later (e.g. before Milestone 9), d
 manually in a browser: place the def block, click its gear icon, drag a "Zahl" arg block
 into the popup, close it, click "Signatur an Programm übergeben", and confirm the caller
 in "Eigene Blöcke" now has an input socket.
+
+## Milestone 1: persistence foundation (§12)
+
+**Migrations:** hand-rolled numbered `.sql` files under
+`SpaceKids.Server/Persistence/Migrations/`, embedded as resources and applied by
+`MigrationRunner.fs` (tracked in a `schema_versions` table, idempotent — safe to call on
+every startup). No EF Core/DbUp dependency added — the raw `Microsoft.Data.Sqlite` style
+already used by the spike code was kept.
+
+**Schema scope:** `0001_initial.sql` creates the full 12-table set from §12 in one
+migration (`agents, api_tokens, workspaces, programs, custom_blocks,
+custom_block_versions, jobs, job_logs, ship_locks, api_cache, request_queue_events,
+schema_versions`), not just `workspaces`. Only `workspaces` and `schema_versions` are
+load-bearing today — the rest sit empty until their own milestone starts writing to
+them, and their exact columns are provisional until then. Chosen over growing the schema
+one migration per milestone: the shape is fixed once, per the plan, rather than
+revisited repeatedly.
+
+**WAL + busy_timeout:** `MigrationRunner.run` sets `PRAGMA journal_mode=WAL` once,
+outside any transaction (SQLite silently refuses to change `journal_mode` inside one).
+`Database.openConnection` sets `PRAGMA busy_timeout=5000` on every connection, since
+busy_timeout — unlike journal_mode — isn't persisted in the database file. Per §12, this
+is expected to be sufficient for this project's actual concurrency level; escalate to a
+single-writer-owner pattern only if `SQLITE_BUSY` failures actually show up.
+
+**Backups:** `Persistence/Backup.fs`'s `BackupService` (a `BackgroundService`) runs
+`VACUUM INTO` immediately on start, then hourly, then once more in `StopAsync` on clean
+shutdown, pruning to the last 7 backup files by filename (UTC timestamp, so
+lexicographic sort is chronological). VACUUM INTO — not a plain file copy — because WAL
+mode means a live file copy isn't a consistent snapshot.
+
+**Spike retirement:** Milestone 0's `spike_workspaces` table and root `Persistence.fs`
+are gone. The Milestone 0 spike page (`SpaceKids.Client/Main.fs`) is unchanged and still
+works — `WorkspaceRemoting.fs` now backs it with `Persistence/WorkspaceRepository.fs`
+against the real `workspaces` table instead.
+
+**Test note:** `Microsoft.Data.Sqlite` pools native connections by default, which keeps a
+database file locked on Windows even after every `SqliteConnection` in a test is
+disposed. Tests that delete their temp `.db` file in a `finally` block must call
+`SqliteConnection.ClearAllPools()` first (see `tests/SpaceKids.Server.Tests/Tests.fs`).

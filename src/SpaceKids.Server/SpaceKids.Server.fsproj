@@ -4,7 +4,13 @@
     <TargetFramework>net10.0</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="Persistence.fs" />
+    <EmbeddedResource Include="Persistence/Migrations/*.sql" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Persistence/Database.fs" />
+    <Compile Include="Persistence/MigrationRunner.fs" />
+    <Compile Include="Persistence/WorkspaceRepository.fs" />
+    <Compile Include="Persistence/Backup.fs" />
     <Compile Include="WorkspaceRemoting.fs" />
     <Compile Include="Index.fs" />
     <Compile Include="Startup.fs" />
