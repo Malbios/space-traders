@@ -97,6 +97,25 @@ See `docs/05-agent-handoff.md` for full context on each of these.
       active (global, not per-program — no saved/named programs yet).
 - [x] Added the pilot dashboard (multiple concurrent jobs, one per ship).
 
+## Milestone 9: Finish the block catalog — done
+
+- [x] Part A — the 5 remaining action blocks (survey, deliverContract, acceptContract,
+      purchaseShip, refuel): new `SpaceTradersClient` methods verified against the
+      live OpenAPI spec, new fake endpoints, new reconciliation paths for the two
+      actions with no ship-local signal (`acceptContract` via a contract fetch,
+      `purchaseShip` via a fleet-count fetch).
+- [x] Part B — the 9 information blocks + the §8 data model: `Value.VRecord`, a real
+      `Eval.Accessor`, a new info-read scheduler path (no reconciliation needed — a
+      GET is always safe to retry), `JobRunner.runInfoRead`'s record conversion, and
+      26 new accessor blocks (a 7th "Zugriffe" toolbox category).
+- [x] Found and fixed a real pre-existing bug (Milestone 6) via live verification: an
+      action's start-log message always landed after its result due to effect
+      ordering.
+- [x] All 20 SpaceTraders catalog blocks now actually run — 86 tests total, all green.
+
 ## Later milestones
 
-See `plan.md` §19 for the full milestone list (8 through 10).
+Milestone 8 ("first missions") deliberately skipped — explicit user feedback that
+guided-mission/pedagogy work isn't the current priority; practical tool capability
+(finishing the block catalog, then custom blocks) is. See `plan.md` §19 for the full
+milestone list (8, 10) and `docs/decisions.md` for the skip rationale.

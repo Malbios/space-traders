@@ -220,3 +220,46 @@ let ``revalidateAgainstCurrentDefinitions catches a signature that changed after
 
         let errors = Validator.revalidateAgainstCurrentDefinitions changedLookup program
         Assert.Contains(errors, fun e -> e.message.Contains("block-a") && e.message.Contains("geändert"))
+
+// --- Part B (Milestone 9, §8): accessor blocks compile to Accessor, Eval resolves them ---
+
+[<Fact>]
+let ``an accessor block compiles to Accessor over its TARGET input`` () =
+    let json =
+        """
+        { "blocks": { "languageVersion": 0, "blocks": [
+            { "type": "variables_set", "id": "b1", "fields": { "VAR": "treibstoff" }, "inputs": {
+                "VALUE": { "block": { "type": "shipFuel", "id": "b2", "inputs": {
+                    "TARGET": { "block": { "type": "getShipInfo", "id": "b3" } }
+                } } }
+            } }
+        ] } }
+        """
+
+    match Compiler.compileWorkspace noCustomBlocks json with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        Assert.Equal<Instruction list>(
+            [ InfoRead("b3", "getShipInfo", Map.empty, "$t1")
+              SetVariable("b1", "treibstoff", Accessor("Treibstoff", TempRef "$t1")) ],
+            program.instructions
+        )
+
+[<Fact>]
+let ``Eval Accessor resolves a known field from a VRecord`` () =
+    let record = VRecord(Map.ofList [ "Treibstoff", VNumber 250.0; "Status", VString "DOCKED" ])
+    let locals = Map.ofList [ "ship", record ]
+    Assert.Equal(VNumber 250.0, Eval.eval locals (Accessor("Treibstoff", VariableRef "ship")))
+    Assert.Equal(VString "DOCKED", Eval.eval locals (Accessor("Status", VariableRef "ship")))
+
+[<Fact>]
+let ``Eval Accessor on an unknown field raises a clear German error`` () =
+    let locals = Map.ofList [ "ship", VRecord(Map.ofList [ "Treibstoff", VNumber 250.0 ]) ]
+    let ex = Assert.Throws<System.Exception>(fun () -> Eval.eval locals (Accessor("Unbekannt", VariableRef "ship")) |> ignore)
+    Assert.Contains("Unbekannt", ex.Message)
+
+[<Fact>]
+let ``Eval Accessor on a non-record value raises a clear German type-mismatch error`` () =
+    let locals = Map.ofList [ "x", VNumber 5.0 ]
+    let ex = Assert.Throws<System.Exception>(fun () -> Eval.eval locals (Accessor("Treibstoff", VariableRef "x")) |> ignore)
+    Assert.Contains("Datensatz", ex.Message)

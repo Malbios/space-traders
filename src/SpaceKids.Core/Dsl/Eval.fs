@@ -11,6 +11,7 @@ let asFloat (v: Value) : float =
     | VBool b -> if b then 1.0 else 0.0
     | VString s -> float s
     | VList _ -> failwith "Erwarte eine Zahl, aber eine Liste wurde übergeben."
+    | VRecord _ -> failwith "Erwarte eine Zahl, aber ein Datensatz wurde übergeben."
 
 let asInt (v: Value) : int = int (asFloat v)
 
@@ -20,6 +21,7 @@ let asBool (v: Value) : bool =
     | VNumber n -> n <> 0.0
     | VString s -> s <> ""
     | VList items -> not (List.isEmpty items)
+    | VRecord _ -> failwith "Erwarte einen Wahrheitswert, aber ein Datensatz wurde übergeben."
 
 let asString (v: Value) : string =
     match v with
@@ -27,11 +29,17 @@ let asString (v: Value) : string =
     | VNumber n -> string n
     | VBool b -> string b
     | VList _ -> failwith "Erwarte einen Text, aber eine Liste wurde übergeben."
+    | VRecord _ -> failwith "Erwarte einen Text, aber ein Datensatz wurde übergeben."
 
 let asList (v: Value) : Value list =
     match v with
     | VList items -> items
     | _ -> failwith "Erwarte eine Liste."
+
+let asRecord (v: Value) : Map<string, Value> =
+    match v with
+    | VRecord fields -> fields
+    | _ -> failwith "Erwarte einen Datensatz (z.B. Schiff, Fracht, Markt)."
 
 let rec eval (locals: Map<string, Value>) (expr: Expr) : Value =
     match expr with
@@ -47,11 +55,12 @@ let rec eval (locals: Map<string, Value>) (expr: Expr) : Value =
         match locals.TryFind name with
         | Some v -> v
         | None -> failwith $"Unbekannter Name zur Laufzeit: {name}"
-    | Accessor(field, _) ->
-        // No accessor blocks compile yet (§8 gap — no Marktinfo/Wegpunkt-aus-Schiff
-        // producers exist in the M3 catalog), so this is unreachable from any program
-        // the compiler can currently produce.
-        failwith $"Zugriff auf Feld \"{field}\" wird noch nicht unterstützt."
+    | Accessor(field, target) ->
+        let fields = eval locals target |> asRecord
+
+        match fields.TryFind field with
+        | Some v -> v
+        | None -> failwith $"Unbekanntes Feld \"{field}\" in diesem Datensatz."
     | Arithmetic(op, left, right) ->
         let l = eval locals left |> asFloat
         let r = eval locals right |> asFloat

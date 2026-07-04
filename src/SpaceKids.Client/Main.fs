@@ -416,6 +416,7 @@ let private germanPilotStatus (status: string) : string =
     | "WaitingForArrival" -> "Unterwegs"
     | "WaitingForCooldown" -> "Wartet auf Abklingzeit"
     | "Reconciling" -> "Prüft die letzte Aktion"
+    | "AwaitingInfoResponse" -> "Wartet auf Information"
     | "Paused" -> "Pausiert"
     | "Cancelled" -> "Gestoppt"
     | "Completed" -> "Fertig"

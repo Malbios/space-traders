@@ -89,6 +89,25 @@
   `docs/decisions.md` for the full design rationale and the test-only hooks
   (`resetForTests`/`dispatchNextForTests`/`setMaxAttemptsForTests`) added so ordering/
   aging/retry-exhaustion tests don't need to race a live background worker.
+- Full block catalog runs end-to-end (§8/§13/§19, Milestone 9): all 20 SpaceTraders
+  blocks now actually execute — Milestone 6 only wired 6 of 11 actions and 0 of 9 info
+  blocks. Part A added the 5 remaining actions (survey/deliverContract/acceptContract/
+  purchaseShip/refuel) with two new reconciliation-fetch kinds
+  (`ReconcileContractState`/`ReconcileFleetState`, for the two actions with no
+  ship-local signal — `acceptContract` reconciles via a contract fetch,
+  `purchaseShip` via a fleet-count fetch, needing a new `JobState.
+  lastKnownFleetShipCount` field). Part B added `Value.VRecord`, a real `Eval.
+  Accessor` implementation, a whole new (simpler than actions — no reconciliation,
+  ever) info-read scheduler path (`JobStatus.AwaitingInfoResponse`, `Effect.
+  QueueInfoRead`), `JobRunner.runInfoRead`'s conversion of API responses into the §8
+  records (Schiff/Fracht/Ware/Werft/Schiffstyp/Markt/Handelsware/Auftrag/Wegpunkt),
+  and 26 new accessor blocks (a 7th "Zugriffe" toolbox category) compiled by a new
+  `Compiler.fs` `ACCESSOR_BLOCKS` table. Full field/record documentation in
+  `docs/04-block-catalog.md`. See `docs/decisions.md` for the OpenAPI-spec surprises
+  (deliverContract is contract-scoped, purchaseShip is fleet-scoped) and a real
+  pre-existing bug found via live verification (every action's start-log message was
+  landing *after* its result in the log, since Milestone 6 — an effect-ordering bug,
+  now fixed).
 - Persistent background jobs (§14/§15/§19, Milestone 7): `SpaceKids.Server/JobRunner.fs`
   is now a real persistent shell over the same pure `Step.step` core (Milestone 6) —
   every tick writes through to the `jobs` table (`Persistence/JobRepository.fs`,
@@ -140,6 +159,33 @@
   polls via repeated `stepOnce` calls rather than sleeping inline inside one call.
 
 ## Changed this session
+
+Milestone 9 work: `SpaceKids.Core/Scheduler/{Types.fs,Step.fs}` gained the 5 new
+action cases, 2 new reconciliation-fetch effect/result pairs, `AwaitingInfoResponse`/
+`QueueInfoRead`/`InfoOk`, and `JobState.lastKnownFleetShipCount`; `SpaceKids.Core/Dsl/
+{Value.fs,Eval.fs}` gained `VRecord` and a real `Accessor` implementation;
+`SpaceKids.Core/Dsl/Compiler.fs` gained an `ACCESSOR_BLOCKS` table; `SpaceKids.
+SpaceTraders/{Types.fs,Client.fs}` gained the 5 new action methods + `GetContract`/
+`GetShipyard` + response types (verified against the live OpenAPI spec) plus
+`Market.tradeGoods`; `SpaceKids.FakeSpaceTraders/App.fs` gained the matching
+endpoints, a mutable `contracts` map, and a `tradeGoods` market fixture;
+`SpaceKids.Server/JobRunner.fs` gained the 5 new `runAction` arms, `runInfoRead`
+(record conversion for all 9 info types), and effect handlers for the 2 new
+reconciliation kinds + `QueueInfoRead`; `SpaceKids.Server/JobRemoting.fs` now fetches
+the agent (for `lastKnownFleetShipCount`) alongside the ship at job start;
+`SpaceKids.Client/Blockly/blocks-catalog.ts` gained 26 accessor blocks + a "Zugriffe"
+toolbox category in `toolbox-de.ts`; `SpaceKids.Client/Main.fs` gained a German label
+for the new `AwaitingInfoResponse` status. Fixed a real pre-existing bug (Milestone 6,
+found via this session's live verification): every action's `awaiting` helper emitted
+`[QueueApiCall; LogMessage(startText)]` — since effects apply strictly in order and
+`QueueApiCall` recursively drives the job to its next settled state first, the start
+message always landed *after* the actual result in the log. Fixed by reordering to
+`[LogMessage; QueueApiCall]` everywhere the pattern appeared (including the 3
+post-reconciliation retry sites). 25 new `SpaceKids.Core.Tests` cases (10 Part A
+happy-path/reconciliation, 6 Part B info-read/accessor, plus compiler/eval tests in
+`Tests.fs`); 6 new `SpaceKids.IntegrationTests/JobRunnerTests.fs` cases (one
+drop-after-processing reconciliation test per new action, one accessor-chain
+end-to-end test) — 86 tests total, all green. Full rationale in `docs/decisions.md`.
 
 Milestone 7 work: migration `0003_jobs_and_locks.sql` new (`0002` was already taken by
 Milestone 5's request-queue migration); `SpaceKids.Server/Persistence/{ProgramRepository.fs,
@@ -229,12 +275,12 @@ history.
   waypoint traits — a documented simplifying assumption (see `docs/decisions.md`), fine
   for most starting waypoints but a real limitation otherwise.
 - Catalog block inputs are plain value sockets (accept any block), not typed
-  (Schiff/Wegpunkt/Ware/...) — typed sockets are Milestone 9 scope.
+  (Schiff/Wegpunkt/Ware/...) — typed sockets are Milestone 9 scope; the 26 new
+  accessor blocks (Milestone 9/Part B) are likewise untyped value sockets, so nothing
+  stops connecting the wrong record type into an accessor's `TARGET` input other than
+  a German runtime error message once it actually runs.
 - `docs/06-localization.md` and the other docs listed in `plan.md` §17 don't exist yet —
   they're created as their milestones start.
-- No accessor blocks exist yet (§8: "Wegpunkt aus Schiff", "Preis aus Handelsware", ...) —
-  §6/§7's 20-block catalog never included them, so `Expr.Accessor` exists in the DSL type
-  but nothing compiles into it today.
 - Custom-block call compilation uses a placeholder `callCustomBlock`/`customBlockId`
   convention invented for Milestone 4's own testing needs, not the Milestone 0 spike's
   `sk_call_<id>` naming — Milestone 9 defines the real mechanism when it builds the

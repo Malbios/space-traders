@@ -99,3 +99,34 @@ type SpaceTradersClient(httpClient: HttpClient) =
             $"my/ships/{shipSymbol}/sell",
             Map.ofList [ "symbol", box tradeSymbol; "units", box units ]
         )
+
+    member this.Survey(token: string, shipSymbol: string) : Async<SurveyResult> =
+        this.PostData(token, $"my/ships/{shipSymbol}/survey", Map.empty)
+
+    member this.DeliverContract
+        (token: string, contractId: string, shipSymbol: string, tradeSymbol: string, units: int)
+        : Async<DeliverContractResult> =
+        this.PostData(
+            token,
+            $"my/contracts/{contractId}/deliver",
+            Map.ofList [ "shipSymbol", box shipSymbol; "tradeSymbol", box tradeSymbol; "units", box units ]
+        )
+
+    member this.AcceptContract(token: string, contractId: string) : Async<AcceptContractResult> =
+        this.PostData(token, $"my/contracts/{contractId}/accept", Map.empty)
+
+    member this.PurchaseShip(token: string, shipType: string, waypointSymbol: string) : Async<PurchaseShipResult> =
+        this.PostData(
+            token,
+            "my/ships",
+            Map.ofList [ "shipType", box shipType; "waypointSymbol", box waypointSymbol ]
+        )
+
+    member this.Refuel(token: string, shipSymbol: string) : Async<RefuelResult> =
+        this.PostData(token, $"my/ships/{shipSymbol}/refuel", Map.empty)
+
+    member this.GetContract(token: string, contractId: string) : Async<GetContractResult> =
+        this.GetData(token, $"my/contracts/{contractId}")
+
+    member this.GetShipyard(token: string, systemSymbol: string, waypointSymbol: string) : Async<GetShipyardResult> =
+        this.GetData(token, $"systems/{systemSymbol}/waypoints/{waypointSymbol}/shipyard")

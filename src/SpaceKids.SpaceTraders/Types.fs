@@ -118,10 +118,77 @@ type Waypoint =
 
 type TradeGood = { symbol: string; name: string }
 
+/// Only populated by the real API when a ship is present at the market (unlike
+/// `exports`/`imports`/`exchange`, which are always visible) — verified against the
+/// live OpenAPI spec (Milestone 9/Part B).
+type MarketTradeGood =
+    { symbol: string
+      purchasePrice: int
+      sellPrice: int }
+
 type Market =
     { symbol: string
       exports: TradeGood list
       imports: TradeGood list
-      exchange: TradeGood list }
+      exchange: TradeGood list
+      tradeGoods: MarketTradeGood list }
+
+type SurveyDeposit = { symbol: string }
+
+type Survey =
+    { signature: string
+      symbol: string
+      deposits: SurveyDeposit list
+      expiration: string
+      size: string }
+
+/// `POST .../survey` response (Milestone 9/Part A). Only `cooldown` is consulted by
+/// the scheduler today — `surveys` is carried through for a future milestone that
+/// actually uses survey signatures to target extraction.
+type SurveyResult = { cooldown: Cooldown; surveys: Survey list }
+
+/// `POST /my/contracts/{contractId}/deliver` response. `Contract` already covers every
+/// field the DSL's Auftrag record needs (§8) — extra real-API fields (`terms`,
+/// `deadlineToAccept`) are simply ignored by `System.Text.Json`.
+type DeliverContractResult = { contract: Contract; cargo: ShipCargo }
+
+/// `POST /my/contracts/{contractId}/accept` response.
+type AcceptContractResult = { contract: Contract; agent: Agent }
+
+/// `POST /my/ships/{shipSymbol}/refuel` response.
+type RefuelResult =
+    { agent: Agent
+      fuel: ShipFuelDetailed
+      transaction: MarketTransaction }
+
+/// `POST /my/ships` (purchase) response. Only `ship.symbol`/`agent.shipCount` are
+/// needed for `PurchaseShipOk` — the full real `ship` object (frame/reactor/engine/
+/// modules/mounts/crew) is out of scope for this milestone, so it's deliberately not
+/// modeled; extra JSON fields are ignored by `System.Text.Json`.
+type PurchasedShip = { symbol: string }
+
+type PurchaseShipResult = { ship: PurchasedShip; agent: Agent }
+
+/// `GET /my/contracts/{contractId}` response — nested under `contract`, unlike
+/// `ListContracts`'s flat array.
+type GetContractResult = { contract: Contract }
+
+type ShipyardShipType = { ``type``: string }
+
+/// The `ships` array's per-type purchase price is only populated by the real API when
+/// a ship of yours is docked at that shipyard; `shipTypes` (always present) has no
+/// price. Documented simplification (§8, same class as the existing "market is always
+/// headquarters" one): the Werft record prefers `ships`' prices, falling back to
+/// `shipTypes` with a price of 0 when `ships` is empty.
+type ShipyardShipEntry = { ``type``: string; purchasePrice: int }
+
+type Shipyard =
+    { symbol: string
+      shipTypes: ShipyardShipType list
+      ships: ShipyardShipEntry list }
+
+/// `GET /systems/{systemSymbol}/waypoints/{waypointSymbol}/shipyard` response —
+/// nested under `shipyard`.
+type GetShipyardResult = { shipyard: Shipyard }
 
 type DataEnvelope<'a> = { data: 'a }

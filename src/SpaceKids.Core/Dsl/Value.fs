@@ -8,3 +8,7 @@ type Value =
     | VString of string
     | VBool of bool
     | VList of Value list
+    /// Milestone 9/Part B (§8): a "friendly structured record" — Schiff/Fracht/Werft/
+    /// Markt/Auftrag/Wegpunkt — produced by an info-read block and consumed only via
+    /// `Accessor`. Kept flat per §8's own instruction, not a general nested object.
+    | VRecord of Map<string, Value>

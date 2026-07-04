@@ -122,7 +122,7 @@ let private startJobSync
     WorkspaceRepository.save dbPath "test-workspace" "{}" |> Async.RunSynchronously
 
     match
-        JobRunner.startJob client dbPath App.seededToken "test-workspace" (JobStateJson.serializeProgram compiled) compiled shipSymbol initialShip
+        JobRunner.startJob client dbPath App.seededToken "test-workspace" (JobStateJson.serializeProgram compiled) compiled shipSymbol initialShip 2
         |> Async.RunSynchronously
     with
     | Ok jobId -> jobId
@@ -305,6 +305,7 @@ let ``a second job on the same ship is rejected while the first is still active`
                 (program [])
                 "FAKE-AGENT-1"
                 initialShip
+                2
             |> Async.RunSynchronously
 
         match result with
@@ -420,6 +421,7 @@ let ``the sweep pauses a job whose lease expired without a competing acquirer, f
                 (program [])
                 "FAKE-AGENT-1"
                 initialShip
+                2
             |> Async.RunSynchronously
 
         match result with
@@ -457,3 +459,207 @@ let ``pausing mid-AwaitingApiResponse never abandons the in-flight action, settl
         // the orbit action itself was never abandoned — it really landed.
         let finalShip = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
         Assert.Equal("IN_ORBIT", finalShip.nav.status))
+
+// ---------------------------------------------------------------------------
+// Part A (Milestone 9): the 5 remaining actions, against the fake over real HTTP.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``survey reconciles after an ambiguous failure without a duplicate survey`` () =
+    use fixture = new JobFixture()
+
+    withJobTest fixture.RawClient (fun dbPath ->
+        App.fixedCooldownSeconds <- 0.3
+        App.dropAfterProcessingDelayMs <- 200
+
+        let shortTimeoutClient = fixture.Factory.CreateClient()
+        shortTimeoutClient.Timeout <- TimeSpan.FromMilliseconds(100.0)
+        let client = SpaceTradersClient(shortTimeoutClient)
+
+        let initialShip = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+        let instructions = [ ApiAction("b1", "survey", Map.empty) ]
+        let jobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" (program instructions) initialShip
+
+        setFaultMode fixture.RawClient "drop-after-processing"
+
+        withPumpedQueue 20.0 (fun () ->
+            let stepTask = JobRunner.stepOnce client dbPath App.seededToken jobId |> Async.StartAsTask
+            Thread.Sleep(1500)
+            setFaultMode fixture.RawClient "normal"
+            stepTask.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
+            JobRunner.runToCompletion client dbPath App.seededToken jobId
+            |> Async.RunSynchronously)
+
+        match JobRunner.getStatus jobId with
+        | Some job -> Assert.Equal(Completed, job.status)
+        | None -> Assert.Fail("job not found"))
+
+[<Fact>]
+let ``deliverContract reconciles after an ambiguous failure without a duplicate delivery`` () =
+    use fixture = new JobFixture()
+
+    withJobTest fixture.RawClient (fun dbPath ->
+        // give the ship some IRON to deliver via a normal (unfaulted) extract first
+        fixture.Client.Extract(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously |> ignore
+        let beforeDeliver = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+        Assert.True(beforeDeliver.cargo.units >= 5)
+
+        App.dropAfterProcessingDelayMs <- 200
+
+        let shortTimeoutClient = fixture.Factory.CreateClient()
+        shortTimeoutClient.Timeout <- TimeSpan.FromMilliseconds(100.0)
+        let client = SpaceTradersClient(shortTimeoutClient)
+
+        let instructions =
+            [ ApiAction(
+                  "b1",
+                  "deliverContract",
+                  Map
+                      [ "contractId", Literal(StringLit "fake-contract-1")
+                        "tradeSymbol", Literal(StringLit "IRON")
+                        "units", Literal(NumberLit 5.0) ]
+              ) ]
+
+        let jobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" (program instructions) beforeDeliver
+
+        setFaultMode fixture.RawClient "drop-after-processing"
+
+        withPumpedQueue 20.0 (fun () ->
+            let stepTask = JobRunner.stepOnce client dbPath App.seededToken jobId |> Async.StartAsTask
+            Thread.Sleep(1500)
+            setFaultMode fixture.RawClient "normal"
+            stepTask.Wait(TimeSpan.FromSeconds(10.0)) |> ignore)
+
+        match JobRunner.getStatus jobId with
+        | Some job -> Assert.Equal(Completed, job.status)
+        | None -> Assert.Fail("job not found")
+
+        let afterDeliver = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+        Assert.Equal(beforeDeliver.cargo.units - 5, afterDeliver.cargo.units))
+
+[<Fact>]
+let ``acceptContract reconciles after an ambiguous failure without a duplicate accept`` () =
+    use fixture = new JobFixture()
+
+    withJobTest fixture.RawClient (fun dbPath ->
+        App.dropAfterProcessingDelayMs <- 200
+
+        let shortTimeoutClient = fixture.Factory.CreateClient()
+        shortTimeoutClient.Timeout <- TimeSpan.FromMilliseconds(100.0)
+        let client = SpaceTradersClient(shortTimeoutClient)
+
+        let initialShip = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+
+        let instructions =
+            [ ApiAction("b1", "acceptContract", Map [ "contractId", Literal(StringLit "fake-contract-1") ]) ]
+
+        let jobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" (program instructions) initialShip
+
+        setFaultMode fixture.RawClient "drop-after-processing"
+
+        withPumpedQueue 20.0 (fun () ->
+            let stepTask = JobRunner.stepOnce client dbPath App.seededToken jobId |> Async.StartAsTask
+            Thread.Sleep(1500)
+            setFaultMode fixture.RawClient "normal"
+            stepTask.Wait(TimeSpan.FromSeconds(10.0)) |> ignore)
+
+        match JobRunner.getStatus jobId with
+        | Some job -> Assert.Equal(Completed, job.status)
+        | None -> Assert.Fail("job not found"))
+
+[<Fact>]
+let ``purchaseShip reconciles after an ambiguous failure without a duplicate purchase`` () =
+    use fixture = new JobFixture()
+
+    withJobTest fixture.RawClient (fun dbPath ->
+        App.dropAfterProcessingDelayMs <- 200
+
+        let shortTimeoutClient = fixture.Factory.CreateClient()
+        shortTimeoutClient.Timeout <- TimeSpan.FromMilliseconds(100.0)
+        let client = SpaceTradersClient(shortTimeoutClient)
+
+        let initialShip = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+        let beforeCount = (fixture.Client.ListShips(App.seededToken) |> Async.RunSynchronously) |> List.length
+
+        let instructions =
+            [ ApiAction(
+                  "b1",
+                  "purchaseShip",
+                  Map [ "shipType", Literal(StringLit "SHIP_MINING_DRONE"); "waypointSymbol", Literal(StringLit "X1-TEST-A1") ]
+              ) ]
+
+        let jobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" (program instructions) initialShip
+
+        setFaultMode fixture.RawClient "drop-after-processing"
+
+        withPumpedQueue 20.0 (fun () ->
+            let stepTask = JobRunner.stepOnce client dbPath App.seededToken jobId |> Async.StartAsTask
+            Thread.Sleep(1500)
+            setFaultMode fixture.RawClient "normal"
+            stepTask.Wait(TimeSpan.FromSeconds(10.0)) |> ignore)
+
+        match JobRunner.getStatus jobId with
+        | Some job -> Assert.Equal(Completed, job.status)
+        | None -> Assert.Fail("job not found")
+
+        let afterCount = (fixture.Client.ListShips(App.seededToken) |> Async.RunSynchronously) |> List.length
+        // exactly one new ship, not two, despite the ambiguous failure and retry.
+        Assert.Equal(beforeCount + 1, afterCount))
+
+[<Fact>]
+let ``refuel reconciles after an ambiguous failure without a duplicate refuel`` () =
+    use fixture = new JobFixture()
+
+    withJobTest fixture.RawClient (fun dbPath ->
+        // burn some fuel first via a normal orbit/dock cycle isn't necessary — the
+        // fake's refuel always tops up to capacity regardless of current level.
+        App.dropAfterProcessingDelayMs <- 200
+
+        let shortTimeoutClient = fixture.Factory.CreateClient()
+        shortTimeoutClient.Timeout <- TimeSpan.FromMilliseconds(100.0)
+        let client = SpaceTradersClient(shortTimeoutClient)
+
+        let initialShip = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+        let instructions = [ ApiAction("b1", "refuel", Map.empty) ]
+        let jobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" (program instructions) initialShip
+
+        setFaultMode fixture.RawClient "drop-after-processing"
+
+        withPumpedQueue 20.0 (fun () ->
+            let stepTask = JobRunner.stepOnce client dbPath App.seededToken jobId |> Async.StartAsTask
+            Thread.Sleep(1500)
+            setFaultMode fixture.RawClient "normal"
+            stepTask.Wait(TimeSpan.FromSeconds(10.0)) |> ignore)
+
+        match JobRunner.getStatus jobId with
+        | Some job -> Assert.Equal(Completed, job.status)
+        | None -> Assert.Fail("job not found")
+
+        let finalShip = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+        Assert.Equal(finalShip.fuel.capacity, finalShip.fuel.current))
+
+[<Fact>]
+let ``an info-read plus accessor chain resolves against the real fake over HTTP`` () =
+    use fixture = new JobFixture()
+
+    withJobTest fixture.RawClient (fun dbPath ->
+        let initialShip = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+
+        let instructions =
+            [ InfoRead("b1", "getShipInfo", Map.empty, "$t1")
+              SetVariable("b2", "treibstoff", Accessor("Treibstoff", TempRef "$t1")) ]
+
+        let jobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" (program instructions) initialShip
+
+        withPumpedQueue 20.0 (fun () ->
+            JobRunner.runToCompletion fixture.Client dbPath App.seededToken jobId
+            |> Async.RunSynchronously)
+
+        match JobRunner.getStatus jobId with
+        | Some job ->
+            Assert.Equal(Completed, job.status)
+
+            match job.stack with
+            | top :: _ -> Assert.Equal(VNumber(float initialShip.fuel.current), top.locals.["treibstoff"])
+            | [] -> Assert.Fail("expected a stack frame")
+        | None -> Assert.Fail("job not found"))

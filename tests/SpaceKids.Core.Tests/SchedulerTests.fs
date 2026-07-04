@@ -25,6 +25,7 @@ let private mkJob (instructions: Instruction list) (lastKnownShip: ShipSnapshot 
             position = [ { bodyRef = MainBody; index = 0; loopState = None } ]
             locals = Map.empty } ]
       lastKnownShip = lastKnownShip
+      lastKnownFleetShipCount = Some 2
       log = []
       pausePending = false
       cancelPending = false }
@@ -35,7 +36,8 @@ let private defaultShip: ShipSnapshot =
       navArrival = None
       cargoUnits = 0
       cargoInventory = Map.empty
-      cooldownExpiration = None }
+      cooldownExpiration = None
+      fuelCurrent = 400 }
 
 let private epoch = DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero)
 
@@ -342,18 +344,6 @@ let ``a response with a mismatched attempt number is ignored`` () =
 // --- Out-of-scope block types fail cleanly --------------------------------------------
 
 [<Fact>]
-let ``InfoRead fails the job with a clear German message instead of crashing`` () =
-    let clock = fakeClock (ref epoch)
-    let job0 = mkJob [ InfoRead("b1", "getFuel", Map.empty, "$t1") ] (Some defaultShip)
-    let job1, effects1 = Step.step clock job0 WakeTick
-
-    match job1.status with
-    | Failed _ -> ()
-    | other -> Assert.Fail($"expected Failed, got {other}")
-
-    Assert.Contains(effects1, (function JobFailed _ -> true | _ -> false))
-
-[<Fact>]
 let ``CallCustomBlock fails the job with a clear German message instead of crashing`` () =
     let clock = fakeClock (ref epoch)
     let job0 = mkJob [ CallCustomBlock("b1", "custom1", Map.empty, None) ] (Some defaultShip)
@@ -508,3 +498,256 @@ let ``a job found in AwaitingApiResponse after a restart recovers via the same a
 
     Assert.Equal(Reconciling(0, DoNavigate "X1-TEST-B2", NavigateBaseline "X1-TEST-B2"), job2.status)
     Assert.Contains(ReconcileShipState("job1", "SHIP-1", 0), effects2)
+
+// --- Part A: the 5 remaining actions (Milestone 9) ------------------------------------
+
+[<Fact>]
+let ``survey happy path waits for cooldown, no cargo change`` () =
+    let clock = fakeClock (ref epoch)
+    let job0 = mkJob [ ApiAction("b1", "survey", Map.empty) ] (Some defaultShip)
+    let job1, _ = Step.step clock job0 WakeTick
+
+    Assert.Equal(AwaitingApiResponse(0, DoSurvey, SurveyBaseline None), job1.status)
+
+    let expiration = epoch.AddSeconds(10.0)
+    let job2, effects2 = Step.step clock job1 (ApiResponseReceived("job1", 0, SurveyOk(expiration.ToString("o"))))
+
+    Assert.Equal(WaitingForCooldown expiration, job2.status)
+    Assert.Equal(0, job2.lastKnownShip.Value.cargoUnits)
+    Assert.Contains(StartWait("job1", expiration, CooldownWait), effects2)
+
+[<Fact>]
+let ``survey reconciliation both branches`` () =
+    let clock = fakeClock (ref epoch)
+    let job0 = mkJob [ ApiAction("b1", "survey", Map.empty) ] (Some defaultShip)
+    let job1, _ = Step.step clock job0 WakeTick
+    let job2, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, ApiAmbiguous "timeout"))
+
+    let notYet = defaultShip
+    let job3, effects3 = Step.step clock job2 (ApiResponseReceived("job1", 0, ReconciliationShip notYet))
+    Assert.Equal(AwaitingApiResponse(1, DoSurvey, SurveyBaseline None), job3.status)
+    Assert.Contains(QueueApiCall("job1", "SHIP-1", DoSurvey, 1), effects3)
+
+    let job2b, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, ApiAmbiguous "timeout"))
+    let confirmed = { defaultShip with cooldownExpiration = Some(epoch.AddSeconds(10.0).ToString("o")) }
+    let job3b, _ = Step.step clock job2b (ApiResponseReceived("job1", 0, ReconciliationShip confirmed))
+    Assert.Equal(WaitingForCooldown(epoch.AddSeconds(10.0)), job3b.status)
+
+[<Fact>]
+let ``deliverContract happy path advances immediately`` () =
+    let clock = fakeClock (ref epoch)
+    let shipWithCargo = { defaultShip with cargoUnits = 5; cargoInventory = Map [ "IRON", 5 ] }
+
+    let job0 =
+        mkJob
+            [ ApiAction(
+                  "b1",
+                  "deliverContract",
+                  Map
+                      [ "contractId", Literal(StringLit "contract-1")
+                        "tradeSymbol", Literal(StringLit "IRON")
+                        "units", Literal(NumberLit 5.0) ]
+              ) ]
+            (Some shipWithCargo)
+
+    let job1, _ = Step.step clock job0 WakeTick
+    Assert.Equal(AwaitingApiResponse(0, DoDeliverContract("contract-1", "IRON", 5), CargoBaseline 5), job1.status)
+
+    let job2, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, DeliverOk(0, Map.empty, true)))
+    Assert.Equal(Completed, job2.status)
+    Assert.Equal(0, job2.lastKnownShip.Value.cargoUnits)
+
+[<Fact>]
+let ``deliverContract reconciliation both branches`` () =
+    let clock = fakeClock (ref epoch)
+    let shipWithCargo = { defaultShip with cargoUnits = 5; cargoInventory = Map [ "IRON", 5 ] }
+
+    let job0 =
+        mkJob
+            [ ApiAction(
+                  "b1",
+                  "deliverContract",
+                  Map
+                      [ "contractId", Literal(StringLit "contract-1")
+                        "tradeSymbol", Literal(StringLit "IRON")
+                        "units", Literal(NumberLit 5.0) ]
+              ) ]
+            (Some shipWithCargo)
+
+    let job1, _ = Step.step clock job0 WakeTick
+    let job2, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, ApiAmbiguous "timeout"))
+
+    let unchanged = shipWithCargo
+    let job3, effects3 = Step.step clock job2 (ApiResponseReceived("job1", 0, ReconciliationShip unchanged))
+    Assert.Equal(AwaitingApiResponse(1, DoDeliverContract("contract-1", "IRON", 5), CargoBaseline 5), job3.status)
+    Assert.Contains(QueueApiCall("job1", "SHIP-1", DoDeliverContract("contract-1", "IRON", 5), 1), effects3)
+
+    let job2b, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, ApiAmbiguous "timeout"))
+    let delivered = { defaultShip with cargoUnits = 0; cargoInventory = Map.empty }
+    let job3b, _ = Step.step clock job2b (ApiResponseReceived("job1", 0, ReconciliationShip delivered))
+    Assert.Equal(Completed, job3b.status)
+
+[<Fact>]
+let ``acceptContract happy path advances immediately, no ship change`` () =
+    let clock = fakeClock (ref epoch)
+
+    let job0 =
+        mkJob [ ApiAction("b1", "acceptContract", Map [ "contractId", Literal(StringLit "contract-1") ]) ] (Some defaultShip)
+
+    let job1, _ = Step.step clock job0 WakeTick
+    Assert.Equal(AwaitingApiResponse(0, DoAcceptContract "contract-1", AcceptContractBaseline "contract-1"), job1.status)
+
+    let job2, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, AcceptContractOk true))
+    Assert.Equal(Completed, job2.status)
+
+[<Fact>]
+let ``acceptContract reconciliation via contract fetch, not ship state`` () =
+    let clock = fakeClock (ref epoch)
+
+    let job0 =
+        mkJob [ ApiAction("b1", "acceptContract", Map [ "contractId", Literal(StringLit "contract-1") ]) ] (Some defaultShip)
+
+    let job1, _ = Step.step clock job0 WakeTick
+    let job2, effects2 = Step.step clock job1 (ApiResponseReceived("job1", 0, ApiAmbiguous "timeout"))
+
+    Assert.Equal(Reconciling(0, DoAcceptContract "contract-1", AcceptContractBaseline "contract-1"), job2.status)
+    Assert.Contains(ReconcileContractState("job1", "contract-1", 0), effects2)
+
+    // not yet accepted -> retries the original action
+    let job3, effects3 = Step.step clock job2 (ApiResponseReceived("job1", 0, ReconciliationContract false))
+    Assert.Equal(AwaitingApiResponse(1, DoAcceptContract "contract-1", AcceptContractBaseline "contract-1"), job3.status)
+    Assert.Contains(QueueApiCall("job1", "SHIP-1", DoAcceptContract "contract-1", 1), effects3)
+
+    // already accepted -> advances without a duplicate call
+    let job2b, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, ApiAmbiguous "timeout"))
+    let job3b, _ = Step.step clock job2b (ApiResponseReceived("job1", 0, ReconciliationContract true))
+    Assert.Equal(Completed, job3b.status)
+
+[<Fact>]
+let ``purchaseShip happy path advances immediately, updates fleet count`` () =
+    let clock = fakeClock (ref epoch)
+
+    let job0 =
+        mkJob
+            [ ApiAction(
+                  "b1",
+                  "purchaseShip",
+                  Map [ "shipType", Literal(StringLit "SHIP_MINING_DRONE"); "waypointSymbol", Literal(StringLit "X1-TEST-A1") ]
+              ) ]
+            (Some defaultShip)
+
+    let job1, _ = Step.step clock job0 WakeTick
+    Assert.Equal(AwaitingApiResponse(0, DoPurchaseShip("SHIP_MINING_DRONE", "X1-TEST-A1"), FleetBaseline 2), job1.status)
+
+    let job2, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, PurchaseShipOk("FAKE-AGENT-3", 3)))
+    Assert.Equal(Completed, job2.status)
+    Assert.Equal(Some 3, job2.lastKnownFleetShipCount)
+
+[<Fact>]
+let ``purchaseShip reconciliation via fleet fetch, not ship state`` () =
+    let clock = fakeClock (ref epoch)
+
+    let job0 =
+        mkJob
+            [ ApiAction(
+                  "b1",
+                  "purchaseShip",
+                  Map [ "shipType", Literal(StringLit "SHIP_MINING_DRONE"); "waypointSymbol", Literal(StringLit "X1-TEST-A1") ]
+              ) ]
+            (Some defaultShip)
+
+    let job1, _ = Step.step clock job0 WakeTick
+    let job2, effects2 = Step.step clock job1 (ApiResponseReceived("job1", 0, ApiAmbiguous "timeout"))
+
+    Assert.Equal(Reconciling(0, DoPurchaseShip("SHIP_MINING_DRONE", "X1-TEST-A1"), FleetBaseline 2), job2.status)
+    Assert.Contains(ReconcileFleetState("job1", 0), effects2)
+
+    // fleet count unchanged -> retries the original action
+    let job3, effects3 = Step.step clock job2 (ApiResponseReceived("job1", 0, ReconciliationFleet 2))
+    Assert.Equal(AwaitingApiResponse(1, DoPurchaseShip("SHIP_MINING_DRONE", "X1-TEST-A1"), FleetBaseline 2), job3.status)
+    Assert.Contains(QueueApiCall("job1", "SHIP-1", DoPurchaseShip("SHIP_MINING_DRONE", "X1-TEST-A1"), 1), effects3)
+
+    // fleet count increased -> advances without a duplicate call
+    let job2b, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, ApiAmbiguous "timeout"))
+    let job3b, _ = Step.step clock job2b (ApiResponseReceived("job1", 0, ReconciliationFleet 3))
+    Assert.Equal(Completed, job3b.status)
+    Assert.Equal(Some 3, job3b.lastKnownFleetShipCount)
+
+[<Fact>]
+let ``refuel happy path advances immediately, updates ship fuel`` () =
+    let clock = fakeClock (ref epoch)
+    let lowFuel = { defaultShip with fuelCurrent = 100 }
+    let job0 = mkJob [ ApiAction("b1", "refuel", Map.empty) ] (Some lowFuel)
+    let job1, _ = Step.step clock job0 WakeTick
+
+    Assert.Equal(AwaitingApiResponse(0, DoRefuel, FuelBaseline 100), job1.status)
+
+    let job2, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, RefuelOk 400))
+    Assert.Equal(Completed, job2.status)
+    Assert.Equal(400, job2.lastKnownShip.Value.fuelCurrent)
+
+[<Fact>]
+let ``refuel reconciliation both branches`` () =
+    let clock = fakeClock (ref epoch)
+    let lowFuel = { defaultShip with fuelCurrent = 100 }
+    let job0 = mkJob [ ApiAction("b1", "refuel", Map.empty) ] (Some lowFuel)
+    let job1, _ = Step.step clock job0 WakeTick
+    let job2, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, ApiAmbiguous "timeout"))
+
+    let unchanged = lowFuel
+    let job3, effects3 = Step.step clock job2 (ApiResponseReceived("job1", 0, ReconciliationShip unchanged))
+    Assert.Equal(AwaitingApiResponse(1, DoRefuel, FuelBaseline 100), job3.status)
+    Assert.Contains(QueueApiCall("job1", "SHIP-1", DoRefuel, 1), effects3)
+
+    let job2b, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, ApiAmbiguous "timeout"))
+    let refueled = { lowFuel with fuelCurrent = 400 }
+    let job3b, _ = Step.step clock job2b (ApiResponseReceived("job1", 0, ReconciliationShip refueled))
+    Assert.Equal(Completed, job3b.status)
+
+// --- Part B: info-read blocks and accessors (Milestone 9, §8) -------------------------
+
+[<Fact>]
+let ``getFuel info-read happy path sets the result local, no reconciliation ever`` () =
+    let clock = fakeClock (ref epoch)
+    let job0 = mkJob [ InfoRead("b1", "getFuel", Map.empty, "$t1") ] (Some defaultShip)
+    let job1, effects1 = Step.step clock job0 WakeTick
+    Assert.Equal(AwaitingInfoResponse(0, "getFuel", Map.empty, "$t1"), job1.status)
+    Assert.Contains(QueueInfoRead("job1", "SHIP-1", "getFuel", Map.empty, 0, "$t1"), effects1)
+
+    let job2, effects2 = Step.step clock job1 (ApiResponseReceived("job1", 0, InfoOk(VNumber 400.0)))
+    Assert.Equal(Completed, job2.status)
+    Assert.Contains(JobCompleted "job1", effects2)
+
+    match job2.stack with
+    | top :: _ -> Assert.Equal(VNumber 400.0, top.locals.["$t1"])
+    | [] -> Assert.Fail("expected a stack frame")
+
+[<Fact>]
+let ``info-read ambiguous failure re-issues the same fetch, never reconciles`` () =
+    let clock = fakeClock (ref epoch)
+    let job0 = mkJob [ InfoRead("b1", "getFuel", Map.empty, "$t1") ] (Some defaultShip)
+    let job1, _ = Step.step clock job0 WakeTick
+    let job2, effects2 = Step.step clock job1 (ApiResponseReceived("job1", 0, ApiAmbiguous "timeout"))
+
+    Assert.Equal(AwaitingInfoResponse(1, "getFuel", Map.empty, "$t1"), job2.status)
+    Assert.Contains(QueueInfoRead("job1", "SHIP-1", "getFuel", Map.empty, 1, "$t1"), effects2)
+
+[<Fact>]
+let ``info-read followed by an accessor chain resolves the field end-to-end`` () =
+    let clock = fakeClock (ref epoch)
+
+    let instructions =
+        [ InfoRead("b1", "getShipInfo", Map.empty, "$t1")
+          SetVariable("b2", "treibstoff", Accessor("Treibstoff", TempRef "$t1")) ]
+
+    let job0 = mkJob instructions (Some defaultShip)
+    let job1, _ = Step.step clock job0 WakeTick
+    Assert.Equal(AwaitingInfoResponse(0, "getShipInfo", Map.empty, "$t1"), job1.status)
+
+    let shipRecord = VRecord(Map.ofList [ "Treibstoff", VNumber 380.0 ])
+    let job2, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, InfoOk shipRecord))
+    Assert.Equal(Completed, job2.status)
+
+    match job2.stack with
+    | top :: _ -> Assert.Equal(VNumber 380.0, top.locals.["treibstoff"])
+    | [] -> Assert.Fail("expected a stack frame")

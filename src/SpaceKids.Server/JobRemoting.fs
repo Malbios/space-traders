@@ -66,6 +66,8 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                             let! ship =
                                 RequestQueue.enqueue dbPath 1 $"getShip:{shipSymbol}" (fun () ->
                                     client.GetShip(token, shipSymbol))
+
+                            let! agent = RequestQueue.enqueue dbPath 1 "getAgent" (fun () -> client.GetAgent(token))
                             // Custom-block calls aren't in scope this milestone (§9's
                             // real mechanism is Milestone 9) — a lookup that always
                             // misses is correct here; the compiler/validator already
@@ -88,7 +90,17 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                                 // being run is exactly the workspace state to persist.
                                 do! Persistence.WorkspaceRepository.save dbPath workspaceId workspaceJson
                                 let compiledDslJson = Persistence.JobStateJson.serializeProgram program
-                                return! JobRunner.startJob client dbPath token workspaceId compiledDslJson program shipSymbol ship
+                                return!
+                                    JobRunner.startJob
+                                        client
+                                        dbPath
+                                        token
+                                        workspaceId
+                                        compiledDslJson
+                                        program
+                                        shipSymbol
+                                        ship
+                                        agent.shipCount
                     }
             step =
                 fun jobId ->

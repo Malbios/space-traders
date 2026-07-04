@@ -151,4 +151,15 @@ structure. See `plan.md` §19 for what each milestone covers.
   ship, each with Pause/Fortsetzen/Stoppen — and the shared workspace goes read-only
   (watch mode, global rather than per-program) while any pilot is active. See
   `docs/decisions.md` for the four real bugs found while wiring this up.
-- **Milestone 8** onward: not started.
+- **Milestone 9 (finish the block catalog): done.** All 20 SpaceTraders blocks now
+  actually execute — Part A wired the 5 remaining actions (survey/deliverContract/
+  acceptContract/purchaseShip/refuel), including two new reconciliation-fetch kinds
+  for the two actions with no ship-local signal (contract fetch for acceptContract,
+  fleet-count fetch for purchaseShip). Part B built the §8 data model from scratch:
+  `Value.VRecord`, a real `Eval.Accessor`, a whole new no-reconciliation-needed
+  info-read scheduler path, `JobRunner.runInfoRead`'s conversion of all 9 info blocks
+  into flat German records, and 26 new accessor blocks (a 7th "Zugriffe" toolbox
+  category). See `docs/decisions.md` for the OpenAPI-spec surprises and a real
+  pre-existing log-ordering bug (Milestone 6) found and fixed via live verification.
+  Milestone 8 ("first missions") deliberately skipped for now — not the user's
+  current priority (see `docs/decisions.md`/TODO.md).

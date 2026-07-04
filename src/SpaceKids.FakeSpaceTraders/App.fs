@@ -82,14 +82,32 @@ let private readAllShips () : Ship list = lock shipLock (fun () -> ships |> Map.
 let private readAgent () : Agent = lock shipLock (fun () -> agent)
 
 let private routeShipSymbol (ctx: HttpContext) : string = ctx.Request.RouteValues.["shipSymbol"] :?> string
+let private routeContractId (ctx: HttpContext) : string = ctx.Request.RouteValues.["contractId"] :?> string
+let private routeWaypointSymbol (ctx: HttpContext) : string = ctx.Request.RouteValues.["waypointSymbol"] :?> string
 
-let private contract =
-    { id = "fake-contract-1"
-      factionSymbol = "COSMIC"
-      ``type`` = "PROCUREMENT"
-      accepted = true
-      fulfilled = false
-      expiration = "2026-12-31T00:00:00.000Z" }
+/// Milestone 9/Part A: `acceptContract`/`deliverContract` mutate this, so the single
+/// seeded contract becomes a `Map`-keyed-by-id like `ships`, guarded by the same lock.
+let mutable private contracts: Map<string, Contract> =
+    [ "fake-contract-1",
+      { id = "fake-contract-1"
+        factionSymbol = "COSMIC"
+        ``type`` = "PROCUREMENT"
+        accepted = true
+        fulfilled = false
+        expiration = "2026-12-31T00:00:00.000Z" } ]
+    |> Map.ofList
+
+let private readContract (contractId: string) : Contract = lock shipLock (fun () -> contracts.[contractId])
+let private readAllContracts () : Contract list = lock shipLock (fun () -> contracts |> Map.toList |> List.map snd)
+
+/// Milestone 9/Part A: `purchaseShip` adds a new ship to the fleet — numbered past the
+/// two seeded ships, reset alongside them between tests.
+let mutable private nextShipNumber = 3
+
+let private shipyardFixture (waypointSymbol: string) : Shipyard =
+    { symbol = waypointSymbol
+      shipTypes = [ { ``type`` = "SHIP_MINING_DRONE" } ]
+      ships = [ { ``type`` = "SHIP_MINING_DRONE"; purchasePrice = 50000 } ] }
 
 let private waypoints =
     [ { symbol = headquarters
@@ -107,7 +125,11 @@ let private market =
     { symbol = headquarters
       exports = [ { symbol = "FOOD"; name = "Food" } ]
       imports = [ { symbol = "FUEL"; name = "Fuel" } ]
-      exchange = [ { symbol = "IRON"; name = "Iron" } ] }
+      exchange = [ { symbol = "IRON"; name = "Iron" } ]
+      tradeGoods =
+        [ { symbol = "FOOD"; purchasePrice = 8; sellPrice = 12 }
+          { symbol = "FUEL"; purchasePrice = 5; sellPrice = 9 }
+          { symbol = "IRON"; purchasePrice = 10; sellPrice = 10 } ] }
 
 let private authorized (ctx: HttpContext) : bool =
     let header = ctx.Request.Headers.Authorization.ToString()
@@ -209,7 +231,26 @@ let configureApp (app: WebApplication) =
     app.MapGet(
         "/my/contracts",
         Func<HttpContext, Task<IResult>>(fun ctx ->
-            applyFault ctx (fun () -> withAuth ctx (fun () -> task { return ok [ contract ] })))
+            applyFault ctx (fun () -> withAuth ctx (fun () -> task { return ok (readAllContracts ()) })))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/my/contracts/{contractId}",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault
+                ctx
+                (fun () -> withAuth ctx (fun () -> task { return ok {| contract = readContract (routeContractId ctx) |} })))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/systems/{systemSymbol}/waypoints/{waypointSymbol}/shipyard",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault
+                ctx
+                (fun () ->
+                    withAuth ctx (fun () -> task { return ok {| shipyard = shipyardFixture (routeWaypointSymbol ctx) |} })))
     )
     |> ignore
 
@@ -501,6 +542,193 @@ let configureApp (app: WebApplication) =
     |> ignore
 
     app.MapPost(
+        "/my/ships/{shipSymbol}/survey",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault
+                ctx
+                (fun () ->
+                    withAuth
+                        ctx
+                        (fun () ->
+                            task {
+                                let shipSymbol = routeShipSymbol ctx
+                                let expiration = (clock ()).AddSeconds(fixedCooldownSeconds)
+
+                                let updatedCooldown =
+                                    lock
+                                        shipLock
+                                        (fun () ->
+                                            let current = ships.[shipSymbol]
+
+                                            let newCooldown =
+                                                { shipSymbol = current.symbol
+                                                  totalSeconds = int (ceil fixedCooldownSeconds)
+                                                  remainingSeconds = int (ceil fixedCooldownSeconds)
+                                                  expiration = expiration.ToString("o") }
+
+                                            ships <- ships.Add(shipSymbol, { current with cooldown = newCooldown })
+                                            newCooldown)
+
+                                return
+                                    ok
+                                        { cooldown = updatedCooldown
+                                          surveys =
+                                            [ { signature = "FAKE-SURVEY-1"
+                                                symbol = shipSymbol
+                                                deposits = [ { symbol = "IRON" } ]
+                                                expiration = expiration.ToString("o")
+                                                size = "MODERATE" } ] }
+                            })))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/my/contracts/{contractId}/deliver",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault
+                ctx
+                (fun () ->
+                    withAuth
+                        ctx
+                        (fun () ->
+                            task {
+                                let contractId = routeContractId ctx
+                                let! doc = readJsonBody ctx
+                                let shipSymbol = doc.RootElement.GetProperty("shipSymbol").GetString()
+                                let tradeSymbol = doc.RootElement.GetProperty("tradeSymbol").GetString()
+                                let units = doc.RootElement.GetProperty("units").GetInt32()
+
+                                let updatedCargo, updatedContract =
+                                    lock
+                                        shipLock
+                                        (fun () ->
+                                            let current = ships.[shipSymbol]
+
+                                            let newInventory =
+                                                current.cargo.inventory
+                                                |> List.map (fun i ->
+                                                    if i.symbol = tradeSymbol then
+                                                        { i with units = max 0 (i.units - units) }
+                                                    else
+                                                        i)
+                                                |> List.filter (fun i -> i.units > 0)
+
+                                            let updatedShip =
+                                                { current with
+                                                    cargo =
+                                                        { current.cargo with
+                                                            units = max 0 (current.cargo.units - units)
+                                                            inventory = newInventory } }
+
+                                            ships <- ships.Add(shipSymbol, updatedShip)
+                                            let updatedContract = { contracts.[contractId] with fulfilled = true }
+                                            contracts <- contracts.Add(contractId, updatedContract)
+                                            updatedShip.cargo, updatedContract)
+
+                                return ok { contract = updatedContract; cargo = updatedCargo }
+                            })))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/my/contracts/{contractId}/accept",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault
+                ctx
+                (fun () ->
+                    withAuth
+                        ctx
+                        (fun () ->
+                            task {
+                                let contractId = routeContractId ctx
+
+                                let updatedContract =
+                                    lock
+                                        shipLock
+                                        (fun () ->
+                                            let updated = { contracts.[contractId] with accepted = true }
+                                            contracts <- contracts.Add(contractId, updated)
+                                            updated)
+
+                                return ok { contract = updatedContract; agent = readAgent () }
+                            })))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/my/ships",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault
+                ctx
+                (fun () ->
+                    withAuth
+                        ctx
+                        (fun () ->
+                            task {
+                                let! doc = readJsonBody ctx
+                                let waypointSymbol = doc.RootElement.GetProperty("waypointSymbol").GetString()
+                                let price = 50000
+
+                                let newShipSymbol =
+                                    lock
+                                        shipLock
+                                        (fun () ->
+                                            let symbol = $"FAKE-AGENT-{nextShipNumber}"
+                                            nextShipNumber <- nextShipNumber + 1
+                                            let newShip = { seedShip symbol with nav = { (seedShip symbol).nav with waypointSymbol = waypointSymbol } }
+                                            ships <- ships.Add(symbol, newShip)
+                                            agent <- { agent with credits = agent.credits - int64 price; shipCount = agent.shipCount + 1 }
+                                            symbol)
+
+                                return ok { ship = { symbol = newShipSymbol }; agent = readAgent () }
+                            })))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/my/ships/{shipSymbol}/refuel",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault
+                ctx
+                (fun () ->
+                    withAuth
+                        ctx
+                        (fun () ->
+                            task {
+                                let shipSymbol = routeShipSymbol ctx
+
+                                let updatedFuel, unitsBought =
+                                    lock
+                                        shipLock
+                                        (fun () ->
+                                            let current = ships.[shipSymbol]
+                                            let unitsBought = current.fuel.capacity - current.fuel.current
+                                            let updated = { current with fuel = { current.fuel with current = current.fuel.capacity } }
+                                            ships <- ships.Add(shipSymbol, updated)
+                                            let totalPrice = unitsBought * fixedPricePerUnit
+                                            agent <- { agent with credits = agent.credits - int64 totalPrice }
+                                            updated.fuel, unitsBought)
+
+                                let totalPrice = unitsBought * fixedPricePerUnit
+
+                                return
+                                    ok
+                                        { agent = readAgent ()
+                                          fuel = { current = updatedFuel.current; capacity = updatedFuel.capacity; consumed = None }
+                                          transaction =
+                                            { waypointSymbol = headquarters
+                                              shipSymbol = shipSymbol
+                                              tradeSymbol = "FUEL"
+                                              ``type`` = "PURCHASE"
+                                              units = unitsBought
+                                              pricePerUnit = fixedPricePerUnit
+                                              totalPrice = totalPrice
+                                              timestamp = (clock ()).ToString("o") } }
+                            })))
+    )
+    |> ignore
+
+    app.MapPost(
         "/_fault/mode",
         Func<HttpContext, Task<IResult>>(fun ctx ->
             task {
@@ -533,4 +761,16 @@ let resetForTests () =
 
     ships <-
         [ "FAKE-AGENT-1", seedShip "FAKE-AGENT-1"; "FAKE-AGENT-2", seedShip "FAKE-AGENT-2" ]
+        |> Map.ofList
+
+    nextShipNumber <- 3
+
+    contracts <-
+        [ "fake-contract-1",
+          { id = "fake-contract-1"
+            factionSymbol = "COSMIC"
+            ``type`` = "PROCUREMENT"
+            accepted = true
+            fulfilled = false
+            expiration = "2026-12-31T00:00:00.000Z" } ]
         |> Map.ofList

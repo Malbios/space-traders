@@ -262,3 +262,79 @@ Warte                  -> sk_wait (custom, Milestone 0 spike)
 No DSL instruction shapes are recorded here for the stock blocks — their compilation to
 DSL constructs (if/while/for/assignment) is generic control-flow compilation, not a
 catalog entry, and is Milestone 4 work.
+
+## Datensätze und Zugriffsblöcke (records and accessor blocks, §8, Milestone 9/Part B)
+
+The 9 information blocks above return one of the "friendly structured records" below
+(kept flat per §8's own instruction), never a raw nested API response. A record's
+fields are only reachable through the matching accessor block — a value block with one
+input (`TARGET`, the record) and no other inputs.
+
+```txt
+Schiff (getShipInfo, one item of getFleetInfo's list)
+  Name, Wegpunkt, Status, Treibstoff, Frachteinheiten, Frachtkapazität
+
+Fracht (getCargo)
+  Einheiten, Kapazität, Waren (Liste von Ware)
+
+Ware (one item of Fracht's Waren list)
+  Name, Einheiten
+
+Werft (getShipyard)
+  Wegpunkt, Schiffstypen (Liste von Schiffstyp)
+
+Schiffstyp (one item of Werft's Schiffstypen list)
+  Typ, Preis
+
+Markt (getMarket)
+  Wegpunkt, Handelswaren (Liste von Handelsware)
+
+Handelsware (one item of Markt's Handelswaren list)
+  Name, Kaufpreis, Verkaufspreis
+
+Auftrag (one item of getContracts' list)
+  Id, Typ, Angenommen, Erfüllt
+
+Wegpunkt (one item of getWaypoints' list)
+  Symbol, Typ
+```
+
+Accessor blocks (Blockly type -> German label -> record field, all colour 65,
+"Zugriffe" toolbox category):
+
+```txt
+shipName             Name aus Schiff              -> Schiff.Name
+shipWaypoint         Wegpunkt aus Schiff           -> Schiff.Wegpunkt
+shipStatus           Status aus Schiff             -> Schiff.Status
+shipFuel             Treibstoff aus Schiff         -> Schiff.Treibstoff
+shipCargoUnits       Frachteinheiten aus Schiff    -> Schiff.Frachteinheiten
+shipCargoCapacity    Frachtkapazität aus Schiff    -> Schiff.Frachtkapazität
+cargoUnits           Einheiten aus Fracht          -> Fracht.Einheiten
+cargoCapacity        Kapazität aus Fracht          -> Fracht.Kapazität
+cargoGoods           Waren aus Fracht              -> Fracht.Waren
+goodName             Name aus Ware                 -> Ware.Name
+goodUnits            Einheiten aus Ware            -> Ware.Einheiten
+shipyardWaypoint     Wegpunkt aus Werft            -> Werft.Wegpunkt
+shipyardTypes        Schiffstypen aus Werft        -> Werft.Schiffstypen
+shipyardTypeName     Typ aus Schiffstyp            -> Schiffstyp.Typ
+shipyardTypePrice    Preis aus Schiffstyp          -> Schiffstyp.Preis
+marketWaypoint       Wegpunkt aus Markt            -> Markt.Wegpunkt
+marketGoods          Handelswaren aus Markt        -> Markt.Handelswaren
+tradeGoodName        Name aus Handelsware          -> Handelsware.Name
+tradeGoodBuyPrice    Kaufpreis aus Handelsware     -> Handelsware.Kaufpreis
+tradeGoodSellPrice   Verkaufspreis aus Handelsware -> Handelsware.Verkaufspreis
+contractId           Id aus Auftrag                -> Auftrag.Id
+contractType         Typ aus Auftrag               -> Auftrag.Typ
+contractAccepted     Angenommen aus Auftrag        -> Auftrag.Angenommen
+contractFulfilled    Erfüllt aus Auftrag           -> Auftrag.Erfüllt
+waypointSymbolField  Symbol aus Wegpunkt           -> Wegpunkt.Symbol
+waypointTypeField    Typ aus Wegpunkt              -> Wegpunkt.Typ
+```
+
+Registered in `blocks-catalog.ts`'s `ACCESSOR_BLOCKS` array (also exported as
+`accessorFieldNames` for reference) and compiled by `Compiler.fs`'s own
+`ACCESSOR_BLOCKS: Map<string, string>` — the two tables are kept in sync manually;
+this doc is the source of truth for both. `Markt.Handelswaren`'s and
+`Werft.Schiffstypen`'s price fields are only populated by the real API when a ship is
+present at that waypoint — otherwise both fall back to a price of 0 (documented
+simplification, same class as "market is always headquarters").

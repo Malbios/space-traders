@@ -1,4 +1,4 @@
-import { catalogActionBlockTypes, catalogInfoBlockTypes } from "./blocks-catalog";
+import { catalogActionBlockTypes, catalogInfoBlockTypes, catalogAccessorBlockTypes } from "./blocks-catalog";
 
 /**
  * The real German catalog-driven toolbox (§7/§19 Milestone 3). Serves both the main
@@ -25,6 +25,12 @@ export function buildCatalogToolbox(callerBlockTypes: string[]): object {
                 name: "Informationen",
                 colour: "230",
                 contents: catalogInfoBlockTypes.map((type) => ({ kind: "block", type })),
+            },
+            {
+                kind: "category",
+                name: "Zugriffe",
+                colour: "65",
+                contents: catalogAccessorBlockTypes.map((type) => ({ kind: "block", type })),
             },
             {
                 kind: "category",

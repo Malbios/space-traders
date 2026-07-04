@@ -168,6 +168,17 @@ let private reconcile (baseline: ActionBaseline) (current: ShipSnapshot) : bool 
             | _, None -> false
 
         cooldownAdvanced && current.cargoUnits <> unitsBefore
+    | SurveyBaseline cooldownBefore ->
+        match cooldownBefore, current.cooldownExpiration with
+        | Some before, Some after -> DateTimeOffset.Parse(after) > DateTimeOffset.Parse(before)
+        | None, Some _ -> true
+        | _, None -> false
+    | FuelBaseline unitsBefore -> current.fuelCurrent <> unitsBefore
+    // `AcceptContractBaseline`/`FleetBaseline` never reach this function — they
+    // reconcile via `ReconciliationContract`/`ReconciliationFleet`, handled directly
+    // in `handleApiResponse` (no `ShipSnapshot` signal exists for either).
+    | AcceptContractBaseline _
+    | FleetBaseline _ -> failwith "AcceptContractBaseline/FleetBaseline reconcile via contract/fleet fetch, not ship state."
 
 // --- Pause/resume/cancel (§14/§15, Milestone 7) -------------------------------------
 
@@ -273,14 +284,30 @@ and private advanceInstruction (clock: Clock) (job: JobState) (instr: Instructio
                 |> setLocal variable first
 
             advance clock job'
-    | InfoRead _
+    | InfoRead(blockId, infoType, args, resultTarget) -> emitInfoRead job blockId infoType args resultTarget
     | CallCustomBlock _ ->
-        // Out of scope for Milestone 6 (only the 6 action blocks are implemented) —
-        // fail the job with a clear German message rather than crash or silently
-        // no-op, so a full-catalog program degrades safely.
+        // Out of scope until Milestone 9's real custom-block calls — fail the job
+        // with a clear German message rather than crash or silently no-op, so a
+        // full-catalog program degrades safely.
         let msg = "Dieser Block wird erst in einem späteren Meilenstein unterstützt."
         { job with status = Failed msg }, [ JobFailed(job.jobId, msg) ]
     | ApiAction(blockId, actionType, args) -> emitApiAction job blockId actionType args
+
+/// Stops the free-transition walk for an info-read block (§8/§14, Milestone 9/Part
+/// B) — a GET is always safe to retry, so unlike `emitApiAction` there is no baseline
+/// to capture, only the evaluated string args to carry through a retry unchanged.
+and private emitInfoRead
+    (job: JobState)
+    (_blockId: string)
+    (infoType: string)
+    (args: Map<string, Expr>)
+    (resultTarget: string)
+    : JobState * Effect list =
+    let locals = currentLocals job
+    let stringArgs = args |> Map.map (fun _ expr -> Eval.eval locals expr |> Eval.asString)
+
+    { job with status = AwaitingInfoResponse(0, infoType, stringArgs, resultTarget) },
+    [ QueueInfoRead(job.jobId, job.shipSymbol, infoType, stringArgs, 0, resultTarget) ]
 
 /// Stops the free-transition walk: captures the pre-call baseline from
 /// `job.lastKnownShip` (data already in hand, §13), emits exactly one `QueueApiCall`.
@@ -303,8 +330,16 @@ and private emitApiAction
         { job with status = Failed msg }, [ JobFailed(job.jobId, msg) ]
     | Some ship ->
         let awaiting (baseline: ActionBaseline) (action: QueuedAction) (logText: string) =
+            // `LogMessage` must run *before* `QueueApiCall` in this list: the shell
+            // (`JobRunner.applyEffects`) applies effects strictly in order, and
+            // `QueueApiCall` recursively drives the job all the way to its next
+            // settled state (persisting any further log lines) before this function
+            // returns — if `LogMessage` ran second, this action's *start* message
+            // would always end up prepended on top of whatever the action already
+            // logged as its outcome, corrupting "latest log line" displays (a real
+            // bug found via live verification, Milestone 9/Part A).
             { job with status = AwaitingApiResponse(0, action, baseline) },
-            [ QueueApiCall(job.jobId, job.shipSymbol, action, 0); LogMessage(job.jobId, logText) ]
+            [ LogMessage(job.jobId, logText); QueueApiCall(job.jobId, job.shipSymbol, action, 0) ]
 
         match actionType with
         | "navigate" ->
@@ -322,6 +357,29 @@ and private emitApiAction
             let tradeSymbol = requireArg "tradeSymbol" |> Eval.asString
             let units = requireArg "units" |> Eval.asInt
             awaiting (CargoBaseline ship.cargoUnits) (DoSell(tradeSymbol, units)) $"Verkaufe {units}x {tradeSymbol}..."
+        | "survey" -> awaiting (SurveyBaseline ship.cooldownExpiration) DoSurvey "Führe eine Vermessung durch..."
+        | "deliverContract" ->
+            let contractId = requireArg "contractId" |> Eval.asString
+            let tradeSymbol = requireArg "tradeSymbol" |> Eval.asString
+            let units = requireArg "units" |> Eval.asInt
+
+            awaiting
+                (CargoBaseline ship.cargoUnits)
+                (DoDeliverContract(contractId, tradeSymbol, units))
+                $"Liefere {units}x {tradeSymbol} für Auftrag {contractId}..."
+        | "acceptContract" ->
+            let contractId = requireArg "contractId" |> Eval.asString
+            awaiting (AcceptContractBaseline contractId) (DoAcceptContract contractId) $"Nehme Auftrag {contractId} an..."
+        | "purchaseShip" ->
+            let shipType = requireArg "shipType" |> Eval.asString
+            let waypointSymbol = requireArg "waypointSymbol" |> Eval.asString
+            let shipCountBefore = job.lastKnownFleetShipCount |> Option.defaultValue 0
+
+            awaiting
+                (FleetBaseline shipCountBefore)
+                (DoPurchaseShip(shipType, waypointSymbol))
+                $"Kaufe ein Schiff vom Typ {shipType}..."
+        | "refuel" -> awaiting (FuelBaseline ship.fuelCurrent) DoRefuel "Tanke auf..."
         | other ->
             let msg = $"Unbekannte Aktion: {other}"
             { job with status = Failed msg }, [ JobFailed(job.jobId, msg) ]
@@ -335,13 +393,16 @@ and private emitApiAction
 ///    vs "not yet" (a fresh attempt, same baseline and same original action).
 and private handleApiResponse (clock: Clock) (job: JobState) (attemptNumber: int) (result: ApiResult) : JobState * Effect list =
     match job.status, result with
-    | AwaitingApiResponse(attempt, _, _), ApiAmbiguous _ when attempt = attemptNumber ->
-        match job.status with
-        | AwaitingApiResponse(_, action, baseline) ->
-            { job with status = Reconciling(attempt, action, baseline) },
-            [ ReconcileShipState(job.jobId, job.shipSymbol, attempt)
-              LogMessage(job.jobId, "Prüfe, ob die Aktion schon stattgefunden hat...") ]
-        | _ -> job, []
+    | AwaitingApiResponse(attempt, action, baseline), ApiAmbiguous _ when attempt = attemptNumber ->
+        let reconcileEffect =
+            match baseline with
+            | AcceptContractBaseline contractId -> ReconcileContractState(job.jobId, contractId, attempt)
+            | FleetBaseline _ -> ReconcileFleetState(job.jobId, attempt)
+            | _ -> ReconcileShipState(job.jobId, job.shipSymbol, attempt)
+
+        { job with status = Reconciling(attempt, action, baseline) },
+        [ reconcileEffect
+          LogMessage(job.jobId, "Prüfe, ob die Aktion schon stattgefunden hat...") ]
     | AwaitingApiResponse(attempt, _, _), ApiFailed msg when attempt = attemptNumber ->
         { job with status = Failed msg }, [ JobFailed(job.jobId, msg) ]
     | AwaitingApiResponse(attempt, _, _), NavigateOk(navStatus, navWaypoint, arrival) when attempt = attemptNumber ->
@@ -410,6 +471,67 @@ and private handleApiResponse (clock: Clock) (job: JobState) (attemptNumber: int
                 log = $"{verb}: {units}x {tradeSymbol} für {totalPrice} Credits." :: job.log }
             []
             (fun j -> advance clock (advanceJobPosition j))
+    | AwaitingApiResponse(attempt, _, _), SurveyOk cooldownExpiration when attempt = attemptNumber ->
+        let ship' =
+            { (job.lastKnownShip |> Option.get) with
+                cooldownExpiration = Some cooldownExpiration }
+
+        let until = DateTimeOffset.Parse cooldownExpiration
+
+        settleOrDefer
+            { (job |> advanceJobPosition) with
+                lastKnownShip = Some ship'
+                status = WaitingForCooldown until
+                log = "Vermessung abgeschlossen." :: job.log }
+            [ StartWait(job.jobId, until, CooldownWait) ]
+            (fun j -> j, [ StartWait(job.jobId, until, CooldownWait) ])
+    | AwaitingApiResponse(attempt, _, _), DeliverOk(cargoUnits, cargoInventory, contractFulfilled) when attempt = attemptNumber ->
+        let ship' =
+            { (job.lastKnownShip |> Option.get) with
+                cargoUnits = cargoUnits
+                cargoInventory = cargoInventory }
+
+        let logText =
+            if contractFulfilled then
+                "Lieferung abgeschlossen: Auftrag erfüllt."
+            else
+                "Lieferung abgeschlossen."
+
+        settleOrDefer
+            { job with
+                lastKnownShip = Some ship'
+                status = Running
+                log = logText :: job.log }
+            []
+            (fun j -> advance clock (advanceJobPosition j))
+    | AwaitingApiResponse(attempt, _, _), AcceptContractOk accepted when attempt = attemptNumber ->
+        let logText =
+            if accepted then
+                "Auftrag angenommen."
+            else
+                "Auftrag konnte nicht angenommen werden."
+
+        settleOrDefer { job with status = Running; log = logText :: job.log } [] (fun j -> advance clock (advanceJobPosition j))
+    | AwaitingApiResponse(attempt, _, _), PurchaseShipOk(newShipSymbol, fleetShipCount) when attempt = attemptNumber ->
+        settleOrDefer
+            { job with
+                lastKnownFleetShipCount = Some fleetShipCount
+                status = Running
+                log = $"Neues Schiff gekauft: {newShipSymbol}." :: job.log }
+            []
+            (fun j -> advance clock (advanceJobPosition j))
+    | AwaitingApiResponse(attempt, _, _), RefuelOk fuelCurrent when attempt = attemptNumber ->
+        let ship' =
+            { (job.lastKnownShip |> Option.get) with
+                fuelCurrent = fuelCurrent }
+
+        settleOrDefer
+            { job with
+                lastKnownShip = Some ship'
+                status = Running
+                log = "Aufgetankt." :: job.log }
+            []
+            (fun j -> advance clock (advanceJobPosition j))
     | Reconciling(attempt, action, baseline), ReconciliationShip current when attempt = attemptNumber ->
         let job' = { job with lastKnownShip = Some current }
 
@@ -465,15 +587,88 @@ and private handleApiResponse (clock: Clock) (job: JobState) (attemptNumber: int
                             log = "Bestätigt: Abbau hat bereits stattgefunden." :: job'.log }
                         []
                         (fun j -> advance clock (advanceJobPosition j))
+            | SurveyBaseline _ ->
+                match current.cooldownExpiration with
+                | Some expiration when DateTimeOffset.Parse expiration > clock.now() ->
+                    let until = DateTimeOffset.Parse expiration
+
+                    settleOrDefer
+                        { (job' |> advanceJobPosition) with
+                            status = WaitingForCooldown until
+                            log = "Bestätigt: Vermessung hat bereits stattgefunden." :: job'.log }
+                        [ StartWait(job.jobId, until, CooldownWait) ]
+                        (fun j -> j, [ StartWait(job.jobId, until, CooldownWait) ])
+                | _ ->
+                    settleOrDefer
+                        { job' with
+                            status = Running
+                            log = "Bestätigt: Vermessung hat bereits stattgefunden." :: job'.log }
+                        []
+                        (fun j -> advance clock (advanceJobPosition j))
+            | FuelBaseline _ ->
+                settleOrDefer
+                    { job' with
+                        status = Running
+                        log = "Bestätigt: Auftanken hat bereits stattgefunden." :: job'.log }
+                    []
+                    (fun j -> advance clock (advanceJobPosition j))
+            | AcceptContractBaseline _
+            | FleetBaseline _ -> failwith "AcceptContractBaseline/FleetBaseline never pair with ReconciliationShip."
         else
             { job' with status = AwaitingApiResponse(attempt + 1, action, baseline) },
-            [ QueueApiCall(job.jobId, job.shipSymbol, action, attempt + 1)
-              LogMessage(job.jobId, "Aktion war noch nicht erfolgreich, versuche erneut...") ]
-    | Reconciling(attempt, _, _), ApiAmbiguous _ when attempt = attemptNumber ->
+            [ LogMessage(job.jobId, "Aktion war noch nicht erfolgreich, versuche erneut...")
+              QueueApiCall(job.jobId, job.shipSymbol, action, attempt + 1) ]
+    | Reconciling(attempt, action, baseline), ReconciliationContract accepted when attempt = attemptNumber ->
+        if accepted then
+            settleOrDefer
+                { job with
+                    status = Running
+                    log = "Bestätigt: Auftrag wurde bereits angenommen." :: job.log }
+                []
+                (fun j -> advance clock (advanceJobPosition j))
+        else
+            { job with status = AwaitingApiResponse(attempt + 1, action, baseline) },
+            [ LogMessage(job.jobId, "Aktion war noch nicht erfolgreich, versuche erneut...")
+              QueueApiCall(job.jobId, job.shipSymbol, action, attempt + 1) ]
+    | Reconciling(attempt, action, baseline), ReconciliationFleet shipCount when attempt = attemptNumber ->
+        match baseline with
+        | FleetBaseline shipCountBefore when shipCount > shipCountBefore ->
+            settleOrDefer
+                { job with
+                    lastKnownFleetShipCount = Some shipCount
+                    status = Running
+                    log = "Bestätigt: Schiff wurde bereits gekauft." :: job.log }
+                []
+                (fun j -> advance clock (advanceJobPosition j))
+        | _ ->
+            { job with
+                lastKnownFleetShipCount = Some shipCount
+                status = AwaitingApiResponse(attempt + 1, action, baseline) },
+            [ LogMessage(job.jobId, "Aktion war noch nicht erfolgreich, versuche erneut...")
+              QueueApiCall(job.jobId, job.shipSymbol, action, attempt + 1) ]
+    | Reconciling(attempt, _, baseline), ApiAmbiguous _ when attempt = attemptNumber ->
         // The reconciliation fetch (a plain GET) is itself safe to retry indefinitely —
         // unlike the original action, it has no side effects.
-        job, [ ReconcileShipState(job.jobId, job.shipSymbol, attempt) ]
+        let reconcileEffect =
+            match baseline with
+            | AcceptContractBaseline contractId -> ReconcileContractState(job.jobId, contractId, attempt)
+            | FleetBaseline _ -> ReconcileFleetState(job.jobId, attempt)
+            | _ -> ReconcileShipState(job.jobId, job.shipSymbol, attempt)
+
+        job, [ reconcileEffect ]
     | Reconciling(attempt, _, _), ApiFailed msg when attempt = attemptNumber ->
+        { job with status = Failed msg }, [ JobFailed(job.jobId, msg) ]
+    | AwaitingInfoResponse(attempt, _, _, resultTarget), InfoOk value when attempt = attemptNumber ->
+        settleOrDefer
+            { (job |> setLocal resultTarget value |> advanceJobPosition) with status = Running }
+            []
+            (fun j -> advance clock j)
+    | AwaitingInfoResponse(attempt, infoType, args, resultTarget), ApiAmbiguous _ when attempt = attemptNumber ->
+        // A GET is always safe to retry (§8/§14) — no reconciliation hop, ever;
+        // just re-issue the same fetch with the next attempt number.
+        { job with status = AwaitingInfoResponse(attempt + 1, infoType, args, resultTarget) },
+        [ QueueInfoRead(job.jobId, job.shipSymbol, infoType, args, attempt + 1, resultTarget) ]
+    | AwaitingInfoResponse(attempt, _, _, _), ApiFailed msg when attempt = attemptNumber ->
         { job with status = Failed msg }, [ JobFailed(job.jobId, msg) ]
     | _ -> job, [] // stale attempt number or unrelated status/result pairing — defensive no-op
 
@@ -497,7 +692,8 @@ let step (clock: Clock) (job: JobState) (event: SchedulerEvent) : JobState * Eff
         | WaitingForArrival _
         | WaitingForCooldown _ -> { job with status = Paused job.status; log = "Programm pausiert." :: job.log }, []
         | AwaitingApiResponse _
-        | Reconciling _ ->
+        | Reconciling _
+        | AwaitingInfoResponse _ ->
             if job.pausePending then
                 job, []
             else
@@ -522,7 +718,8 @@ let step (clock: Clock) (job: JobState) (event: SchedulerEvent) : JobState * Eff
         | Paused _ ->
             { job with status = Cancelled; log = "Programm gestoppt." :: job.log }, [ JobCancelled job.jobId ]
         | AwaitingApiResponse _
-        | Reconciling _ ->
+        | Reconciling _
+        | AwaitingInfoResponse _ ->
             if job.cancelPending then
                 job, []
             else

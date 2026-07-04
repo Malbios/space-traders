@@ -60,10 +60,12 @@ type ShipSnapshot =
       navArrival: string option
       cargoUnits: int
       cargoInventory: Map<string, int>
-      cooldownExpiration: string option }
+      cooldownExpiration: string option
+      /// Milestone 9 (Part A) — ship-local reconciliation signal for `refuel`.
+      fuelCurrent: int }
 
-/// One of the 6 in-scope actions (Milestone 6 — navigate/orbit/dock/extract/buy/sell
-/// only; not purchaseShip/refuel/acceptContract/deliverContract).
+/// All 11 catalog actions (Milestone 6 added the first 6; Milestone 9/Part A adds
+/// survey/deliverContract/acceptContract/purchaseShip/refuel).
 type QueuedAction =
     | DoNavigate of destination: string
     | DoOrbit
@@ -71,15 +73,26 @@ type QueuedAction =
     | DoExtract
     | DoBuy of tradeSymbol: string * units: int
     | DoSell of tradeSymbol: string * units: int
+    | DoSurvey
+    | DoDeliverContract of contractId: string * tradeSymbol: string * units: int
+    | DoAcceptContract of contractId: string
+    | DoPurchaseShip of shipType: string * waypointSymbol: string
+    | DoRefuel
 
 /// Per-action pre-call baseline, captured from `JobState.lastKnownShip` — data
 /// already in hand (§13: "costs nothing, it's bookkeeping of data already in hand"),
-/// never a fresh API call.
+/// never a fresh API call. `AcceptContractBaseline`/`FleetBaseline` are the two
+/// exceptions (Milestone 9/Part A) — neither action has a ship-local signal, so per
+/// §13's explicit allowance they reconcile via a contract/fleet fetch instead.
 type ActionBaseline =
     | NavigateBaseline of intendedWaypoint: string
     | DockOrbitBaseline of expectedStatus: string
     | CargoBaseline of unitsBefore: int
     | ExtractBaseline of cooldownExpirationBefore: string option * unitsBefore: int
+    | SurveyBaseline of cooldownExpirationBefore: string option
+    | AcceptContractBaseline of contractId: string
+    | FleetBaseline of shipCountBefore: int
+    | FuelBaseline of unitsBefore: int
 
 /// Mirrors §14's job statuses, minus the DB-only ones — there is no separate
 /// "queued" state in the pure core, only "waiting for an effect's result". Carrying
@@ -97,6 +110,11 @@ type JobStatus =
     | WaitingForArrival of until: DateTimeOffset
     | WaitingForCooldown of until: DateTimeOffset
     | Reconciling of attempt: int * action: QueuedAction * baseline: ActionBaseline
+    /// Milestone 9/Part B (§8/§14): an in-flight info-read block (getFuel, getMarket,
+    /// ...). Simpler than `AwaitingApiResponse` — a GET is always safe to retry, so
+    /// there is no `Reconciling` hop, ever; an `ApiAmbiguous` response just re-emits
+    /// the same `QueueInfoRead` with `attempt + 1`.
+    | AwaitingInfoResponse of attempt: int * infoType: string * args: Map<string, string> * resultTarget: string
     | Paused of resuming: JobStatus
     | Cancelled
     | Completed
@@ -113,6 +131,12 @@ type JobState =
       /// The "last time it looked" baseline source (§13) — updated from every
       /// successful/reconciled response, never from a dedicated extra call.
       lastKnownShip: ShipSnapshot option
+      /// Milestone 9/Part A — fleet-wide ship count "last known" bookkeeping,
+      /// analogous to `lastKnownShip` but scope-wide rather than per-ship; the
+      /// `FleetBaseline` source for `purchaseShip` (no per-ship signal exists for it).
+      /// Populated at job start (a `ListShips` call, same effort as the initial ship
+      /// snapshot) and refreshed on every successful purchase/fleet reconciliation.
+      lastKnownFleetShipCount: int option
       /// German activity log, newest-first.
       log: string list
       /// Set by a `PauseRequested`/`CancelRequested` event received while
@@ -140,6 +164,18 @@ type ApiResult =
         units: int *
         totalPrice: int
     | ReconciliationShip of ShipSnapshot
+    | SurveyOk of cooldownExpiration: string
+    | DeliverOk of cargoUnits: int * cargoInventory: Map<string, int> * contractFulfilled: bool
+    | AcceptContractOk of accepted: bool
+    | PurchaseShipOk of newShipSymbol: string * fleetShipCount: int
+    | RefuelOk of fuelCurrent: int
+    /// Milestone 9/Part A — the two new reconciliation-fetch kinds for actions with
+    /// no ship-local signal (`acceptContract`/`purchaseShip`).
+    | ReconciliationContract of accepted: bool
+    | ReconciliationFleet of shipCount: int
+    /// Milestone 9/Part B — an info-read block's result, already converted to a
+    /// `Value` (VRecord/VList/VNumber per §8) by the shell.
+    | InfoOk of Value
     /// `RequestQueue.AmbiguousFailure` surfaced (§13: never auto-retried by the queue).
     | ApiAmbiguous of message: string
     /// Any other terminal exception surfaced (e.g. `RequestQueue.ServerResetDetected`).
@@ -166,6 +202,19 @@ type WaitReason =
 type Effect =
     | QueueApiCall of jobId: JobId * shipSymbol: string * action: QueuedAction * attemptNumber: int
     | ReconcileShipState of jobId: JobId * shipSymbol: string * attemptNumber: int
+    /// Milestone 9/Part A — reconciliation via a contract/fleet fetch rather than a
+    /// ship fetch, for `acceptContract`/`purchaseShip` (see `ActionBaseline`).
+    | ReconcileContractState of jobId: JobId * contractId: string * attemptNumber: int
+    | ReconcileFleetState of jobId: JobId * attemptNumber: int
+    /// Milestone 9/Part B (§8/§14) — an info-read block's fetch. Always safe to
+    /// retry (a GET), so unlike `QueueApiCall` there is no baseline to carry.
+    | QueueInfoRead of
+        jobId: JobId *
+        shipSymbol: string *
+        infoType: string *
+        args: Map<string, string> *
+        attemptNumber: int *
+        resultTarget: string
     | StartWait of jobId: JobId * until: DateTimeOffset * reason: WaitReason
     | LogMessage of jobId: JobId * germanText: string
     | JobCompleted of jobId: JobId

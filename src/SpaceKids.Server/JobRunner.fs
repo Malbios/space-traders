@@ -53,10 +53,46 @@ let private toSnapshot (ship: Ship) : ShipSnapshot =
       navArrival = Some ship.nav.route.arrival
       cargoUnits = ship.cargo.units
       cargoInventory = ship.cargo.inventory |> List.map (fun i -> i.symbol, i.units) |> Map.ofList
-      cooldownExpiration = cooldownExpirationOf ship.cooldown }
+      cooldownExpiration = cooldownExpirationOf ship.cooldown
+      fuelCurrent = ship.fuel.current }
 
 let private inventoryMap (cargo: ShipCargo) : Map<string, int> =
     cargo.inventory |> List.map (fun i -> i.symbol, i.units) |> Map.ofList
+
+// --- Info-read record conversion (§8, Milestone 9/Part B) --------------------------
+// Kept flat per §8's own instruction — a "friendly structured record", not a general
+// nested object tree.
+
+let private shipRecord (ship: Ship) : Value =
+    VRecord(
+        Map.ofList
+            [ "Name", VString ship.symbol
+              "Wegpunkt", VString ship.nav.waypointSymbol
+              "Status", VString ship.nav.status
+              "Treibstoff", VNumber(float ship.fuel.current)
+              "Frachteinheiten", VNumber(float ship.cargo.units)
+              "Frachtkapazität", VNumber(float ship.cargo.capacity) ]
+    )
+
+let private contractRecord (c: Contract) : Value =
+    VRecord(
+        Map.ofList
+            [ "Id", VString c.id
+              "Typ", VString c.``type``
+              "Angenommen", VBool c.accepted
+              "Erfüllt", VBool c.fulfilled ]
+    )
+
+let private waypointRecord (w: Waypoint) : Value =
+    VRecord(Map.ofList [ "Symbol", VString w.symbol; "Typ", VString w.``type`` ])
+
+/// SpaceTraders' own waypoint-symbol convention: `SYSTEM-WAYPOINT` (e.g.
+/// `X1-TEST-A1` is waypoint `A1` in system `X1-TEST`) — used so `getMarket`/
+/// `getShipyard` info blocks only need a waypoint symbol argument, matching the
+/// existing block catalog (§7), rather than also asking for the system symbol.
+let private systemSymbolOfWaypoint (waypointSymbol: string) : string =
+    let parts = waypointSymbol.Split('-')
+    if parts.Length >= 2 then String.Join("-", parts.[0], parts.[1]) else waypointSymbol
 
 /// `RequestQueue.enqueue`'s `AmbiguousFailure` can arrive wrapped in an
 /// `AggregateException` depending on the Async<->Task interop path it crosses (the
@@ -148,6 +184,185 @@ let private runAction
                             r.transaction.totalPrice
                         )
                 })
+        | DoSurvey ->
+            $"survey:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.Survey(token, shipSymbol)
+                    return SurveyOk r.cooldown.expiration
+                })
+        | DoDeliverContract(contractId, tradeSymbol, units) ->
+            $"deliverContract:{contractId}",
+            (fun () ->
+                async {
+                    let! r = client.DeliverContract(token, contractId, shipSymbol, tradeSymbol, units)
+                    return DeliverOk(r.cargo.units, inventoryMap r.cargo, r.contract.fulfilled)
+                })
+        | DoAcceptContract contractId ->
+            $"acceptContract:{contractId}",
+            (fun () ->
+                async {
+                    let! r = client.AcceptContract(token, contractId)
+                    return AcceptContractOk r.contract.accepted
+                })
+        | DoPurchaseShip(shipType, waypointSymbol) ->
+            $"purchaseShip:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.PurchaseShip(token, shipType, waypointSymbol)
+                    return PurchaseShipOk(r.ship.symbol, r.agent.shipCount)
+                })
+        | DoRefuel ->
+            $"refuel:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.Refuel(token, shipSymbol)
+                    return RefuelOk r.fuel.current
+                })
+
+    async {
+        try
+            return! RequestQueue.enqueue dbPath interactivePriority endpoint call
+        with ex ->
+            return classifyException ex
+    }
+
+/// Executes one info-read block (§8/§14, Milestone 9/Part B) against the real
+/// `SpaceTradersClient`, through `RequestQueue.enqueue` like every other call — a GET,
+/// so no baseline/reconciliation is needed, only the converted `Value` result.
+let private runInfoRead
+    (client: SpaceTradersClient)
+    (dbPath: string)
+    (token: string)
+    (shipSymbol: string)
+    (infoType: string)
+    (args: Map<string, string>)
+    : Async<ApiResult> =
+    let requireArg (name: string) =
+        match args.TryFind name with
+        | Some v -> v
+        | None -> failwith $"Fehlendes Argument \"{name}\" für Info-Block {infoType}."
+
+    let endpoint, call =
+        match infoType with
+        | "getShipInfo" ->
+            $"getShipInfo:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! ship = client.GetShip(token, shipSymbol)
+                    return InfoOk(shipRecord ship)
+                })
+        | "getFleetInfo" ->
+            "getFleetInfo",
+            (fun () ->
+                async {
+                    let! ships = client.ListShips(token)
+                    return InfoOk(VList(ships |> List.map shipRecord))
+                })
+        | "getWaypoints" ->
+            let systemSymbol = requireArg "systemSymbol"
+
+            $"getWaypoints:{systemSymbol}",
+            (fun () ->
+                async {
+                    let! waypoints = client.ListWaypoints(token, systemSymbol)
+                    return InfoOk(VList(waypoints |> List.map waypointRecord))
+                })
+        | "getMarket" ->
+            let waypointSymbol = requireArg "waypointSymbol"
+            let systemSymbol = systemSymbolOfWaypoint waypointSymbol
+
+            $"getMarket:{waypointSymbol}",
+            (fun () ->
+                async {
+                    let! market = client.GetMarket(token, systemSymbol, waypointSymbol)
+
+                    // `tradeGoods` (with prices) is only populated by the real API
+                    // when a ship is present at the market; fall back to the
+                    // always-visible export/import/exchange names with no price —
+                    // a documented simplification (§8), same class as elsewhere in
+                    // this project.
+                    let goods =
+                        if not market.tradeGoods.IsEmpty then
+                            market.tradeGoods
+                            |> List.map (fun g ->
+                                VRecord(
+                                    Map.ofList
+                                        [ "Name", VString g.symbol
+                                          "Kaufpreis", VNumber(float g.purchasePrice)
+                                          "Verkaufspreis", VNumber(float g.sellPrice) ]
+                                ))
+                        else
+                            (market.exports @ market.imports @ market.exchange)
+                            |> List.map (fun g ->
+                                VRecord(
+                                    Map.ofList [ "Name", VString g.name; "Kaufpreis", VNumber 0.0; "Verkaufspreis", VNumber 0.0 ]
+                                ))
+
+                    return InfoOk(VRecord(Map.ofList [ "Wegpunkt", VString waypointSymbol; "Handelswaren", VList goods ]))
+                })
+        | "getShipyard" ->
+            let waypointSymbol = requireArg "waypointSymbol"
+            let systemSymbol = systemSymbolOfWaypoint waypointSymbol
+
+            $"getShipyard:{waypointSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.GetShipyard(token, systemSymbol, waypointSymbol)
+
+                    let types =
+                        if not r.shipyard.ships.IsEmpty then
+                            r.shipyard.ships
+                            |> List.map (fun s ->
+                                VRecord(Map.ofList [ "Typ", VString s.``type``; "Preis", VNumber(float s.purchasePrice) ]))
+                        else
+                            r.shipyard.shipTypes
+                            |> List.map (fun t -> VRecord(Map.ofList [ "Typ", VString t.``type``; "Preis", VNumber 0.0 ]))
+
+                    return InfoOk(VRecord(Map.ofList [ "Wegpunkt", VString waypointSymbol; "Schiffstypen", VList types ]))
+                })
+        | "getContracts" ->
+            "getContracts",
+            (fun () ->
+                async {
+                    let! contracts = client.ListContracts(token)
+                    return InfoOk(VList(contracts |> List.map contractRecord))
+                })
+        | "getCargo" ->
+            $"getCargo:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! ship = client.GetShip(token, shipSymbol)
+
+                    let items =
+                        ship.cargo.inventory
+                        |> List.map (fun i -> VRecord(Map.ofList [ "Name", VString i.name; "Einheiten", VNumber(float i.units) ]))
+
+                    return
+                        InfoOk(
+                            VRecord(
+                                Map.ofList
+                                    [ "Einheiten", VNumber(float ship.cargo.units)
+                                      "Kapazität", VNumber(float ship.cargo.capacity)
+                                      "Waren", VList items ]
+                            )
+                        )
+                })
+        | "getFuel" ->
+            $"getFuel:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! ship = client.GetShip(token, shipSymbol)
+                    return InfoOk(VNumber(float ship.fuel.current))
+                })
+        | "getCredits" ->
+            "getCredits",
+            (fun () ->
+                async {
+                    let! agent = client.GetAgent(token)
+                    return InfoOk(VNumber(float agent.credits))
+                })
+        | other -> failwith $"Unbekannter Info-Block: {other}"
 
     async {
         try
@@ -167,6 +382,7 @@ let statusName (status: JobStatus) : string =
     | WaitingForArrival _ -> "WaitingForArrival"
     | WaitingForCooldown _ -> "WaitingForCooldown"
     | Reconciling _ -> "Reconciling"
+    | AwaitingInfoResponse _ -> "AwaitingInfoResponse"
     | Paused _ -> "Paused"
     | Cancelled -> "Cancelled"
     | Completed -> "Completed"
@@ -270,6 +486,36 @@ let rec private applyEffects
                     }
 
                 do! tick client dbPath token jobId (ApiResponseReceived(jobId, attemptNumber, result))
+            | ReconcileContractState(jobId, contractId, attemptNumber) ->
+                let! result =
+                    async {
+                        try
+                            let! r =
+                                RequestQueue.enqueue dbPath interactivePriority $"getContract:{contractId}" (fun () ->
+                                    client.GetContract(token, contractId))
+
+                            return ReconciliationContract r.contract.accepted
+                        with ex ->
+                            return classifyException ex
+                    }
+
+                do! tick client dbPath token jobId (ApiResponseReceived(jobId, attemptNumber, result))
+            | ReconcileFleetState(jobId, attemptNumber) ->
+                let! result =
+                    async {
+                        try
+                            let! ships =
+                                RequestQueue.enqueue dbPath interactivePriority "listShips" (fun () -> client.ListShips(token))
+
+                            return ReconciliationFleet(List.length ships)
+                        with ex ->
+                            return classifyException ex
+                    }
+
+                do! tick client dbPath token jobId (ApiResponseReceived(jobId, attemptNumber, result))
+            | QueueInfoRead(jobId, shipSymbol, infoType, args, attemptNumber, _resultTarget) ->
+                let! result = runInfoRead client dbPath token shipSymbol infoType args
+                do! tick client dbPath token jobId (ApiResponseReceived(jobId, attemptNumber, result))
     }
 
 /// One scheduler tick: pulls the job, calls the pure core, persists the result,
@@ -321,7 +567,18 @@ let recoverJob (client: SpaceTradersClient) (dbPath: string) (token: string) (jo
             | Running -> do! tick client dbPath token jobId WakeTick
             | AwaitingApiResponse(attempt, _, _) ->
                 do! tick client dbPath token jobId (ApiResponseReceived(jobId, attempt, ApiAmbiguous "Server wurde neu gestartet"))
-            | Reconciling(attempt, _, _) -> do! applyEffects client dbPath token [ ReconcileShipState(jobId, job.shipSymbol, attempt) ]
+            | Reconciling(attempt, _, baseline) ->
+                let reconcileEffect =
+                    match baseline with
+                    | AcceptContractBaseline contractId -> ReconcileContractState(jobId, contractId, attempt)
+                    | FleetBaseline _ -> ReconcileFleetState(jobId, attempt)
+                    | _ -> ReconcileShipState(jobId, job.shipSymbol, attempt)
+
+                do! applyEffects client dbPath token [ reconcileEffect ]
+            | AwaitingInfoResponse(attempt, infoType, infoArgs, resultTarget) ->
+                // A GET is always safe to retry (§8/§14) — no ambiguous-failure
+                // framing needed, just re-issue the same fetch directly.
+                do! applyEffects client dbPath token [ QueueInfoRead(jobId, job.shipSymbol, infoType, infoArgs, attempt, resultTarget) ]
             | WaitingForArrival _
             | WaitingForCooldown _
             | Paused _
@@ -355,6 +612,7 @@ let startJob
     (program: CompiledProgram)
     (shipSymbol: string)
     (initialShip: Ship)
+    (initialFleetShipCount: int)
     : Async<Result<JobId, string>> =
     async {
         let jobId = System.Guid.NewGuid().ToString()
@@ -366,6 +624,7 @@ let startJob
               status = Running
               stack = [ initialFrame ]
               lastKnownShip = Some(toSnapshot initialShip)
+              lastKnownFleetShipCount = Some initialFleetShipCount
               log = []
               pausePending = false
               cancelPending = false }

@@ -745,3 +745,110 @@ restart-resume against a fresh `JobScheduler.resumeAll` call over the same on-di
 database, lease-sweep reclaim, and pause-mid-flight settling into `Paused` without
 losing the reconciliation), alongside the full pre-existing suite — 64 tests total,
 all green, stable across repeated runs.
+
+## Milestone 9: finish the block catalog — remaining actions, info blocks, accessors (§8/§13/§19)
+
+Milestone 6 only wired 6 of the 11 action blocks into the scheduler core and none of
+the 9 information blocks; the rest compiled fine but failed every job with "Dieser
+Block wird erst in einem späteren Meilenstein unterstützt." This milestone finishes
+the whole 20-block catalog so any program a player builds actually runs, split into
+two parts done and verified independently.
+
+### Part A: the 5 remaining actions (survey, deliverContract, acceptContract,
+purchaseShip, refuel)
+
+Same shape as Milestone 6's 6 actions (new `QueuedAction`/`ActionBaseline`/`ApiResult`
+cases, new `SpaceTradersClient` methods verified field-by-field against the live
+OpenAPI spec, new fake endpoints, new `JobRunner.runAction` arms) — except two of the
+five have no ship-local reconciliation signal:
+
+- **`acceptContract`** reconciles via a *contract* fetch (`GetContract`) instead of a
+  ship fetch — is the contract's `accepted` flag now true? Per §13's own explicit
+  allowance ("refresh ship **or contract** state").
+- **`purchaseShip`** reconciles via a *fleet* fetch (`ListShips`) — did the ship count
+  increase versus a pre-call baseline? The acting ship's own state never changes (a
+  new ship is added elsewhere in the fleet), so there's no per-ship signal to reuse.
+  This needed a new `JobState.lastKnownFleetShipCount` field (analogous to
+  `lastKnownShip`, but fleet-wide) — populated by a `GetAgent` call in
+  `JobRemoting.startJob` alongside the existing `GetShip` call, since neither
+  `ShipSnapshot` nor anything else already in hand carries a fleet-wide count.
+  **Documented limitation:** this can theoretically misfire if another pilot's job
+  purchases a *different* ship in the same ambiguous window — the same class of
+  simplification as the existing "market is always headquarters" one, not a new
+  category of hazard. Fleet-mode concurrency correctness is a later milestone's
+  concern generally.
+
+Two new `Effect`/`ApiResult` case pairs (`ReconcileContractState`/`ReconciliationContract`,
+`ReconcileFleetState`/`ReconciliationFleet`) carry these fetches; `handleApiResponse`'s
+existing "route to reconciliation on `ApiAmbiguous`" logic picks the right one by
+matching on the *baseline* shape, so the 6 existing ship-signal actions are untouched.
+
+**Real OpenAPI-spec surprises, checked before writing any types (not guessed):**
+`deliverContract` is `POST /my/contracts/{contractId}/deliver` (contract-scoped, not
+ship-scoped, despite reading like a ship action); `purchaseShip` is `POST /my/ships`
+(fleet-scoped, no ship symbol in the path at all). Both confirmed against the live
+spec before implementation.
+
+### Part B: the 9 info blocks + accessor blocks (§8 data model)
+
+A real gap, not previously built at all — `Value` had no record type, and
+`Expr.Accessor` existed in the DSL but nothing compiled into it (`Eval.eval`
+deliberately `failwith`ed).
+
+- **`Value` gained `VRecord of Map<string, Value>`** — a "friendly structured record"
+  per §8's own instruction ("without turning every API response into a complicated
+  object tree"), kept deliberately flat. `Eval.Accessor` now does a real field lookup,
+  with a clear German error for both an unknown field and a non-record target.
+- **A new scheduler path for info reads, deliberately simpler than actions.** A GET is
+  always safe to retry, so info reads need no baseline/reconciliation at all: a new
+  `JobStatus.AwaitingInfoResponse` (parallel to `AwaitingApiResponse` but with no
+  `Reconciling` hop, ever) and a new `Effect.QueueInfoRead`. On `ApiAmbiguous`, `step`
+  just re-emits the same `QueueInfoRead` with `attempt + 1` — no fetch-then-decide hop,
+  since there's nothing to decide.
+- **`JobRunner.runInfoRead`** maps each of the 9 `infoType`s to the right
+  `SpaceTradersClient` call and converts the response into a `Value` (`Schiff`,
+  `Fracht`, `Werft`, `Markt`, `Auftrag`, `Wegpunkt` records, per the field tables in
+  `docs/04-block-catalog.md`).
+- **Two documented simplifications, both following an existing project pattern**
+  (the "market is always headquarters" precedent): (1) `getMarket`/`getShipyard`
+  only take a waypoint symbol in the catalog (no separate system-symbol input) —
+  the system symbol is derived from SpaceTraders' own `SYSTEM-WAYPOINT` naming
+  convention (`systemSymbolOfWaypoint`), not asked for separately. (2) Both
+  `Market.tradeGoods` (prices) and `Shipyard.ships` (ship prices) are only populated
+  by the real API when a ship is physically present at that location — when empty,
+  the info-read conversion falls back to the always-visible names with a price of 0
+  rather than failing or omitting the field.
+- **26 new accessor blocks** (one per reachable field across all 9 record shapes,
+  including one-item-of-a-list records like `Ware`/`Handelsware`/`Schiffstyp`), a new
+  `ACCESSOR_BLOCKS` array in `blocks-catalog.ts` (value blocks, one `TARGET` input,
+  same `registerBlock` pattern as info blocks) and a 7th "Zugriffe" toolbox category.
+  `Compiler.fs` gained a matching `ACCESSOR_BLOCKS: Map<string, string>` (block type ->
+  field name) compiling each into `Accessor(fieldName, compileInput ... "TARGET")` —
+  table-driven exactly like `ACTION_BLOCKS`/`INFO_BLOCKS`, the two maps kept in sync
+  manually (documented in `docs/04-block-catalog.md`).
+
+### A real bug found during live verification, not introduced by this milestone
+
+Every action's `emitApiAction` emitted its effects as `[ QueueApiCall(...);
+LogMessage(job.jobId, startText) ]` — `QueueApiCall` first. Since
+`JobRunner.applyEffects` applies effects strictly in order, and `QueueApiCall`
+recursively drives the job all the way through its *next* settled state (persisting
+whatever log line the action's actual outcome produces) before returning, the
+`LogMessage` for the action's *start* text always ran afterward and got prepended on
+top — silently corrupting "latest log line" displays (the pilot dashboard's
+"Zuletzt: ...") for every single action ever run, since Milestone 6. Only surfaced now
+because Part A/B's live verification chased a real value (an accessor's resolved
+field) through to the dashboard and noticed the wrong string appearing at the end.
+Fixed by swapping the order (`LogMessage` before `QueueApiCall`) everywhere the same
+pattern appeared, including the three post-reconciliation retry sites.
+
+### Verification
+
+`dotnet test` after Part A (build clean, existing suite plus new tests green) and
+again after Part B, not blurred together — 86 tests total (54 `SpaceKids.Core.Tests`,
+28 `SpaceKids.IntegrationTests`, 4 `SpaceKids.Server.Tests`), all green. Live browser
+check (Playwright) against a locally-run `SpaceKids.FakeSpaceTraders` instance with
+the real `SpaceKids.Server` pointed at it via `SpaceTraders:BaseUrl` (not the real
+SpaceTraders API): a program using `refuel` (Part A) feeding straight into `Treibstoff
+aus Schiff` (`getShipInfo` + accessor, Part B) piped to a show-message block —
+completed successfully, correct fuel value displayed, zero console errors.

@@ -35,6 +35,39 @@ let private INFO_BLOCKS: Map<string, (string * string) list> =
         "getCredits", []
     ]
 
+/// Blockly-block-type -> §8 record field name, for the accessor blocks (Milestone
+/// 9/Part B) — mirrors `blocks-catalog.ts`'s `accessorFieldNames` export (kept in
+/// sync manually; both are exhaustively listed in docs/04-block-catalog.md).
+let private ACCESSOR_BLOCKS: Map<string, string> =
+    Map.ofList [
+        "shipName", "Name"
+        "shipWaypoint", "Wegpunkt"
+        "shipStatus", "Status"
+        "shipFuel", "Treibstoff"
+        "shipCargoUnits", "Frachteinheiten"
+        "shipCargoCapacity", "Frachtkapazität"
+        "cargoUnits", "Einheiten"
+        "cargoCapacity", "Kapazität"
+        "cargoGoods", "Waren"
+        "goodName", "Name"
+        "goodUnits", "Einheiten"
+        "shipyardWaypoint", "Wegpunkt"
+        "shipyardTypes", "Schiffstypen"
+        "shipyardTypeName", "Typ"
+        "shipyardTypePrice", "Preis"
+        "marketWaypoint", "Wegpunkt"
+        "marketGoods", "Handelswaren"
+        "tradeGoodName", "Name"
+        "tradeGoodBuyPrice", "Kaufpreis"
+        "tradeGoodSellPrice", "Verkaufspreis"
+        "contractId", "Id"
+        "contractType", "Typ"
+        "contractAccepted", "Angenommen"
+        "contractFulfilled", "Erfüllt"
+        "waypointSymbolField", "Symbol"
+        "waypointTypeField", "Typ"
+    ]
+
 type private CompileState =
     { mutable tempCounter: int
       errors: ResizeArray<DslError>
@@ -132,6 +165,7 @@ let rec private compileExpr (state: CompileState) (hoisted: ResizeArray<Instruct
         let temp = newTemp state
         hoisted.Add(InfoRead(block.id, t, args, temp))
         TempRef temp
+    | t when ACCESSOR_BLOCKS.ContainsKey t -> Accessor(ACCESSOR_BLOCKS.[t], compileInput state hoisted block "TARGET")
     | other ->
         state.errors.Add { blockId = Some block.id; message = $"Unbekannter Blocktyp: {other}." }
         Literal(BoolLit false)
