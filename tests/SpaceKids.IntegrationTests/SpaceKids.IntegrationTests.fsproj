@@ -6,7 +6,9 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="AssemblyInfo.fs" />
     <Compile Include="Tests.fs" />
+    <Compile Include="JobRunnerTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

@@ -70,6 +70,27 @@ type QueueService =
     interface IRemoteService with
         member this.BasePath = "/queue"
 
+/// Milestone 6 (§14/§19): runs a compiled program against one real ship. In-memory
+/// only on the server (`JobRunner.fs`) — no persistence yet, that's Milestone 7.
+type JobStatusDto =
+    {
+        status: string
+        statusDetail: string option
+        log: string list
+    }
+
+type JobService =
+    {
+        /// token, shipSymbol, current workspace JSON -> new job id.
+        startJob: string * string * string -> Async<string>
+        step: string -> Async<JobStatusDto option>
+        run: string -> Async<JobStatusDto option>
+        getStatus: string -> Async<JobStatusDto option>
+    }
+
+    interface IRemoteService with
+        member this.BasePath = "/job"
+
 type Model =
     {
         containerId: string
@@ -83,6 +104,10 @@ type Model =
         dashboardLoading: bool
         dashboardError: string option
         queueStatus: QueueStatusDto option
+        selectedShipSymbol: string option
+        activeJobId: string option
+        jobStatus: JobStatusDto option
+        jobBusy: bool
     }
 
 let initModel =
@@ -98,6 +123,10 @@ let initModel =
         dashboardLoading = false
         dashboardError = None
         queueStatus = None
+        selectedShipSymbol = None
+        activeJobId = None
+        jobStatus = None
+        jobBusy = false
     }
 
 type Message =
@@ -123,6 +152,12 @@ type Message =
     | DashboardLoaded of DashboardState option
     | LoadQueueStatus
     | QueueStatusLoaded of QueueStatusDto
+    | SelectShip of string
+    | StartProgram
+    | ProgramStarted of string
+    | StepProgram
+    | RunProgram
+    | JobStatusUpdated of JobStatusDto option
 
 let private callVoid (js: IJSRuntime) (identifier: string) (args: obj[]) : Async<unit> =
     js.InvokeVoidAsync(identifier, args).AsTask() |> Async.AwaitTask
@@ -130,7 +165,15 @@ let private callVoid (js: IJSRuntime) (identifier: string) (args: obj[]) : Async
 let private call<'a> (js: IJSRuntime) (identifier: string) (args: obj[]) : Async<'a> =
     js.InvokeAsync<'a>(identifier, args).AsTask() |> Async.AwaitTask
 
-let update (js: IJSRuntime) (remote: WorkspaceService) (agentRemote: AgentService) (queueRemote: QueueService) message model =
+let update
+    (js: IJSRuntime)
+    (remote: WorkspaceService)
+    (agentRemote: AgentService)
+    (queueRemote: QueueService)
+    (jobRemote: JobService)
+    message
+    model
+    =
     match message with
     | Init ->
         let initBoth = async {
@@ -212,6 +255,36 @@ let update (js: IJSRuntime) (remote: WorkspaceService) (agentRemote: AgentServic
     | QueueStatusLoaded status ->
         { model with queueStatus = Some status }, Cmd.none
 
+    | SelectShip symbol ->
+        { model with selectedShipSymbol = Some symbol }, Cmd.none
+    | StartProgram ->
+        match model.selectedShipSymbol with
+        | None -> { model with status = "Bitte zuerst ein Schiff auswählen." }, Cmd.none
+        | Some shipSymbol ->
+            { model with jobBusy = true },
+            Cmd.OfAsync.perform
+                (fun () ->
+                    async {
+                        let! workspaceJson = call<string> js "spaceKids.serializeWorkspace" [| box model.containerId |]
+                        return! jobRemote.startJob (model.tokenInput, shipSymbol, workspaceJson)
+                    })
+                ()
+                ProgramStarted
+    | ProgramStarted jobId ->
+        { model with activeJobId = Some jobId; jobBusy = false; jobStatus = None }, Cmd.none
+    | StepProgram ->
+        match model.activeJobId with
+        | Some jobId ->
+            { model with jobBusy = true }, Cmd.OfAsync.perform (fun () -> jobRemote.step jobId) () JobStatusUpdated
+        | None -> model, Cmd.none
+    | RunProgram ->
+        match model.activeJobId with
+        | Some jobId ->
+            { model with jobBusy = true }, Cmd.OfAsync.perform (fun () -> jobRemote.run jobId) () JobStatusUpdated
+        | None -> model, Cmd.none
+    | JobStatusUpdated statusOpt ->
+        { model with jobStatus = statusOpt; jobBusy = false }, Cmd.none
+
 let private viewDashboard model dispatch =
     div {
         h2 { "Echte SpaceTraders-Daten (Milestone 2)" }
@@ -292,6 +365,52 @@ let private viewQueueStatus model dispatch =
             }
     }
 
+let private viewJobRunner model dispatch =
+    div {
+        h2 { "Programm ausführen (Milestone 6)" }
+        match model.dashboard with
+        | None -> p { "Zuerst anmelden, um ein Schiff auszuwählen." }
+        | Some state ->
+            div {
+                label { "Schiff: " }
+                select {
+                    on.change (fun e -> dispatch (SelectShip(string e.Value)))
+                    option { attr.value ""; "-- wählen --" }
+                    for ship in state.ships do
+                        option { attr.value ship.symbol; ship.symbol }
+                }
+                button {
+                    attr.disabled (model.selectedShipSymbol.IsNone || model.jobBusy)
+                    on.click (fun _ -> dispatch StartProgram)
+                    "Start"
+                }
+                button {
+                    attr.disabled (model.activeJobId.IsNone || model.jobBusy)
+                    on.click (fun _ -> dispatch StepProgram)
+                    "Einzelschritt"
+                }
+                button {
+                    attr.disabled (model.activeJobId.IsNone || model.jobBusy)
+                    on.click (fun _ -> dispatch RunProgram)
+                    "Ausführen"
+                }
+            }
+        match model.jobStatus with
+        | None -> ()
+        | Some job ->
+            div {
+                p { $"Status: {job.status}" }
+                match job.statusDetail with
+                | Some detail -> p { detail }
+                | None -> ()
+                h3 { "Aktivitätsprotokoll" }
+                ul {
+                    for entry in job.log do
+                        li { entry }
+                }
+            }
+    }
+
 let view model dispatch =
     div {
         attr.style "font-family: sans-serif; padding: 1rem"
@@ -323,6 +442,7 @@ let view model dispatch =
         }
         viewDashboard model dispatch
         viewQueueStatus model dispatch
+        viewJobRunner model dispatch
     }
 
 type MyApp() =
@@ -333,7 +453,8 @@ type MyApp() =
         let remote = this.Remote<WorkspaceService>()
         let agentRemote = this.Remote<AgentService>()
         let queueRemote = this.Remote<QueueService>()
+        let jobRemote = this.Remote<JobService>()
         Program.mkProgram
             (fun _ -> initModel, Cmd.batch [ Cmd.ofMsg Init; Cmd.ofMsg LoadDashboard; Cmd.ofMsg LoadQueueStatus ])
-            (update js remote agentRemote queueRemote)
+            (update js remote agentRemote queueRemote jobRemote)
             view

@@ -501,3 +501,119 @@ failure), `drop-after-processing` surfacing as `AmbiguousFailure` without retry,
 setting `server_reset_detected` and being clearable, and repeated 5xx marking the queue
 unreachable without failing the caller, then recovering once the fault clears — all
 alongside the pre-existing FakeSpaceTraders fixture tests, unchanged and still green.
+
+## Milestone 6: runner on the pure scheduler core (§14/§19)
+
+**Scope boundaries agreed before designing, not relitigated mid-implementation:**
+fake-only verification (no live SpaceTraders calls — real ship actions burn fuel,
+trigger cooldowns, spend/earn real credits); the UI section landed on the existing
+single combined page (`Main.fs`), same pattern every prior milestone used; exactly 6
+actions in scope (navigate, orbit, dock, extract, buyGood, sellGood) — not
+purchaseShip/refuel/acceptContract/deliverContract, not the 9 info-read blocks, not
+custom-block calls (Milestone 9). A compiled program that references one of those
+fails the job with a clear German message rather than crashing or silently no-op'ing.
+
+**`SpaceKids.Core/Scheduler/` is deliberately independent of `SpaceKids.SpaceTraders`.**
+`SpaceKids.SpaceTraders` already depends on `SpaceKids.Core` (an existing, if
+previously unused, project reference), so `Core` referencing `SpaceTraders` back would
+be circular. More importantly, §14 frames `Core` as the framework/infrastructure-free
+domain layer — it shouldn't know about a specific API client's response shapes at all.
+`ShipSnapshot`/`ApiResult` are the scheduler's own minimal shapes (nav status/waypoint,
+cargo units/inventory, cooldown expiration — all it needs for reconciliation); the
+server-side shell (`JobRunner.fs`) maps the real API's richer `Ship`/`NavigateResult`/
+`ExtractResult`/`TradeResult` types onto these at the boundary. `SpaceKids.Core/Dsl/`
+also gained `Value.fs`/`Eval.fs` (a small runtime value type and pure-expression
+evaluator) — the DSL never needed a runtime representation before `step` had to resolve
+literals/variables/arithmetic while walking a program.
+
+**`step` is a trampolined "walk every free transition" loop, not one instruction per
+call** — exactly per §14's own reasoning: a deeply nested call chain would otherwise
+need one persisted scheduler tick per push/pop with no real progress to show for it.
+`SetVariable`/`ChangeVariable`/`If`/`Repeat`/`WhileUntil`/`ForEach`/`ShowMessage`/pure
+expression evaluation are all "free" (no effect); only an `ApiAction` (one of the 6),
+a `Wait` block, or program completion stops the walk. `WhileUntil`'s loop body pops
+*without* advancing the parent PathEntry — the parent's position still points at the
+same `WhileUntil` instruction, so the next walk naturally re-evaluates its condition,
+matching real while-loop semantics; `Repeat`/`ForEach`, once genuinely exhausted, pop
+*and* advance the parent (they never repeat again).
+
+**Ambiguous-failure reconciliation is two explicit `JobStatus` hops, not one opaque
+case** — `AwaitingApiResponse -> Reconciling -> (already happened, advance) |
+(not yet, AwaitingApiResponse(attempt+1))` — matching §13's own 3-step recipe
+(refresh state, compare against baseline, only then retry) as literal, testable state
+transitions instead of a black box. Per-action `reconcile` rules match §13's table
+exactly: navigate compares `nav.waypointSymbol`; dock/orbit compare `nav.status`;
+buy/sell compare cargo-unit delta (credits never consulted — §13 is explicit that
+credits are agent-global and only corroborating); extract requires **both** a newer
+cooldown expiration **and** a cargo delta (conjunctive, not either/or — tested
+explicitly, since either signal alone is satisfied by an unrelated action).
+
+**Known limitation, not a gap:** buy/sell reconciliation can't consult "the ship's
+transaction records where available" (§13's own phrasing anticipates this) — the real
+API's `GET /my/ships/{shipSymbol}` doesn't return transaction history, only current
+ship state. Cargo-unit delta is the only signal actually available from that endpoint.
+
+**A real bug caught by the integration tests, not by inspection:** the first cut of
+`Step.fs`'s success handlers for `navigate`/`extract` set `WaitingForArrival`/
+`WaitingForCooldown` *without* first advancing the job's position past the instruction
+— meaning resuming from the wait re-executed the same `ApiAction` a second time. Fixed
+by calling `advanceJobPosition` before entering the wait state, in both the direct
+success path and the reconciliation "already happened, still waiting" branches.
+
+**`JobRunner.fs`'s effect loop does not sleep inline for `StartWait`.** The first
+version had `applyEffects` sleep-then-recurse synchronously inside a single `stepOnce`
+call to resolve every wait a program hit, cascading many effect/tick levels deep for
+even a short program. Under heavier concurrent load (the full solution's test suite
+running together) this occasionally left a job stuck mid-cascade for reasons that
+resisted several rounds of live tracing. §14's own description of the shell — "reads
+jobs due to wake, calls step, executes the returned effects" — describes a *polling
+loop*, not one call recursively sleeping through every wait it encounters. `StartWait`
+is now a no-op in `applyEffects` (the wait is already recorded in `job.status`);
+`runToCompletion` (run mode) polls via repeated `stepOnce`/`WakeTick` calls on a short
+interval instead. This also makes `stepOnce` (step mode) a genuine single step, matching
+"driving the same core one event at a time" more literally than the original design did.
+
+**A second real bug, found the same way:** the fake's extraction cooldown used
+`int fixedCooldownSeconds` for `remainingSeconds`/`totalSeconds` — with a sub-1-second
+test duration (e.g. `0.3`), `int 0.3 = 0`, so `JobRunner.cooldownExpirationOf`'s
+`remainingSeconds > 0` gate (how it decides "is there an active cooldown at all")
+always read "no cooldown", making extract's reconciliation permanently blind to its own
+mutation regardless of real elapsed time — a genuine duplicate extraction, not a timing
+race. Fixed with `ceil`, not `int`, in the fake.
+
+**In-process test isolation:** `RequestQueue`, `JobRunner`, and
+`SpaceKids.FakeSpaceTraders.App`'s mutable ship/agent/fault-mode/clock state are all
+process-wide singletons by design (this app's own single-user/single-process shape).
+xUnit parallelizes different test collections (one per module) by default; two test
+files manipulating this shared state concurrently produced an unrecoverable hang (one
+file's `resetForTests()` clearing a pending item another file's job was still awaiting
+— no exception, no timeout, just silence). `SpaceKids.IntegrationTests` now carries an
+assembly-level `[<CollectionBehavior(DisableTestParallelization = true)>]`
+(`AssemblyInfo.fs`) so every test in that assembly runs strictly sequentially.
+
+**`SpaceKids.FakeSpaceTraders`'s first mutable state.** Every endpoint before this
+milestone was read-only (`let` bindings). `ship`/`agent` are now `let mutable`, guarded
+by a plain `lock` — including on *reads* (`readShip`/`readAgent`), not just writes,
+since a reconciliation `GetShip` request and a `navigate`/`extract`/`sell` mutation
+genuinely run on different request threads. `navigate` snaps the stored ship straight
+to its destination rather than simulating "still in transit" (§13a: "not a game
+simulator") — only the *response*'s `route.arrival` matters, for the shell's wait timer.
+
+**Verified live before any of this:** hit the real OpenAPI spec
+(`https://api.spacetraders.io/v2/documentation/json`) to confirm the exact response
+shapes for all 6 actions plus `GET /my/ships/{shipSymbol}`, the same rigor as every
+prior milestone's client work — not guessed from memory.
+
+Verified in a real browser (Playwright), pointed at a locally-run
+`SpaceKids.FakeSpaceTraders` instance (not the live API, per the agreed scope): logged
+in with the fake's seeded token, loaded a one-block ("Gehe in Umlaufbahn"/orbit)
+program directly via the existing `spaceKids.loadWorkspace` seam, picked the seeded
+ship, pressed Start then Einzelschritt, and watched it reach `Status: Completed` with
+the correct German activity log — zero console errors. Verified via `dotnet test`: 15
+new `SchedulerTests` (pure, fake clock, zero DB/network — free-transition walking, loop
+persistence across steps, each action's happy path, wait/resume via `WakeTick`,
+reconciliation's both branches per action including the extract conjunctive check, the
+stale-attempt guard, and `InfoRead`/`CallCustomBlock` failing cleanly) and 4 new
+`JobRunnerTests` (real HTTP through the real `RequestQueue`, against the fake — a
+5-action happy-path chain, and reconciliation-without-duplication for navigate/extract/
+sellGood specifically), alongside the full pre-existing suite, all green.

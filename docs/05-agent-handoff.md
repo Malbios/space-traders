@@ -89,17 +89,44 @@
   `docs/decisions.md` for the full design rationale and the test-only hooks
   (`resetForTests`/`dispatchNextForTests`/`setMaxAttemptsForTests`) added so ordering/
   aging/retry-exhaustion tests don't need to race a live background worker.
+- Runner on the pure scheduler core (§14/§19, Milestone 6): `SpaceKids.Core/Scheduler/`
+  (`Types.fs`/`Step.fs`) is a pure, framework-free `step : Clock -> JobState ->
+  SchedulerEvent -> (JobState * Effect list)` core — walks every "free" transition
+  (variables, branches, loops, pure expressions) in one call, stopping only at one of
+  the 6 in-scope actions (navigate/orbit/dock/extract/buyGood/sellGood), a `Wait`
+  block, or completion. `SpaceKids.Server/JobRunner.fs` is the minimal in-memory
+  foreground shell (§14's own stand-in for Milestone 7's real persistent shell) that
+  turns `Effect`s into real `RequestQueue.enqueue` calls; `JobRemoting.fs`/`JobService`
+  expose `startJob`/`step`/`run`/`getStatus` to a new "Programm ausführen" section on
+  the same combined page — ship picker, Start/Einzelschritt/Ausführen buttons, a German
+  activity log. Per-action ambiguous-failure reconciliation (§13) is real: two explicit
+  `JobStatus` hops (`Reconciling` between `AwaitingApiResponse` attempts), per-action
+  rules matching §13's table, proven against the fake's `drop-after-processing` fault
+  with an explicit "exactly one action landed, not two" assertion. `SpaceTraders/
+  Client.fs`/`Types.fs` gained the 6 action methods, `GetShip`, and their response
+  types, verified field-by-field against the live OpenAPI spec. See
+  `docs/decisions.md` for the full design rationale, two real bugs the integration
+  tests caught (a missing position-advance before entering a wait; a `remainingSeconds`
+  truncation bug hiding an active cooldown from reconciliation), and why the shell
+  polls via repeated `stepOnce` calls rather than sleeping inline inside one call.
 
 ## Changed this session
 
-Milestone 5 work: `SpaceKids.Server/RequestQueue.fs` rewritten; `QueueRemoting.fs` new;
-`SpaceKids.Client/Main.fs` gained the `QueueService` contract and "Warteschlange" section;
-`SpaceKids.SpaceTraders/Client.fs` gained `SpaceTradersRateLimitException`;
-`SpaceKids.FakeSpaceTraders/App.fs` gained fault injection; new migration
-`0002_queue_priority_and_reset.sql`; `AgentRemoting.fs` passes priority 1 through and
-clears server-reset on a fresh accepted token; 8 new tests in
-`tests/SpaceKids.IntegrationTests/Tests.fs`. Everything before that was created in
-earlier sessions (Milestones 0–4) — see git history.
+Milestone 6 work: `SpaceKids.Core/Scheduler/{Types.fs,Step.fs}` new;
+`SpaceKids.Core/Dsl/{Value.fs,Eval.fs}` new (runtime value type + expression
+evaluator); `SpaceKids.Server/{JobRunner.fs,JobRemoting.fs}` new, registered in
+`Startup.fs`; `SpaceKids.Client/Main.fs` gained the `JobService` contract and
+"Programm ausführen" section; `SpaceKids.SpaceTraders/{Types.fs,Client.fs}` gained the
+6 action methods + `GetShip` + response types (and folded `route`/`flightMode` into
+`ShipNav` — every endpoint returns the same nav shape); `SpaceKids.FakeSpaceTraders/
+App.fs` gained the 6 action endpoints + `GetShip`, mutable ship/agent state (a first —
+every prior endpoint was read-only), and a controllable `clock`/`fixedTravelSeconds`/
+`fixedCooldownSeconds`/`dropAfterProcessingDelayMs`; 15 new `SpaceKids.Core.Tests/
+SchedulerTests.fs`; 4 new `tests/SpaceKids.IntegrationTests/JobRunnerTests.fs` plus a
+new `AssemblyInfo.fs` disabling cross-file test parallelization in that assembly
+(needed once a second file there started touching the same process-wide singletons).
+Everything before that was created in earlier sessions (Milestones 0–5) — see git
+history.
 
 ## Known issues
 
@@ -123,11 +150,24 @@ earlier sessions (Milestones 0–4) — see git history.
   process-wide mutable module state (a deliberate singleton, matching this app's
   single-user/single-process shape) — anything that touches them directly in tests
   must call `RequestQueue.resetForTests()` first/last, see
-  `tests/SpaceKids.IntegrationTests/Tests.fs`'s `withQueueTest` helper.
-- Full per-action-type reconciliation (deciding whether an ambiguous action already
-  happened) is explicitly not built yet — §13 defers it to Milestone 6, once jobs exist
-  to provide a pre-call baseline to reconcile against. `AmbiguousFailure` today just
-  surfaces to the caller; nothing acts on it further.
+  `tests/SpaceKids.IntegrationTests/Tests.fs`'s `withQueueTest` helper. `JobRunner`'s
+  `jobs` dictionary and `SpaceKids.FakeSpaceTraders.App`'s ship/agent/fault/clock state
+  are the same kind of singleton (`JobRunner.resetForTests()`/`App.resetForTests()`) —
+  see `JobRunnerTests.fs`'s `withJobTest`/`withPumpedQueue` helpers, and the assembly-
+  level `DisableTestParallelization` this now requires (see `docs/decisions.md`).
+- Jobs are in-memory only (`JobRunner`'s `ConcurrentDictionary`) — no persistence, no
+  ship locks, no `next_wake_at`, no restart survival. That's Milestone 7 scope; the
+  `jobs`/`ship_locks` tables stay unused until then. The pure `step` core itself is
+  meant to be exactly what Milestone 7 persists, so it shouldn't need restructuring.
+- Only 6 actions execute (navigate/orbit/dock/extract/buyGood/sellGood). A compiled
+  program referencing any of the other 11 action blocks, the 9 info-read blocks, or a
+  custom-block call fails the job with a German message rather than executing —
+  `getShipInfo`/`getCargo`/`getFuel`/etc. reads have no runtime behavior yet even
+  though the compiler happily compiles them.
+- `JobRunner` only ever has one `Frame` per job (`scope = "main"`) — `CallCustomBlock`
+  is one of the block types that fails cleanly above. The `Frame`/`PathEntry`/
+  `LoopState` shapes support real nested calls already (Milestone 9 scope) so this
+  isn't expected to need restructuring, only extending.
 - The market fetched is always the agent's own headquarters waypoint, not discovered via
   waypoint traits — a documented simplifying assumption (see `docs/decisions.md`), fine
   for most starting waypoints but a real limitation otherwise.
@@ -149,9 +189,11 @@ earlier sessions (Milestones 0–4) — see git history.
 
 ## Next tasks
 
-1. Milestone 6 onward — see `plan.md` §19. Milestone 6 is expected to introduce jobs
-   and per-action reconciliation baselines, at which point `AmbiguousFailure` handling
-   (currently just surfaced to the caller) gets real reconciliation logic per §13.
+1. Milestone 7 onward — see `plan.md` §19. Milestone 7 adds the real persistent shell
+   around the same pure `step` core (jobs table, ship locks, `next_wake_at`,
+   restart/clock-skew catch-up) — `JobRunner.fs`'s in-memory `ConcurrentDictionary` and
+   real-time polling loop are exactly the "minimal foreground loop" §14 says stands in
+   for that shell, not a design to carry forward as-is.
 
 ## Commands
 

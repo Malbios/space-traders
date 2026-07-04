@@ -2,6 +2,7 @@
 bin/
 obj/
 *.user
+TestResults/
 
 # Node / npm
 node_modules/

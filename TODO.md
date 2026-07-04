@@ -58,6 +58,24 @@ See `docs/05-agent-handoff.md` for full context on each of these.
 - [x] Added the API-unreachable state with German messaging, distinct from resets (§13);
       exercised both via the fake's fault injection (`POST /_fault/mode`).
 
+## Milestone 6: Runner on the pure scheduler core — done
+
+- [x] Built the pure `step` core (`SpaceKids.Core/Scheduler/`) with `Clock` abstraction,
+      `SchedulerEvent` cases, and the stack-of-path-positioned-frames `JobState` shape
+      (§14) — one frame deep for now, driven by a simple in-memory foreground loop
+      (`JobRunner.fs`).
+- [x] Unit tested the core with zero DB/network/real time (fake clock, fabricated
+      `ApiResponseReceived` events).
+- [x] Added ship selection, navigation, orbit and dock, extraction, market buy and sell
+      (6 real POST endpoints on `SpaceTradersClient`, verified field-by-field against
+      the live OpenAPI spec).
+- [x] Added per-action reconciliation logic for ambiguous-failure retries, per-ship
+      signals only (§13); tested each against the fake's `drop-after-processing` fault
+      (unit-level fabricated reconciliation + integration-level real HTTP path).
+- [x] Added German activity logs.
+- [x] Added step mode (`JobService.step`), driving the same core one event at a time,
+      alongside run mode (`JobService.run`).
+
 ## Later milestones
 
-See `plan.md` §19 for the full milestone list (6 through 10).
+See `plan.md` §19 for the full milestone list (7 through 10).

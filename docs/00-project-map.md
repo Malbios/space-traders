@@ -44,25 +44,49 @@ src/
                                reset/unreachable handling (§13, Milestone 5); a
                                BackgroundService `Worker` drains it; logs to
                                request_queue_events
+    JobRunner.fs               In-memory foreground shell driving Scheduler/Step.step
+                               (§14, Milestone 6) — turns Effects into real
+                               RequestQueue.enqueue calls; startJob/stepOnce/
+                               runToCompletion/getStatus
     WorkspaceRemoting.fs       Bolero remote service backing the spike page's save/load,
                                now via Persistence/WorkspaceRepository.fs
     AgentRemoting.fs           Bolero remote service for the SpaceTraders dashboard —
                                every call routed through RequestQueue.fs
     QueueRemoting.fs           Bolero remote service backing the "Warteschlange" status UI
+    JobRemoting.fs             Bolero remote service backing "Programm ausführen" —
+                               compiles the workspace JSON server-side, drives JobRunner
   SpaceKids.Core/           Domain, DSL, validation, scheduling (framework-free, per §14)
     Dsl/
       Types.fs                   The DSL itself (§10) — Expr, Instruction, CompiledProgram
+      Value.fs                     Runtime value type (Milestone 6) for evaluating Expr
+      Eval.fs                       Pure expression evaluator, used by Scheduler/Step.fs
       BlocklyJson.fs               Parses Blockly's serialized workspace JSON
       Compiler.fs                   Blockly workspace -> DSL, expression linearization
       Validator.fs                  Static checks (§11) + the §9 signature-mismatch check
+    Scheduler/
+      Types.fs                     JobState/Frame/PathEntry/Effect/SchedulerEvent/
+                                     ApiResult (§14, Milestone 6) — no SpaceTraders
+                                     dependency, deliberately (see docs/decisions.md)
+      Step.fs                       The pure `step` core — walks free transitions,
+                                     stops at the 6 in-scope actions, reconciles
+                                     ambiguous failures (§13)
   SpaceKids.SpaceTraders/   SpaceTraders API client (Types.fs, Client.fs) — verified
-                             field-by-field against the real OpenAPI spec
+                             field-by-field against the real OpenAPI spec; gained the 6
+                             action methods + GetShip in Milestone 6
   SpaceKids.FakeSpaceTraders/  In-process fake API (§13a) — App.fs (endpoints) +
-                             Program.fs (testable entry point) for deterministic tests
+                             Program.fs (testable entry point) for deterministic tests;
+                             mutable ship/agent state + the 6 action endpoints since
+                             Milestone 6
 tests/
   SpaceKids.Core.Tests/
+    SchedulerTests.fs            Pure step-core tests (Milestone 6) — fake clock, zero
+                                   DB/network
   SpaceKids.Server.Tests/
   SpaceKids.IntegrationTests/   Runs SpaceTradersClient against SpaceKids.FakeSpaceTraders
+    AssemblyInfo.fs               DisableTestParallelization — every test here touches
+                                   process-wide singleton state (RequestQueue/JobRunner/
+                                   App), so cross-file parallel runs aren't safe
+    JobRunnerTests.fs             JobRunner end-to-end against the fake (Milestone 6)
 docs/
   decisions.md              Hard-to-reverse calls and why
   04-block-catalog.md        The German block catalog (§6/§7) — consumed by the
@@ -94,4 +118,10 @@ structure. See `plan.md` §19 for what each milestone covers.
 - **Milestone 5 (request queue): done.** Priority + aging queue, definite/ambiguous retry
   classification, 429/server-reset/API-unreachable handling, queue status UI, fault
   injection in `SpaceKids.FakeSpaceTraders`. See `docs/decisions.md`.
-- **Milestone 6** onward: not started.
+- **Milestone 6 (runner on the pure scheduler core): done.** `SpaceKids.Core/Scheduler/`
+  pure `step` core; `JobRunner.fs` in-memory foreground shell; 6 real actions
+  (navigate/orbit/dock/extract/buyGood/sellGood) with per-action ambiguous-failure
+  reconciliation (§13); "Programm ausführen" UI (ship picker, Start/Einzelschritt/
+  Ausführen, German activity log). No persistence yet — in-memory jobs only,
+  Milestone 7 scope. See `docs/decisions.md`.
+- **Milestone 7** onward: not started.

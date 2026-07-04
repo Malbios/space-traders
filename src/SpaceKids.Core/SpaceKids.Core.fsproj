@@ -7,9 +7,13 @@
 
   <ItemGroup>
     <Compile Include="Dsl/Types.fs" />
+    <Compile Include="Dsl/Value.fs" />
+    <Compile Include="Dsl/Eval.fs" />
     <Compile Include="Dsl/BlocklyJson.fs" />
     <Compile Include="Dsl/Compiler.fs" />
     <Compile Include="Dsl/Validator.fs" />
+    <Compile Include="Scheduler/Types.fs" />
+    <Compile Include="Scheduler/Step.fs" />
   </ItemGroup>
 
 </Project>

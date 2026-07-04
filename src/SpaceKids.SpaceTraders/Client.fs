@@ -16,24 +16,41 @@ type SpaceTradersClient(httpClient: HttpClient) =
     static let jsonOptions =
         JsonSerializerOptions(PropertyNameCaseInsensitive = true)
 
-    member private _.GetData<'a>(token: string, path: string) : Async<'a> =
+    member private _.HandleResponse<'a>(response: HttpResponseMessage, body: string) : 'a =
+        if int response.StatusCode = 429 then
+            let retryAfterSeconds =
+                match response.Headers.RetryAfter with
+                | null -> 1.0
+                | retryAfter when retryAfter.Delta.HasValue -> retryAfter.Delta.Value.TotalSeconds
+                | retryAfter when retryAfter.Date.HasValue -> max 1.0 ((retryAfter.Date.Value - DateTimeOffset.UtcNow).TotalSeconds)
+                | _ -> 1.0
+            raise (SpaceTradersRateLimitException(retryAfterSeconds, body))
+        if not response.IsSuccessStatusCode then
+            raise (SpaceTradersApiException(int response.StatusCode, body))
+        let envelope = JsonSerializer.Deserialize<DataEnvelope<'a>>(body, jsonOptions)
+        envelope.data
+
+    member private this.GetData<'a>(token: string, path: string) : Async<'a> =
         async {
             use request = new HttpRequestMessage(HttpMethod.Get, path)
             request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
             let! response = httpClient.SendAsync(request) |> Async.AwaitTask
             let! body = response.Content.ReadAsStringAsync() |> Async.AwaitTask
-            if int response.StatusCode = 429 then
-                let retryAfterSeconds =
-                    match response.Headers.RetryAfter with
-                    | null -> 1.0
-                    | retryAfter when retryAfter.Delta.HasValue -> retryAfter.Delta.Value.TotalSeconds
-                    | retryAfter when retryAfter.Date.HasValue -> max 1.0 ((retryAfter.Date.Value - DateTimeOffset.UtcNow).TotalSeconds)
-                    | _ -> 1.0
-                raise (SpaceTradersRateLimitException(retryAfterSeconds, body))
-            if not response.IsSuccessStatusCode then
-                raise (SpaceTradersApiException(int response.StatusCode, body))
-            let envelope = JsonSerializer.Deserialize<DataEnvelope<'a>>(body, jsonOptions)
-            return envelope.data
+            return this.HandleResponse<'a>(response, body)
+        }
+
+    /// POST counterpart to `GetData` (Milestone 6, §13/§19) — same 429/error handling,
+    /// a JSON-serialized request body. `body` is `Map.empty` for the no-payload actions
+    /// (orbit/dock/extract).
+    member private this.PostData<'a>(token: string, path: string, body: Map<string, obj>) : Async<'a> =
+        async {
+            use request = new HttpRequestMessage(HttpMethod.Post, path)
+            request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+            let json = JsonSerializer.Serialize(body, jsonOptions)
+            request.Content <- new StringContent(json, System.Text.Encoding.UTF8, "application/json")
+            let! response = httpClient.SendAsync(request) |> Async.AwaitTask
+            let! respBody = response.Content.ReadAsStringAsync() |> Async.AwaitTask
+            return this.HandleResponse<'a>(response, respBody)
         }
 
     member this.GetAgent(token: string) : Async<Agent> =
@@ -41,6 +58,12 @@ type SpaceTradersClient(httpClient: HttpClient) =
 
     member this.ListShips(token: string) : Async<Ship list> =
         this.GetData(token, "my/ships")
+
+    /// Single-ship fetch (Milestone 6) — the reconciliation call §13 describes: "get
+    /// current ship state" to compare against a pre-call baseline after an ambiguous
+    /// failure.
+    member this.GetShip(token: string, shipSymbol: string) : Async<Ship> =
+        this.GetData(token, $"my/ships/{shipSymbol}")
 
     member this.ListContracts(token: string) : Async<Contract list> =
         this.GetData(token, "my/contracts")
@@ -50,3 +73,29 @@ type SpaceTradersClient(httpClient: HttpClient) =
 
     member this.GetMarket(token: string, systemSymbol: string, waypointSymbol: string) : Async<Market> =
         this.GetData(token, $"systems/{systemSymbol}/waypoints/{waypointSymbol}/market")
+
+    member this.Navigate(token: string, shipSymbol: string, waypointSymbol: string) : Async<NavigateResult> =
+        this.PostData(token, $"my/ships/{shipSymbol}/navigate", Map.ofList [ "waypointSymbol", box waypointSymbol ])
+
+    member this.Orbit(token: string, shipSymbol: string) : Async<NavResult> =
+        this.PostData(token, $"my/ships/{shipSymbol}/orbit", Map.empty)
+
+    member this.Dock(token: string, shipSymbol: string) : Async<NavResult> =
+        this.PostData(token, $"my/ships/{shipSymbol}/dock", Map.empty)
+
+    member this.Extract(token: string, shipSymbol: string) : Async<ExtractResult> =
+        this.PostData(token, $"my/ships/{shipSymbol}/extract", Map.empty)
+
+    member this.BuyGood(token: string, shipSymbol: string, tradeSymbol: string, units: int) : Async<TradeResult> =
+        this.PostData(
+            token,
+            $"my/ships/{shipSymbol}/purchase",
+            Map.ofList [ "symbol", box tradeSymbol; "units", box units ]
+        )
+
+    member this.SellGood(token: string, shipSymbol: string, tradeSymbol: string, units: int) : Async<TradeResult> =
+        this.PostData(
+            token,
+            $"my/ships/{shipSymbol}/sell",
+            Map.ofList [ "symbol", box tradeSymbol; "units", box units ]
+        )
