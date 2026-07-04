@@ -1746,6 +1746,18 @@ Several ships can work independently without conflicting commands,
 duplicate trades, or overwhelming the API.
 ```
 
+### Later idea (not yet scheduled): visual system map
+
+Noted during Milestone 9's block-catalog work, not designed yet. The fleet/pilot
+dashboards planned above are text/card-based (§19's own wording — "dashboards,
+cards, logs"); nothing here currently gives a graphical view of a system's
+waypoints or a ship's position within it. Once the DSL's Wegpunkt/Schiff records
+(§8) are flowing through real programs, a simple SVG/canvas rendering of the
+current system (waypoints plotted by their x/y, ships overlaid) is a fairly
+self-contained addition — likely its own milestone after Custom blocks/Fleet mode,
+not squeezed into either. Revisit once there's an actual need driving it (e.g. a
+mission or fleet-mode UI that would clearly benefit).
+
 ## 20. Definition of success
 
 The project succeeds when the child can:
