@@ -43,6 +43,33 @@ type AgentService =
     interface IRemoteService with
         member this.BasePath = "/agent"
 
+/// Milestone 5 (§13/§19): observability into the server's request queue — priority,
+/// aging, retry classification, server-reset/API-unreachable state.
+type QueueEventDto =
+    {
+        requestedAt: System.DateTime
+        endpoint: string
+        status: string
+        priority: int
+        attempt: int
+    }
+
+type QueueStatusDto =
+    {
+        pendingCount: int
+        serverResetDetected: bool
+        unreachableSince: System.DateTime option
+        recentEvents: QueueEventDto list
+    }
+
+type QueueService =
+    {
+        getStatus: unit -> Async<QueueStatusDto>
+    }
+
+    interface IRemoteService with
+        member this.BasePath = "/queue"
+
 type Model =
     {
         containerId: string
@@ -55,6 +82,7 @@ type Model =
         dashboard: DashboardState option
         dashboardLoading: bool
         dashboardError: string option
+        queueStatus: QueueStatusDto option
     }
 
 let initModel =
@@ -69,6 +97,7 @@ let initModel =
         dashboard = None
         dashboardLoading = false
         dashboardError = None
+        queueStatus = None
     }
 
 type Message =
@@ -92,6 +121,8 @@ type Message =
     | TokenSubmitted of Result<DashboardState, string>
     | LoadDashboard
     | DashboardLoaded of DashboardState option
+    | LoadQueueStatus
+    | QueueStatusLoaded of QueueStatusDto
 
 let private callVoid (js: IJSRuntime) (identifier: string) (args: obj[]) : Async<unit> =
     js.InvokeVoidAsync(identifier, args).AsTask() |> Async.AwaitTask
@@ -99,7 +130,7 @@ let private callVoid (js: IJSRuntime) (identifier: string) (args: obj[]) : Async
 let private call<'a> (js: IJSRuntime) (identifier: string) (args: obj[]) : Async<'a> =
     js.InvokeAsync<'a>(identifier, args).AsTask() |> Async.AwaitTask
 
-let update (js: IJSRuntime) (remote: WorkspaceService) (agentRemote: AgentService) message model =
+let update (js: IJSRuntime) (remote: WorkspaceService) (agentRemote: AgentService) (queueRemote: QueueService) message model =
     match message with
     | Init ->
         let initBoth = async {
@@ -176,6 +207,10 @@ let update (js: IJSRuntime) (remote: WorkspaceService) (agentRemote: AgentServic
         { model with dashboardLoading = true }, Cmd.OfAsync.perform (fun () -> agentRemote.loadDashboard ()) () DashboardLoaded
     | DashboardLoaded stateOpt ->
         { model with dashboard = stateOpt; dashboardLoading = false }, Cmd.none
+    | LoadQueueStatus ->
+        model, Cmd.OfAsync.perform (fun () -> queueRemote.getStatus ()) () QueueStatusLoaded
+    | QueueStatusLoaded status ->
+        { model with queueStatus = Some status }, Cmd.none
 
 let private viewDashboard model dispatch =
     div {
@@ -228,6 +263,35 @@ let private viewDashboard model dispatch =
             }
     }
 
+let private viewQueueStatus model dispatch =
+    div {
+        h2 { "Warteschlange (Milestone 5)" }
+        button { on.click (fun _ -> dispatch LoadQueueStatus); "Aktualisieren" }
+        match model.queueStatus with
+        | None -> p { "Noch nicht geladen." }
+        | Some status ->
+            div {
+                p { $"Wartende Anfragen: {status.pendingCount}" }
+                if status.serverResetDetected then
+                    p { "Der Spielserver wurde zurückgesetzt. Ein neuer Kapitän muss erstellt werden." }
+                match status.unreachableSince with
+                | Some since ->
+                    let sinceText = since.ToString("HH:mm:ss")
+                    p {
+                        $"Die Raumfunkzentrale ist gerade nicht erreichbar (seit {sinceText}). Deine Piloten machen weiter, sobald sie wieder Funkkontakt haben."
+                    }
+                | None -> ()
+                h3 { "Letzte Ereignisse" }
+                ul {
+                    for evt in status.recentEvents do
+                        let requestedAtText = evt.requestedAt.ToString("HH:mm:ss")
+                        li {
+                            $"{requestedAtText} {evt.endpoint} — {evt.status} (Priorität {evt.priority}, Versuch {evt.attempt})"
+                        }
+                }
+            }
+    }
+
 let view model dispatch =
     div {
         attr.style "font-family: sans-serif; padding: 1rem"
@@ -258,6 +322,7 @@ let view model dispatch =
             attr.style "height: 360px; width: 100%; border: 1px solid #ccc; margin-top: 0.5rem"
         }
         viewDashboard model dispatch
+        viewQueueStatus model dispatch
     }
 
 type MyApp() =
@@ -267,4 +332,8 @@ type MyApp() =
         let js = this.JSRuntime
         let remote = this.Remote<WorkspaceService>()
         let agentRemote = this.Remote<AgentService>()
-        Program.mkProgram (fun _ -> initModel, Cmd.batch [ Cmd.ofMsg Init; Cmd.ofMsg LoadDashboard ]) (update js remote agentRemote) view
+        let queueRemote = this.Remote<QueueService>()
+        Program.mkProgram
+            (fun _ -> initModel, Cmd.batch [ Cmd.ofMsg Init; Cmd.ofMsg LoadDashboard; Cmd.ofMsg LoadQueueStatus ])
+            (update js remote agentRemote queueRemote)
+            view

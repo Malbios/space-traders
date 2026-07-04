@@ -7,6 +7,10 @@ open System.Text.Json
 
 exception SpaceTradersApiException of statusCode: int * body: string
 
+/// Raised specifically on HTTP 429 so the request queue (§13) can classify and wait
+/// out the real `Retry-After` the server sent, instead of re-parsing status codes.
+exception SpaceTradersRateLimitException of retryAfterSeconds: float * body: string
+
 type SpaceTradersClient(httpClient: HttpClient) =
 
     static let jsonOptions =
@@ -18,6 +22,14 @@ type SpaceTradersClient(httpClient: HttpClient) =
             request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
             let! response = httpClient.SendAsync(request) |> Async.AwaitTask
             let! body = response.Content.ReadAsStringAsync() |> Async.AwaitTask
+            if int response.StatusCode = 429 then
+                let retryAfterSeconds =
+                    match response.Headers.RetryAfter with
+                    | null -> 1.0
+                    | retryAfter when retryAfter.Delta.HasValue -> retryAfter.Delta.Value.TotalSeconds
+                    | retryAfter when retryAfter.Date.HasValue -> max 1.0 ((retryAfter.Date.Value - DateTimeOffset.UtcNow).TotalSeconds)
+                    | _ -> 1.0
+                raise (SpaceTradersRateLimitException(retryAfterSeconds, body))
             if not response.IsSuccessStatusCode then
                 raise (SpaceTradersApiException(int response.StatusCode, body))
             let envelope = JsonSerializer.Deserialize<DataEnvelope<'a>>(body, jsonOptions)

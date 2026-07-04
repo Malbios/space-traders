@@ -42,18 +42,21 @@ See `docs/05-agent-handoff.md` for full context on each of these.
       transitive-closure completeness, cycle detection (§9, §11).
 - [x] Returned German validation errors.
 
-## Milestone 5: Request queue
+## Milestone 5: Request queue — done
 
-- [ ] Enrich the Milestone 2 queue stub — growth, not a rewrite.
-- [ ] Add priority levels and aging capped at priority 2 (§13).
-- [ ] Add 429 handling.
-- [ ] Add retry logic split into definite vs ambiguous failure classes (§13).
-- [ ] Add request history.
-- [ ] Add queue status UI.
-- [ ] Add server-reset detection (§13), after checking the current reset cadence in
-      SpaceTraders' docs.
-- [ ] Add the API-unreachable state with German messaging, distinct from resets (§13);
-      exercise both via the fake's fault injection.
+- [x] Enriched the Milestone 2 queue stub into a real priority queue (`BackgroundService`
+      worker draining a lock-protected pending list), not a rewrite of its call sites.
+- [x] Added priority levels and aging capped at priority 2 (§13).
+- [x] Added 429 handling (real `Retry-After`, bounded retry).
+- [x] Added retry logic split into definite vs ambiguous failure classes (§13):
+      `HttpRequestException` retried, post-send `TaskCanceledException` surfaced as
+      `AmbiguousFailure`, never auto-retried.
+- [x] Added request history (`priority`/`attempt` columns on `request_queue_events`).
+- [x] Added queue status UI ("Warteschlange" section, manual refresh).
+- [x] Added server-reset detection (§13) — confirmed live reset cadence is weekly;
+      German copy avoids hardcoding a date.
+- [x] Added the API-unreachable state with German messaging, distinct from resets (§13);
+      exercised both via the fake's fault injection (`POST /_fault/mode`).
 
 ## Later milestones
 

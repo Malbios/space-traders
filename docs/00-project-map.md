@@ -40,11 +40,15 @@ src/
       WorkspaceRepository.fs        Real `workspaces` table save/load
       AgentRepository.fs            Real `agents`/`api_tokens` save/load
       Backup.fs                     Hourly VACUUM INTO + retention (BackgroundService)
-    RequestQueue.fs            Single-lane queue stub (§13) — logs to request_queue_events
+    RequestQueue.fs            Priority queue + aging + retry classification + server-
+                               reset/unreachable handling (§13, Milestone 5); a
+                               BackgroundService `Worker` drains it; logs to
+                               request_queue_events
     WorkspaceRemoting.fs       Bolero remote service backing the spike page's save/load,
                                now via Persistence/WorkspaceRepository.fs
     AgentRemoting.fs           Bolero remote service for the SpaceTraders dashboard —
                                every call routed through RequestQueue.fs
+    QueueRemoting.fs           Bolero remote service backing the "Warteschlange" status UI
   SpaceKids.Core/           Domain, DSL, validation, scheduling (framework-free, per §14)
     Dsl/
       Types.fs                   The DSL itself (§10) — Expr, Instruction, CompiledProgram
@@ -87,5 +91,7 @@ structure. See `plan.md` §19 for what each milestone covers.
 - **Milestone 4 (DSL and validation): done.** `SpaceKids.Core/Dsl/` compiles Blockly
   workspace JSON into the internal DSL with expression linearization, and statically
   validates it (§10/§11). Pure library, no UI/Server wiring — see `docs/decisions.md`.
-- **Milestone 5 (request queue)** onward: not started. The Milestone 2 queue stub still
-  has no priorities, retries, or fault-injection testing.
+- **Milestone 5 (request queue): done.** Priority + aging queue, definite/ambiguous retry
+  classification, 429/server-reset/API-unreachable handling, queue status UI, fault
+  injection in `SpaceKids.FakeSpaceTraders`. See `docs/decisions.md`.
+- **Milestone 6** onward: not started.

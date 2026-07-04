@@ -406,3 +406,98 @@ reference, `resolveCustomBlockCall`'s transitive closure and cycle detection (ag
 in-memory fake lookup, not real Blockly JSON for the call site), a custom-block call
 missing a required argument, and `revalidateAgainstCurrentDefinitions` catching a
 signature that changed after the original compile.
+
+## Milestone 5: request queue (§13/§19)
+
+**Verified live before designing this, not guessed:** hit the real API directly (bad
+token) to confirm actual header names (`Retry-After`, `X-RateLimit-Type`,
+`X-RateLimit-Limit-Burst`, `X-RateLimit-Limit-Per-Second`, `X-RateLimit-Remaining`,
+`X-RateLimit-Reset`) and the real error-body shape (`{"error":{"code":4100,"message":
+"...","requestId":"..."}}`, HTTP 401). Confirmed current reset cadence from the base
+URL's live status JSON (already fetched in Milestone 2): weekly — German copy says "in
+der Regel einmal pro Woche" rather than hardcoding a date that will go stale.
+
+**Scope boundary carried over from §13's own text, not a judgment call made here:** full
+per-action-type reconciliation (comparing a pre-call baseline to decide whether an
+ambiguous action already happened) is explicitly deferred — §13 says to "budget this as
+real per-instruction design work in Milestone 6, not a side effect of the queue's retry
+logic." This milestone's job stops at *classifying* a failure as definite/rate-limited/
+ambiguous/reset/possibly-an-outage; `AmbiguousFailure` is surfaced to the caller and
+nothing further acts on it yet.
+
+**Still exactly one physical call in flight at a time, by design, not as a leftover
+simplification.** The real API is rate-limited per token regardless of how many logical
+actions are queued, so the priority queue reorders *what* runs next but never adds
+concurrency — `RequestQueue.Worker` (a `BackgroundService`, same shape as
+`Persistence/Backup.fs`) awaits each dispatched item to completion (including any
+in-line retry backoff) before picking the next one.
+
+**Retry classification per §13, implemented as nested exception matches inside
+`enqueue`'s recursive `attempt` function:**
+- `SpaceTradersRateLimitException` (new, `SpaceKids.SpaceTraders/Client.fs`, raised
+  specifically on HTTP 429, reading the real `Retry-After` header) → sleep, bounded
+  retry.
+- `HttpRequestException` (never reached the server) → bounded retry with exponential
+  backoff; once exhausted, treated as a possible outage (below), not a caller-visible
+  failure.
+- `TaskCanceledException` *after* the request was sent (a client-side timeout) → the
+  ambiguous case §13 draws the line at. Never auto-retried — raised to the caller as
+  `AmbiguousFailure`.
+- `SpaceTradersApiException(401, _)` → server-reset handling (below), not a retry.
+- `SpaceTradersApiException(statusCode >= 500, _)` → bounded retry, then the same
+  possible-outage handling as exhausted `HttpRequestException`.
+
+**Server-reset detection:** on 401, `agents.server_reset_detected` is set for the most
+recently saved agent (persisted, so it survives a restart) and the `Worker` pauses
+dispatch entirely (checked first, ahead of the unreachable check) until
+`RequestQueue.clearServerReset()` is called — wired into `AgentRemoting.fs`'s
+`submitToken` success path, since accepting a fresh token is what a reset actually
+requires the child to do.
+
+**API-unreachable state, distinct from a reset:** repeated 5xx or `HttpRequestException`
+failures (retries exhausted) don't fail the caller — the item is silently re-added to the
+pending list and `unreachableSinceFlag` is set. The `Worker` then probes on a growing
+backoff (5s → capped at 60s) instead of hammering; a successful call clears the flag and
+resumes normal dispatch. No new retry rules were invented for what was already queued
+during the outage — it just sits in `pending` like anything else.
+
+**Fault injection in `SpaceKids.FakeSpaceTraders` (§13a, explicitly deferred out of
+Milestone 2, built now):** `POST /_fault/mode` sets a mutable global mode consulted by
+all 5 GET endpoints before responding. `unreachable` returns 503 rather than literally
+severing the TCP connection — an in-process `WebApplicationFactory`-hosted fake can't do
+that, and §13 treats "connection failures / 5xx across the board" the same way anyway, so
+503 is the faithful proxy. `drop-after-processing` sleeps 30s, longer than any sane
+client `HttpClient.Timeout`, so it surfaces client-side as exactly the post-send
+`TaskCanceledException` the ambiguous-failure path needs to be tested against.
+
+**Test-only seams added to `RequestQueue.fs`, not present in any production code path:**
+- `resetForTests()` — clears the module's process-wide mutable state (pending list,
+  server-reset flag, unreachable-since flag, max-attempts override) between tests, since
+  the queue is a deliberate singleton (one real app, one queue) and xunit runs this
+  file's tests in the same class/collection (sequentially, not in parallel).
+- `dispatchNextForTests()` — pops and runs the single most-urgent pending item
+  synchronously from the test's point of view, so ordering/aging/retry tests can control
+  exactly when a dispatch happens instead of racing a live `Worker` thread.
+- `setMaxAttemptsForTests(n)` — lowers the retry bound (default 5) so a test that drives
+  retries to exhaustion doesn't have to sum several real backoff delays.
+
+These exist purely to make the retry/aging/outage logic deterministically testable
+without spinning up the full `Worker` background loop for every case; one test
+(`a higher-priority item dispatches before a lower-priority one queued first`, plus the
+existing FakeSpaceTraders fixture tests) still proves the real client code end-to-end.
+
+**Queue status UI:** a new `QueueService` Bolero remote contract
+(`QueueRemoting.fs`/`Main.fs`) exposes `getStatus() : Async<QueueStatusDto>` — pending
+count, server-reset/unreachable state, last 20 events. Backing UI is a manual-refresh
+"Warteschlange" section (matches this app's existing manual-refresh pattern; no new
+push/real-time infrastructure). Verified in a real browser (Playwright): the section
+renders on load and the "Aktualisieren" button re-fetches.
+
+Verified via `dotnet test`: 8 new IntegrationTests covering priority ordering over aging
+order, aging itself (a long-waiting low-priority item catches up to a newer
+higher-priority one), automatic 429 retry, automatic definite-failure retry (a synthetic
+`HttpRequestException`, since an in-process fake can't produce a real connection
+failure), `drop-after-processing` surfacing as `AmbiguousFailure` without retry, a 401
+setting `server_reset_detected` and being clearable, and repeated 5xx marking the queue
+unreachable without failing the caller, then recovering once the fault clears — all
+alongside the pre-existing FakeSpaceTraders fixture tests, unchanged and still green.

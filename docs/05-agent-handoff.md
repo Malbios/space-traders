@@ -68,13 +68,38 @@
   `customBlockLookup` function so it doesn't depend on one, tested via
   `Compiler.resolveCustomBlockCall` against an in-memory fake. Verified via 10 new
   Core.Tests (no browser check applies — see `docs/decisions.md` for why).
+- Real request queue (§13/§19, Milestone 5): `SpaceKids.Server/RequestQueue.fs` replaces
+  the Milestone 2 `SemaphoreSlim` stub with a priority queue (1–5, aging capped at
+  priority 2) drained one item at a time by a `BackgroundService` (`RequestQueue.Worker`).
+  Failures are classified per §13: 429 → bounded retry honoring the real `Retry-After`;
+  `HttpRequestException` (never reached the server) → bounded retry with backoff; a
+  post-send `TaskCanceledException` → surfaced to the caller as `AmbiguousFailure`, never
+  auto-retried; HTTP 401 → `agents.server_reset_detected` set and dispatch paused
+  (recovery is pasting a fresh token, which calls `RequestQueue.clearServerReset()`);
+  repeated 5xx (or exhausted `HttpRequestException` retries) → the item is re-queued
+  (not failed) and the queue enters a paused "unreachable" state with growing backoff
+  probes. A new "Warteschlange" UI section (`QueueService`/`QueueRemoting.fs`, manual
+  "Aktualisieren" refresh) shows pending count, reset/unreachable state, and recent
+  events. `SpaceKids.FakeSpaceTraders` gained `POST /_fault/mode` (`429`/`5xx`/`reset`/
+  `unreachable`/`drop-after-processing`) so every path above is exercised against real
+  HTTP responses in `SpaceKids.IntegrationTests`, not just reasoned about. Verified live
+  against the real API first (real header names, real error-body shape, weekly reset
+  cadence) before designing the classification logic. Verified in a real browser
+  (Playwright): the section renders and the refresh button re-fetches. See
+  `docs/decisions.md` for the full design rationale and the test-only hooks
+  (`resetForTests`/`dispatchNextForTests`/`setMaxAttemptsForTests`) added so ordering/
+  aging/retry-exhaustion tests don't need to race a live background worker.
 
 ## Changed this session
 
-Milestone 4 work: `SpaceKids.Core/Dsl/{Types,BlocklyJson,Compiler,Validator}.fs`,
-replacing the placeholder `Library.fs`, plus real coverage in
-`tests/SpaceKids.Core.Tests/Tests.fs`. Everything before that was created in earlier
-sessions (Milestones 0–3) — see git history.
+Milestone 5 work: `SpaceKids.Server/RequestQueue.fs` rewritten; `QueueRemoting.fs` new;
+`SpaceKids.Client/Main.fs` gained the `QueueService` contract and "Warteschlange" section;
+`SpaceKids.SpaceTraders/Client.fs` gained `SpaceTradersRateLimitException`;
+`SpaceKids.FakeSpaceTraders/App.fs` gained fault injection; new migration
+`0002_queue_priority_and_reset.sql`; `AgentRemoting.fs` passes priority 1 through and
+clears server-reset on a fresh accepted token; 8 new tests in
+`tests/SpaceKids.IntegrationTests/Tests.fs`. Everything before that was created in
+earlier sessions (Milestones 0–4) — see git history.
 
 ## Known issues
 
@@ -94,6 +119,15 @@ sessions (Milestones 0–3) — see git history.
   `jobs`, `job_logs`, `ship_locks`, `api_cache`) still exist but are unused — their
   columns are provisional until the milestone that actually writes to them (see
   `docs/decisions.md`). `agents`/`api_tokens`/`request_queue_events` are now live.
+- `RequestQueue`'s pending list, server-reset flag, and unreachable-since flag are
+  process-wide mutable module state (a deliberate singleton, matching this app's
+  single-user/single-process shape) — anything that touches them directly in tests
+  must call `RequestQueue.resetForTests()` first/last, see
+  `tests/SpaceKids.IntegrationTests/Tests.fs`'s `withQueueTest` helper.
+- Full per-action-type reconciliation (deciding whether an ambiguous action already
+  happened) is explicitly not built yet — §13 defers it to Milestone 6, once jobs exist
+  to provide a pre-call baseline to reconcile against. `AmbiguousFailure` today just
+  surfaces to the caller; nothing acts on it further.
 - The market fetched is always the agent's own headquarters waypoint, not discovered via
   waypoint traits — a documented simplifying assumption (see `docs/decisions.md`), fine
   for most starting waypoints but a real limitation otherwise.
@@ -115,11 +149,9 @@ sessions (Milestones 0–3) — see git history.
 
 ## Next tasks
 
-1. Milestone 5: enrich the Milestone 2 request queue stub — priority levels + aging
-   capped at priority 2, 429 handling, retry logic split into definite-vs-ambiguous
-   failure classes, request history, queue status UI, server-reset detection, and the
-   API-unreachable state (§13), exercised against the fake's fault injection (not yet
-   built — `docs/decisions.md` notes it was deliberately deferred past Milestone 2).
+1. Milestone 6 onward — see `plan.md` §19. Milestone 6 is expected to introduce jobs
+   and per-action reconciliation baselines, at which point `AmbiguousFailure` handling
+   (currently just surfaced to the caller) gets real reconciliation logic per §13.
 
 ## Commands
 

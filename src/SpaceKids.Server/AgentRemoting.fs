@@ -19,15 +19,17 @@ type AgentRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
     let dbPath = Persistence.Database.defaultDbPath
 
     /// Takes the agent already fetched by the caller — no need to re-fetch it.
+    /// Priority 1 (§13's top tier): these are direct interactive user actions, not
+    /// background/job work.
     let loadRestOfState (agent: Agent) (token: string) : Async<DashboardState> =
         async {
-            let! ships = RequestQueue.enqueue dbPath "GET /my/ships" (fun () -> client.ListShips(token))
-            let! contracts = RequestQueue.enqueue dbPath "GET /my/contracts" (fun () -> client.ListContracts(token))
+            let! ships = RequestQueue.enqueue dbPath 1 "GET /my/ships" (fun () -> client.ListShips(token))
+            let! contracts = RequestQueue.enqueue dbPath 1 "GET /my/contracts" (fun () -> client.ListContracts(token))
             let! waypoints =
-                RequestQueue.enqueue dbPath "GET /systems/{system}/waypoints" (fun () ->
+                RequestQueue.enqueue dbPath 1 "GET /systems/{system}/waypoints" (fun () ->
                     client.ListWaypoints(token, agent.headquarters.Substring(0, agent.headquarters.LastIndexOf('-'))))
             let! market =
-                RequestQueue.enqueue dbPath "GET /systems/{system}/waypoints/{waypoint}/market" (fun () ->
+                RequestQueue.enqueue dbPath 1 "GET /systems/{system}/waypoints/{waypoint}/market" (fun () ->
                     client.GetMarket(token, agent.headquarters.Substring(0, agent.headquarters.LastIndexOf('-')), agent.headquarters))
             return
                 { agent = agent
@@ -43,8 +45,10 @@ type AgentRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                 fun token ->
                     async {
                         try
-                            let! agent = RequestQueue.enqueue dbPath "GET /my/agent" (fun () -> client.GetAgent(token))
+                            let! agent = RequestQueue.enqueue dbPath 1 "GET /my/agent" (fun () -> client.GetAgent(token))
                             do! Persistence.AgentRepository.saveAgent dbPath agent.symbol token
+                            // a fresh, accepted token means any prior server-reset is resolved (§13).
+                            RequestQueue.clearServerReset ()
                             let! state = loadRestOfState agent token
                             return Ok state
                         with
@@ -60,7 +64,7 @@ type AgentRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                         match stored with
                         | None -> return None
                         | Some(_, token) ->
-                            let! agent = RequestQueue.enqueue dbPath "GET /my/agent" (fun () -> client.GetAgent(token))
+                            let! agent = RequestQueue.enqueue dbPath 1 "GET /my/agent" (fun () -> client.GetAgent(token))
                             let! state = loadRestOfState agent token
                             return Some state
                     }

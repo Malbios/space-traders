@@ -28,10 +28,12 @@ let main args =
     builder.Services.AddBoleroComponents() |> ignore
     builder.Services.AddBoleroRemoting<WorkspaceRemoting.WorkspaceRemoteHandler>() |> ignore
     builder.Services.AddBoleroRemoting<AgentRemoting.AgentRemoteHandler>() |> ignore
+    builder.Services.AddBoleroRemoting<QueueRemoting.QueueRemoteHandler>() |> ignore
     builder.Services.AddHttpClient<SpaceTradersClient>(fun client ->
         client.BaseAddress <- Uri(builder.Configuration["SpaceTraders:BaseUrl"]))
     |> ignore
     builder.Services.AddHostedService<Persistence.Backup.BackupService>() |> ignore
+    builder.Services.AddHostedService<RequestQueue.Worker>() |> ignore
 #if DEBUG
     builder.Services.AddHotReload(templateDir = __SOURCE_DIRECTORY__ + "/../SpaceKids.Client") |> ignore
 #endif
