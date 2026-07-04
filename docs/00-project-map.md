@@ -44,17 +44,28 @@ src/
                                reset/unreachable handling (§13, Milestone 5); a
                                BackgroundService `Worker` drains it; logs to
                                request_queue_events
-    JobRunner.fs               In-memory foreground shell driving Scheduler/Step.step
-                               (§14, Milestone 6) — turns Effects into real
-                               RequestQueue.enqueue calls; startJob/stepOnce/
-                               runToCompletion/getStatus
+    JobRunner.fs               Persistent shell driving Scheduler/Step.step (§14,
+                               Milestone 6/7) — write-through cache over the jobs
+                               table; startJob/stepOnce/runToCompletion/pause/resume/
+                               cancel/listJobs; ship-lock acquire/reclaim, orphan
+                               recovery
+    JobScheduler.fs            BackgroundService (Milestone 7, §14): resumes every
+                               non-terminal job on startup, polls due jobs + refreshes
+                               ship-lock leases every tick, low-frequency lease sweep
+    Persistence/ProgramRepository.fs   First real write to `programs` (Milestone 7)
+    Persistence/JobRepository.fs        Job row insert/update/load (Milestone 7)
+    Persistence/ShipLockRepository.fs   Ship-lock acquire/refresh/release/sweep (Milestone 7)
+    Persistence/JobStateJson.fs         FSharp.SystemTextJson (de)serialization for
+                                          JobState/CompiledProgram (Milestone 7)
     WorkspaceRemoting.fs       Bolero remote service backing the spike page's save/load,
                                now via Persistence/WorkspaceRepository.fs
     AgentRemoting.fs           Bolero remote service for the SpaceTraders dashboard —
                                every call routed through RequestQueue.fs
     QueueRemoting.fs           Bolero remote service backing the "Warteschlange" status UI
     JobRemoting.fs             Bolero remote service backing "Programm ausführen" —
-                               compiles the workspace JSON server-side, drives JobRunner
+                               compiles/validates the workspace JSON server-side,
+                               drives JobRunner; startJob/step/run/getStatus/pause/
+                               resume/cancel/listJobs (Milestone 6/7)
   SpaceKids.Core/           Domain, DSL, validation, scheduling (framework-free, per §14)
     Dsl/
       Types.fs                   The DSL itself (§10) — Expr, Instruction, CompiledProgram
@@ -65,28 +76,35 @@ src/
       Validator.fs                  Static checks (§11) + the §9 signature-mismatch check
     Scheduler/
       Types.fs                     JobState/Frame/PathEntry/Effect/SchedulerEvent/
-                                     ApiResult (§14, Milestone 6) — no SpaceTraders
-                                     dependency, deliberately (see docs/decisions.md)
+                                     ApiResult (§14, Milestone 6/7) — Paused/Cancelled
+                                     statuses and pause/cancel-pending flags added in
+                                     Milestone 7; no SpaceTraders dependency,
+                                     deliberately (see docs/decisions.md)
       Step.fs                       The pure `step` core — walks free transitions,
                                      stops at the 6 in-scope actions, reconciles
-                                     ambiguous failures (§13)
+                                     ambiguous failures (§13), handles pause/resume/
+                                     cancel (Milestone 7)
   SpaceKids.SpaceTraders/   SpaceTraders API client (Types.fs, Client.fs) — verified
                              field-by-field against the real OpenAPI spec; gained the 6
                              action methods + GetShip in Milestone 6
   SpaceKids.FakeSpaceTraders/  In-process fake API (§13a) — App.fs (endpoints) +
                              Program.fs (testable entry point) for deterministic tests;
                              mutable ship/agent state + the 6 action endpoints since
-                             Milestone 6
+                             Milestone 6; ship state keyed by symbol (two seeded ships)
+                             since Milestone 7, for ship-lock testing
 tests/
   SpaceKids.Core.Tests/
-    SchedulerTests.fs            Pure step-core tests (Milestone 6) — fake clock, zero
-                                   DB/network
+    SchedulerTests.fs            Pure step-core tests (Milestone 6/7) — fake clock,
+                                   zero DB/network; pause/resume/cancel, restart
+                                   recovery, clock-skew added in Milestone 7
   SpaceKids.Server.Tests/
   SpaceKids.IntegrationTests/   Runs SpaceTradersClient against SpaceKids.FakeSpaceTraders
     AssemblyInfo.fs               DisableTestParallelization — every test here touches
                                    process-wide singleton state (RequestQueue/JobRunner/
                                    App), so cross-file parallel runs aren't safe
-    JobRunnerTests.fs             JobRunner end-to-end against the fake (Milestone 6)
+    JobRunnerTests.fs             JobRunner end-to-end against the fake (Milestone 6);
+                                   ship locks, restart resume, lease sweep, deferred
+                                   pause added in Milestone 7
 docs/
   decisions.md              Hard-to-reverse calls and why
   04-block-catalog.md        The German block catalog (§6/§7) — consumed by the
@@ -119,9 +137,18 @@ structure. See `plan.md` §19 for what each milestone covers.
   classification, 429/server-reset/API-unreachable handling, queue status UI, fault
   injection in `SpaceKids.FakeSpaceTraders`. See `docs/decisions.md`.
 - **Milestone 6 (runner on the pure scheduler core): done.** `SpaceKids.Core/Scheduler/`
-  pure `step` core; `JobRunner.fs` in-memory foreground shell; 6 real actions
-  (navigate/orbit/dock/extract/buyGood/sellGood) with per-action ambiguous-failure
-  reconciliation (§13); "Programm ausführen" UI (ship picker, Start/Einzelschritt/
-  Ausführen, German activity log). No persistence yet — in-memory jobs only,
-  Milestone 7 scope. See `docs/decisions.md`.
-- **Milestone 7** onward: not started.
+  pure `step` core; 6 real actions (navigate/orbit/dock/extract/buyGood/sellGood) with
+  per-action ambiguous-failure reconciliation (§13). See `docs/decisions.md`.
+- **Milestone 7 (persistent background jobs): done.** `JobRunner.fs` is now a real
+  persistent shell (write-through cache over the `jobs` table); `JobScheduler.fs`
+  (BackgroundService) resumes every non-terminal job on restart (ambiguous-failure
+  recovery for anything mid-call, clock-skew catch-up for anything waiting), polls due
+  jobs, and refreshes ship-lock leases every tick, with a low-frequency sweep
+  reclaiming expired locks. Ship locks (§14) reject a second job on an already-locked
+  ship and reclaim orphaned ones. Pause/resume/cancel added to the scheduler core
+  (deferred while an action/reconciliation is in flight, never abandoning it). The
+  "Programm ausführen" UI is now a pilot dashboard — multiple concurrent jobs, one per
+  ship, each with Pause/Fortsetzen/Stoppen — and the shared workspace goes read-only
+  (watch mode, global rather than per-program) while any pilot is active. See
+  `docs/decisions.md` for the four real bugs found while wiring this up.
+- **Milestone 8** onward: not started.

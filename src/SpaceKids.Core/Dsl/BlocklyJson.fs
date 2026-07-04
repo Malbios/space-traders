@@ -64,9 +64,17 @@ let rec private parseBlock (el: JsonElement) : RawBlock =
       extraState = extraState }
 
 /// Parses `{"blocks":{"languageVersion":...,"blocks":[...]}}` into the top-level block
-/// list, in canvas order (matching Blockly's own `getTopBlocks(true)`).
+/// list, in canvas order (matching Blockly's own `getTopBlocks(true)`). Blockly's own
+/// `serialization.workspaces.save()` omits the top-level `"blocks"` section entirely
+/// for a workspace with zero blocks (a real, reachable state — a player can start a
+/// program before placing any blocks) rather than emitting an empty array, so that
+/// case means "no blocks", not malformed input.
 let parseWorkspace (json: string) : RawBlock list =
     use doc = JsonDocument.Parse(json)
-    doc.RootElement.GetProperty("blocks").GetProperty("blocks").EnumerateArray()
-    |> Seq.map parseBlock
-    |> Seq.toList
+
+    match doc.RootElement.TryGetProperty("blocks") with
+    | true, blocksEl ->
+        match blocksEl.TryGetProperty("blocks") with
+        | true, blockArray -> blockArray.EnumerateArray() |> Seq.map parseBlock |> Seq.toList
+        | false, _ -> []
+    | false, _ -> []

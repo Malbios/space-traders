@@ -11,9 +11,14 @@
     <Compile Include="Persistence/MigrationRunner.fs" />
     <Compile Include="Persistence/WorkspaceRepository.fs" />
     <Compile Include="Persistence/AgentRepository.fs" />
+    <Compile Include="Persistence/JobStateJson.fs" />
+    <Compile Include="Persistence/ProgramRepository.fs" />
+    <Compile Include="Persistence/JobRepository.fs" />
+    <Compile Include="Persistence/ShipLockRepository.fs" />
     <Compile Include="Persistence/Backup.fs" />
     <Compile Include="RequestQueue.fs" />
     <Compile Include="JobRunner.fs" />
+    <Compile Include="JobScheduler.fs" />
     <Compile Include="WorkspaceRemoting.fs" />
     <Compile Include="AgentRemoting.fs" />
     <Compile Include="QueueRemoting.fs" />
@@ -29,6 +34,7 @@
   <ItemGroup>
     <PackageReference Include="Bolero.Server" Version="0.*" />
     <PackageReference Include="Bolero.HotReload.Server" Version="0.*" />
+    <PackageReference Include="FSharp.SystemTextJson" Version="1.4.36" />
     <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.Server" Version="10.0.9" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.9" />
     <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.50.3" />

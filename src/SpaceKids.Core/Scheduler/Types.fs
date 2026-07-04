@@ -85,12 +85,20 @@ type ActionBaseline =
 /// "queued" state in the pure core, only "waiting for an effect's result". Carrying
 /// the original `QueuedAction` alongside the baseline lets a reconciliation retry
 /// reissue the exact same call without reconstructing it from scratch.
+///
+/// `Paused`/`Cancelled` (Milestone 7, §14/§15) are only ever entered from an
+/// interruptible status (`Running`/`WaitingForArrival`/`WaitingForCooldown`) — never
+/// directly from `AwaitingApiResponse`/`Reconciling`, so a pause/cancel request can
+/// never abandon an in-flight non-idempotent action or its reconciliation (see
+/// `JobState.pausePending`/`cancelPending`).
 type JobStatus =
     | Running
     | AwaitingApiResponse of attempt: int * action: QueuedAction * baseline: ActionBaseline
     | WaitingForArrival of until: DateTimeOffset
     | WaitingForCooldown of until: DateTimeOffset
     | Reconciling of attempt: int * action: QueuedAction * baseline: ActionBaseline
+    | Paused of resuming: JobStatus
+    | Cancelled
     | Completed
     | Failed of message: string
 
@@ -106,7 +114,13 @@ type JobState =
       /// successful/reconciled response, never from a dedicated extra call.
       lastKnownShip: ShipSnapshot option
       /// German activity log, newest-first.
-      log: string list }
+      log: string list
+      /// Set by a `PauseRequested`/`CancelRequested` event received while
+      /// `AwaitingApiResponse`/`Reconciling` (Milestone 7) — applied at the next
+      /// point the job would otherwise settle into an interruptible status, so the
+      /// in-flight action/reconciliation is never abandoned mid-flight.
+      pausePending: bool
+      cancelPending: bool }
 
 /// What the shell reports back for an in-flight API call or a reconciliation fetch.
 type ApiResult =
@@ -134,6 +148,12 @@ type ApiResult =
 type SchedulerEvent =
     | WakeTick
     | ApiResponseReceived of jobId: JobId * attemptNumber: int * result: ApiResult
+    /// Milestone 7 (§14/§15): player-initiated pilot-card controls. Deferred rather
+    /// than applied immediately while an action/reconciliation is in flight — see
+    /// `JobState.pausePending`/`cancelPending`.
+    | PauseRequested
+    | ResumeRequested
+    | CancelRequested
 
 type WaitReason =
     | ArrivalWait
@@ -150,3 +170,6 @@ type Effect =
     | LogMessage of jobId: JobId * germanText: string
     | JobCompleted of jobId: JobId
     | JobFailed of jobId: JobId * germanText: string
+    /// Milestone 7 (§14/§15): the player stopped the job — the shell releases its
+    /// ship lock, same as `JobCompleted`/`JobFailed`.
+    | JobCancelled of jobId: JobId

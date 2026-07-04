@@ -617,3 +617,131 @@ stale-attempt guard, and `InfoRead`/`CallCustomBlock` failing cleanly) and 4 new
 `JobRunnerTests` (real HTTP through the real `RequestQueue`, against the fake — a
 5-action happy-path chain, and reconciliation-without-duplication for navigate/extract/
 sellGood specifically), alongside the full pre-existing suite, all green.
+
+## Milestone 7: persistent background jobs (§14/§15/§19)
+
+Replaces Milestone 6's throwaway in-memory `JobRunner` with the real persistent shell
+§14 always intended — same `Step.step`, restructured only to add pause/resume/cancel,
+which it had no way to express before.
+
+**Pause/cancel are deferred, never immediate, mid-action.** `JobStatus` gained
+`Paused of resuming: JobStatus` and `Cancelled`; `JobState` gained `pausePending`/
+`cancelPending` flags. A `PauseRequested`/`CancelRequested` event while `Running`/
+waiting takes effect immediately; while `AwaitingApiResponse`/`Reconciling` it only
+sets a flag. The one place that flag is checked is `settleOrDefer`, called at each of
+the 8 places `handleApiResponse` would otherwise continue running or enter a wait —
+without it, a pause requested mid-flight would only be noticed *after* the job had
+already run arbitrarily far past the point the player asked it to stop (`continueFn`
+itself calls `advance`, which keeps walking free transitions). This is the same
+"never abandon an in-flight non-idempotent action" invariant §13 already enforces
+everywhere else, just extended to a new kind of interruption.
+
+**Restart recovery reuses the exact ambiguous-failure path, not a new one.** A job
+found in `AwaitingApiResponse` at scheduler startup has an unknown-outcome call in
+flight — the process that made it is gone. Feeding it a synthetic
+`ApiResponseReceived(_, _, ApiAmbiguous "Server wurde neu gestartet")` routes it
+through the same `Reconciling` transition Milestone 6 already built and tested; a job
+found already `Reconciling` just gets its `ReconcileShipState` effect reissued (a GET,
+always safe to redo). `WaitingForArrival`/`WaitingForCooldown` need no special
+handling at all — the tick loop's plain `until <= now` due-check already treats an
+arbitrarily-overdue wait as due now, which *is* the clock-skew catch-up §14 asks for.
+
+**`FSharp.SystemTextJson` over hand-rolled encoders.** `JobState`/`CompiledProgram`
+are trees of ~15 F# DU/record types. A `JsonFSharpConverter` handles them generically;
+hand-rolling that many encode/decode paths would be mechanical, bug-prone code with no
+real benefit over a well-established library. Added only to `SpaceKids.Server`, not
+`SpaceKids.Core` — Core stays free of any serialization dependency, matching why it
+doesn't reference `SpaceTraders` either. `jobs.execution_state_json` serializes the
+*whole* `JobState`, program included, rather than splitting the program out into its
+own join on every resume — simpler, and compiled programs are small. `startJob` still
+writes a `programs` row alongside it (a real first use of that table), for the same
+reason `program_version` exists in §12 — a future watch-mode version-mismatch check —
+not because resume depends on it.
+
+**Ship locks: check-on-acquire reclaim, both directions.** `ShipLockRepository.
+tryAcquire` handles three cases in one call: no existing lock (acquire), an existing
+lock already owned by the same job (a resuming job refreshing its own lease — no
+distinction from a fresh acquire), and an existing lock owned by a different job,
+live or expired (reject, or reclaim-and-pause the orphan). The low-frequency sweep
+(`JobScheduler.sweep`, ~60s) only acts on locks whose job *isn't* one of the process's
+own live in-memory jobs — the tick loop's own per-tick lease refresh is what's
+supposed to keep a genuinely active job's lease fresh, so a lock still actively held
+never reaches the sweep at all; testing the sweep path therefore requires simulating
+a job that's genuinely *not* loaded (see `JobRunnerTests.fs`), not just an expired
+timestamp on a live one.
+
+**A single global tick lock, not one per job.** `JobRunner.tick`'s
+"read job, compute `step`, write result" critical section is guarded by one
+process-wide `SemaphoreSlim`, deliberately not released across `applyEffects` (which
+can itself recurse back into `tick` after an HTTP round-trip — holding the lock there
+would deadlock against itself). Serializing all jobs' ticks through one lock, rather
+than a per-job lock table, matches this app's existing "single-lane" philosophy
+(`RequestQueue` itself only ever has one physical HTTP call in flight) and this app's
+actual scale (one user, a handful of background jobs) — not a bottleneck worth a more
+complex design.
+
+**The fake needed real multi-ship state for the first time.** Ship-lock rejection and
+lease reclaim are only testable with two *independently* mutable ships (one locked,
+one free); Milestone 6's single mutable `ship` value couldn't represent that.
+`SpaceKids.FakeSpaceTraders.App` now keys its mutable ship state by symbol (`Map<string,
+Ship>`, still guarded by the same lock), seeded with `FAKE-AGENT-1`/`FAKE-AGENT-2`.
+
+**Watch mode is global, not per-program.** There's still only the single Milestone-0
+spike workspace — no saved/named multiple programs or routing yet. So "a running
+program can't be edited out from under its pilot" (§15) is implemented as: the shared
+workspace goes read-only whenever *any* pilot is non-terminal, unlocking once none
+are, reusing the `setReadOnly`/`readOnly` plumbing already built in Milestone 0. Full
+per-program watch mode needs the program-library UI that doesn't exist yet.
+
+**Four real bugs found while wiring this up, all structural rather than logic slips:**
+
+1. **`jobs.program_id` already existed.** The Milestone 1 schema (`0001_initial.sql`)
+   already had a `NOT NULL` `program_id` column — the new migration re-adding it via
+   `ALTER TABLE` collided with itself (`duplicate column name`). Also discovered a
+   genuine version-number collision with `0002_queue_priority_and_reset.sql` (Milestone
+   5) already claiming version 2; this milestone's migration is `0003_jobs_and_locks.sql`.
+2. **Insert order vs. the foreign key.** `ship_locks.job_id REFERENCES jobs(id)` means
+   the `jobs` row must exist *before* the lock row can reference it. `startJob` now
+   inserts the job row first (tentatively `Running`), attempts the lock, and rolls the
+   row back to `Cancelled` if the lock turns out to be unavailable — rather than
+   acquiring the lock first and having nothing yet to attach it to.
+3. **`programs.workspace_id` needs a real `workspaces` row.** Nothing previously
+   guaranteed a `workspaces` row existed before a program referenced it — a player
+   could start a job before ever clicking "Speichern". `startJob` now saves the
+   current workspace JSON as part of starting a job, which is also simply correct
+   behavior: the program being run *is* the workspace state to persist.
+4. **An empty Blockly workspace crashed the compiler, and no caller had ever hit
+   `Validator.validate`.** `BlocklyJson.parseWorkspace` assumed a top-level `"blocks"`
+   key always exists; Blockly's own serializer omits it entirely for zero blocks — a
+   real, reachable state once starting a job doesn't require having placed any blocks
+   yet. Fixed to treat a missing section as an empty block list. Separately,
+   `Validator.validate` (§11's "no start block" check, written in Milestone 4) had
+   never actually been wired into the running path — `JobRemoting.startJob` called
+   only `Compiler.compileWorkspace`. Both surfaced together: starting a job on an
+   empty workspace first crashed with a 500, and after the parse fix would otherwise
+   have silently "succeeded" with a zero-instruction job that completes instantly and
+   confusingly rather than a clear German validation message. Both are now wired in.
+
+Also found: `JobService.startJob` used the client-supplied token directly instead of
+looking up the stored one, unlike every other handler here. A fresh page load's
+`tokenInput` starts out empty again (it's client-side scratch state, not repopulated
+from the persisted agent), so starting a job right after a reload silently sent an
+empty token — a 401 that `RequestQueue` classifies exactly like a real server reset,
+incorrectly tripping that flag. Fixed to ignore the passed-in token and look up the
+stored one, matching `step`/`run`/`pause`/`resume`/`cancel`.
+
+Verified in a real browser (Playwright) against a locally-run `SpaceKids.
+FakeSpaceTraders` instance: logged in with the fake's seeded token, injected a real
+"Warte 15 Sekunden" block via the existing `spaceKids.loadWorkspace` seam, started it
+on a seeded ship, watched the pilot card render and the shared workspace go read-only
+(manual toggle disabled) the moment it did, paused it (card showed "Pausiert"),
+resumed it (back to "Unterwegs"), stopped it (card showed "Gestoppt"), and confirmed
+the workspace unlocked again once no pilot remained active — zero console errors
+throughout. Verified via `dotnet test`: 10 new `SchedulerTests` (pause/resume/cancel
+immediate and deferred paths, an explicit restart-recovery-framed ambiguous-failure
+test, and an arbitrarily-far-in-the-past clock-skew wake) and 5 new
+`JobRunnerTests`/`JobScheduler` tests (same-ship rejection, two-ships-concurrently,
+restart-resume against a fresh `JobScheduler.resumeAll` call over the same on-disk
+database, lease-sweep reclaim, and pause-mid-flight settling into `Paused` without
+losing the reconciliation), alongside the full pre-existing suite — 64 tests total,
+all green, stable across repeated runs.

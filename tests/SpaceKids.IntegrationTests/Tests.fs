@@ -32,11 +32,14 @@ let ``GetAgent returns the seeded agent`` () =
     Assert.Equal("X1-TEST-A1", agent.headquarters)
 
 [<Fact>]
-let ``ListShips returns the seeded ship`` () =
+let ``ListShips returns the seeded ships`` () =
     use fixture = new FakeSpaceTradersFixture()
     let ships = fixture.Client.ListShips(App.seededToken) |> Async.RunSynchronously
-    Assert.Single(ships) |> ignore
-    Assert.Equal("FAKE-AGENT-1", ships.[0].symbol)
+    // Milestone 7 (§14): the fake seeds two independently mutable ships so ship-lock
+    // rejection/reclaim has something to test against (see App.fs).
+    Assert.Equal(2, ships.Length)
+    Assert.Contains(ships, fun s -> s.symbol = "FAKE-AGENT-1")
+    Assert.Contains(ships, fun s -> s.symbol = "FAKE-AGENT-2")
 
 [<Fact>]
 let ``ListContracts returns the seeded contract`` () =

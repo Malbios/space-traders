@@ -25,7 +25,9 @@ let private mkJob (instructions: Instruction list) (lastKnownShip: ShipSnapshot 
             position = [ { bodyRef = MainBody; index = 0; loopState = None } ]
             locals = Map.empty } ]
       lastKnownShip = lastKnownShip
-      log = [] }
+      log = []
+      pausePending = false
+      cancelPending = false }
 
 let private defaultShip: ShipSnapshot =
     { navStatus = "DOCKED"
@@ -362,3 +364,147 @@ let ``CallCustomBlock fails the job with a clear German message instead of crash
     | other -> Assert.Fail($"expected Failed, got {other}")
 
     Assert.Contains(effects1, (function JobFailed _ -> true | _ -> false))
+
+// --- Pause/resume/cancel (§14/§15, Milestone 7) ---------------------------------------
+
+[<Fact>]
+let ``PauseRequested while Running pauses immediately`` () =
+    let clock = fakeClock (ref epoch)
+    let job0 = mkJob [ ApiAction("b1", "orbit", Map.empty) ] (Some defaultShip)
+    let job1, effects1 = Step.step clock job0 PauseRequested
+
+    Assert.Equal(Paused Running, job1.status)
+    Assert.Empty(effects1)
+
+[<Fact>]
+let ``PauseRequested while waiting for arrival pauses immediately, preserving the wait target`` () =
+    let clock = fakeClock (ref epoch)
+    let job0 = mkJob [] (Some defaultShip)
+    let until = epoch.AddSeconds(30.0)
+    let waiting = { job0 with status = WaitingForArrival until }
+
+    let job1, _ = Step.step clock waiting PauseRequested
+    Assert.Equal(Paused(WaitingForArrival until), job1.status)
+
+[<Fact>]
+let ``ResumeRequested from a paused Running job resumes the free walk immediately`` () =
+    let clock = fakeClock (ref epoch)
+    let job0 = mkJob [ ShowMessage("b1", Literal(StringLit "hi")) ] (Some defaultShip)
+    let paused = { job0 with status = Paused Running }
+
+    let job1, effects1 = Step.step clock paused ResumeRequested
+    Assert.Equal(Completed, job1.status)
+    Assert.Equal<string list>([ "hi" ], job1.log)
+    Assert.Contains(JobCompleted "job1", effects1)
+
+[<Fact>]
+let ``ResumeRequested from a paused wait just restores the wait, ticking resumes it later`` () =
+    let clock = fakeClock (ref epoch)
+    let job0 = mkJob [] (Some defaultShip)
+    let until = epoch.AddSeconds(30.0)
+    let paused = { job0 with status = Paused(WaitingForArrival until) }
+
+    let job1, effects1 = Step.step clock paused ResumeRequested
+    Assert.Equal(WaitingForArrival until, job1.status)
+    Assert.Empty(effects1)
+
+[<Fact>]
+let ``PauseRequested during AwaitingApiResponse defers and takes effect only once the action resolves`` () =
+    let clock = fakeClock (ref epoch)
+    let job0 = mkJob [ ApiAction("b1", "orbit", Map.empty) ] (Some defaultShip)
+    let job1, _ = Step.step clock job0 WakeTick
+    Assert.Equal(AwaitingApiResponse(0, DoOrbit, DockOrbitBaseline "IN_ORBIT"), job1.status)
+
+    // pause requested mid-flight: does not pause yet, and the flag doesn't
+    // duplicate-log on a second request.
+    let job2, effects2 = Step.step clock job1 PauseRequested
+    Assert.Equal(AwaitingApiResponse(0, DoOrbit, DockOrbitBaseline "IN_ORBIT"), job2.status)
+    Assert.True(job2.pausePending)
+    Assert.Empty(effects2)
+    let job2b, _ = Step.step clock job2 PauseRequested
+    Assert.True(job2b.pausePending)
+
+    // the in-flight action still resolves normally...
+    let job3, effects3 = Step.step clock job2b (ApiResponseReceived("job1", 0, NavResultOk("IN_ORBIT", "X1-TEST-A1")))
+
+    // ...but settles into Paused instead of continuing to run further instructions.
+    Assert.Equal(Paused Running, job3.status)
+    Assert.False(job3.pausePending)
+    Assert.DoesNotContain(effects3, (function JobCompleted _ -> true | _ -> false))
+
+[<Fact>]
+let ``PauseRequested during Reconciling defers until the reconciliation settles`` () =
+    let clock = fakeClock (ref epoch)
+    let job0 = mkJob [ ApiAction("b1", "orbit", Map.empty) ] (Some defaultShip)
+    let job1, _ = Step.step clock job0 WakeTick
+    let job2, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, ApiAmbiguous "timeout"))
+    Assert.Equal(Reconciling(0, DoOrbit, DockOrbitBaseline "IN_ORBIT"), job2.status)
+
+    let job3, _ = Step.step clock job2 PauseRequested
+    Assert.True(job3.pausePending)
+    Assert.Equal(Reconciling(0, DoOrbit, DockOrbitBaseline "IN_ORBIT"), job3.status)
+
+    let confirmed = { defaultShip with navStatus = "IN_ORBIT" }
+    let job4, _ = Step.step clock job3 (ApiResponseReceived("job1", 0, ReconciliationShip confirmed))
+
+    Assert.Equal(Paused Running, job4.status)
+    Assert.False(job4.pausePending)
+
+[<Fact>]
+let ``CancelRequested while Running cancels immediately and releases the ship lock via JobCancelled`` () =
+    let clock = fakeClock (ref epoch)
+    let job0 = mkJob [ ApiAction("b1", "orbit", Map.empty) ] (Some defaultShip)
+    let job1, effects1 = Step.step clock job0 CancelRequested
+
+    Assert.Equal(Cancelled, job1.status)
+    Assert.Contains(JobCancelled "job1", effects1)
+
+[<Fact>]
+let ``CancelRequested during AwaitingApiResponse defers and never abandons the in-flight action`` () =
+    let clock = fakeClock (ref epoch)
+    let job0 = mkJob [ ApiAction("b1", "orbit", Map.empty) ] (Some defaultShip)
+    let job1, _ = Step.step clock job0 WakeTick
+
+    let job2, effects2 = Step.step clock job1 CancelRequested
+    Assert.Equal(AwaitingApiResponse(0, DoOrbit, DockOrbitBaseline "IN_ORBIT"), job2.status)
+    Assert.True(job2.cancelPending)
+    Assert.Empty(effects2)
+
+    let job3, effects3 = Step.step clock job2 (ApiResponseReceived("job1", 0, NavResultOk("IN_ORBIT", "X1-TEST-A1")))
+    Assert.Equal(Cancelled, job3.status)
+    Assert.Contains(JobCancelled "job1", effects3)
+
+// --- Clock-skew catch-up (§14) ---------------------------------------------------------
+
+[<Fact>]
+let ``a WakeTick resumes a wait that is arbitrarily far in the past, not just barely due`` () =
+    let current = ref epoch
+    let clock = fakeClock current
+    let job0 = mkJob [] (Some defaultShip)
+    let until = epoch.AddSeconds(30.0)
+    let waiting = { job0 with status = WaitingForArrival until }
+
+    // the server was down for, say, three days — nowhere near "due a few seconds ago".
+    current.Value <- until.AddDays(3.0)
+    let job1, effects1 = Step.step clock waiting WakeTick
+
+    Assert.Equal(Completed, job1.status)
+    Assert.Contains(JobCompleted "job1", effects1)
+
+// --- Restart recovery (§14): an unresolved in-flight call is ambiguous, not silently rerun --
+
+[<Fact>]
+let ``a job found in AwaitingApiResponse after a restart recovers via the same ambiguous-failure path`` () =
+    let clock = fakeClock (ref epoch)
+    let job0 = mkJob [ ApiAction("b1", "navigate", Map [ "destination", Literal(StringLit "X1-TEST-B2") ]) ] (Some defaultShip)
+    let job1, _ = Step.step clock job0 WakeTick
+    Assert.Equal(AwaitingApiResponse(0, DoNavigate "X1-TEST-B2", NavigateBaseline "X1-TEST-B2"), job1.status)
+
+    // Simulates the shell's recovery event on restart — the outcome of the
+    // in-flight call is unknown, so it's treated as ambiguous (§13), never
+    // silently re-issued as if nothing had happened.
+    let job2, effects2 =
+        Step.step clock job1 (ApiResponseReceived("job1", 0, ApiAmbiguous "Server wurde neu gestartet"))
+
+    Assert.Equal(Reconciling(0, DoNavigate "X1-TEST-B2", NavigateBaseline "X1-TEST-B2"), job2.status)
+    Assert.Contains(ReconcileShipState("job1", "SHIP-1", 0), effects2)

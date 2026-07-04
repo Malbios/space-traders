@@ -35,6 +35,7 @@ let main args =
     |> ignore
     builder.Services.AddHostedService<Persistence.Backup.BackupService>() |> ignore
     builder.Services.AddHostedService<RequestQueue.Worker>() |> ignore
+    builder.Services.AddHostedService<JobScheduler.SchedulerService>() |> ignore
 #if DEBUG
     builder.Services.AddHotReload(templateDir = __SOURCE_DIRECTORY__ + "/../SpaceKids.Client") |> ignore
 #endif

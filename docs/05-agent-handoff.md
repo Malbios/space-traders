@@ -89,6 +89,35 @@
   `docs/decisions.md` for the full design rationale and the test-only hooks
   (`resetForTests`/`dispatchNextForTests`/`setMaxAttemptsForTests`) added so ordering/
   aging/retry-exhaustion tests don't need to race a live background worker.
+- Persistent background jobs (§14/§15/§19, Milestone 7): `SpaceKids.Server/JobRunner.fs`
+  is now a real persistent shell over the same pure `Step.step` core (Milestone 6) —
+  every tick writes through to the `jobs` table (`Persistence/JobRepository.fs`,
+  `JobStateJson.fs` for `FSharp.SystemTextJson`-based serialization of the whole
+  `JobState`). A new `SpaceKids.Server/JobScheduler.fs` (`BackgroundService`) resumes
+  every non-terminal job on startup — `AwaitingApiResponse`/`Reconciling` jobs recover
+  via the exact ambiguous-failure path Milestone 6 already built (an unresolved
+  in-flight call is unknown-outcome, so it's ambiguous, never silently rerun);
+  `WaitingForArrival`/`WaitingForCooldown` jobs need no special handling since the
+  tick loop's plain `until <= now` check already tolerates an arbitrarily overdue
+  wait (clock-skew catch-up). Ship locks (`Persistence/ShipLockRepository.fs`) reject
+  a second job on an already-locked ship and reclaim orphaned ones via
+  check-on-acquire plus a low-frequency sweep (only for locks whose job isn't one of
+  the process's own live jobs — the tick loop's per-tick lease refresh is what keeps
+  a genuinely active job's lease fresh). The scheduler core (`Scheduler/Types.fs`/
+  `Step.fs`) gained `Paused`/`Cancelled` statuses and `pausePending`/`cancelPending`
+  flags so a pause/cancel request never abandons an in-flight action — deferred until
+  it resolves, applied via `settleOrDefer` at each of the 8 points the job would
+  otherwise continue. `JobRemoting.fs`/`JobService` gained `pause`/`resume`/`cancel`/
+  `listJobs`; the "Programm ausführen" UI is now a pilot dashboard (multiple
+  concurrent jobs, one per ship) with a global watch-mode lock (the shared workspace
+  goes read-only while any pilot is active — still only one workspace exists, so
+  per-program watch mode isn't meaningful yet). `SpaceKids.FakeSpaceTraders` now
+  seeds two independently mutable ships, needed to test ship-lock rejection/reclaim
+  at all. See `docs/decisions.md` for the four real bugs found (a schema
+  migration-number collision, an insert-order-vs-foreign-key bug, a missing
+  `workspaces` row, and an empty-workspace parser crash exposing that
+  `Validator.validate` had never actually been wired into the running path) plus a
+  fifth (`startJob` using the client-supplied token instead of the stored one).
 - Runner on the pure scheduler core (§14/§19, Milestone 6): `SpaceKids.Core/Scheduler/`
   (`Types.fs`/`Step.fs`) is a pure, framework-free `step : Clock -> JobState ->
   SchedulerEvent -> (JobState * Effect list)` core — walks every "free" transition
@@ -112,7 +141,25 @@
 
 ## Changed this session
 
-Milestone 6 work: `SpaceKids.Core/Scheduler/{Types.fs,Step.fs}` new;
+Milestone 7 work: migration `0003_jobs_and_locks.sql` new (`0002` was already taken by
+Milestone 5's request-queue migration); `SpaceKids.Server/Persistence/{ProgramRepository.fs,
+JobRepository.fs,ShipLockRepository.fs,JobStateJson.fs}` new; `SpaceKids.Server/
+JobScheduler.fs` new (registered in `Startup.fs`); `SpaceKids.Server/JobRunner.fs`
+rewritten (write-through persistence, ship-lock acquire/reclaim, pause/resume/cancel,
+`recoverJob`/`pauseOrphan`, `listJobs`); `SpaceKids.Server/JobRemoting.fs` rewritten
+(pause/resume/cancel/listJobs, stored-token lookup for `startJob`, `Validator.validate`
+now actually wired in, saves the workspace before compiling); `SpaceKids.Core/
+Scheduler/{Types.fs,Step.fs}` gained `Paused`/`Cancelled`/pending-flag handling and
+`PauseRequested`/`ResumeRequested`/`CancelRequested`; `SpaceKids.Core/Dsl/
+BlocklyJson.fs` fixed to treat a missing top-level `"blocks"` section as zero blocks
+rather than crashing; `SpaceKids.FakeSpaceTraders/App.fs` ship state keyed by symbol
+(two seeded ships); `SpaceKids.Client/Main.fs` pilot dashboard (generalized from a
+single `activeJobId`/`jobStatus` to a `pilots` list) and global watch-mode lock; 10 new
+`SpaceKids.Core.Tests/SchedulerTests.fs` cases; 5 new `tests/SpaceKids.IntegrationTests/
+JobRunnerTests.fs` cases. Full milestone rationale (including the 5 real bugs found) in
+`docs/decisions.md`.
+
+Milestone 6 work (prior session): `SpaceKids.Core/Scheduler/{Types.fs,Step.fs}` new;
 `SpaceKids.Core/Dsl/{Value.fs,Eval.fs}` new (runtime value type + expression
 evaluator); `SpaceKids.Server/{JobRunner.fs,JobRemoting.fs}` new, registered in
 `Startup.fs`; `SpaceKids.Client/Main.fs` gained the `JobService` contract and
@@ -142,10 +189,12 @@ history.
   page). Its persistence and catalog are real now, but there's no routing, no fleet/job/
   mission-control dashboards yet — that's later milestones (real UI structure isn't
   called for until the DSL/job model exists to show something meaningful).
-- Most tables in the §12 schema (`programs`, `custom_blocks`, `custom_block_versions`,
-  `jobs`, `job_logs`, `ship_locks`, `api_cache`) still exist but are unused — their
-  columns are provisional until the milestone that actually writes to them (see
-  `docs/decisions.md`). `agents`/`api_tokens`/`request_queue_events` are now live.
+- `jobs`/`programs`/`ship_locks` are real and live as of Milestone 7 (see
+  `docs/decisions.md`); `custom_blocks`/`custom_block_versions`/`api_cache` are still
+  unused — their columns are provisional until the milestone that actually writes to
+  them. `job_logs` also stays unused: the German activity log is part of the
+  `JobState` JSON blob in `jobs.execution_state_json`, not a separate table — no
+  milestone has needed to query log lines independently of their job yet.
 - `RequestQueue`'s pending list, server-reset flag, and unreachable-since flag are
   process-wide mutable module state (a deliberate singleton, matching this app's
   single-user/single-process shape) — anything that touches them directly in tests
@@ -155,15 +204,23 @@ history.
   are the same kind of singleton (`JobRunner.resetForTests()`/`App.resetForTests()`) —
   see `JobRunnerTests.fs`'s `withJobTest`/`withPumpedQueue` helpers, and the assembly-
   level `DisableTestParallelization` this now requires (see `docs/decisions.md`).
-- Jobs are in-memory only (`JobRunner`'s `ConcurrentDictionary`) — no persistence, no
-  ship locks, no `next_wake_at`, no restart survival. That's Milestone 7 scope; the
-  `jobs`/`ship_locks` tables stay unused until then. The pure `step` core itself is
-  meant to be exactly what Milestone 7 persists, so it shouldn't need restructuring.
 - Only 6 actions execute (navigate/orbit/dock/extract/buyGood/sellGood). A compiled
   program referencing any of the other 11 action blocks, the 9 info-read blocks, or a
   custom-block call fails the job with a German message rather than executing —
   `getShipInfo`/`getCargo`/`getFuel`/etc. reads have no runtime behavior yet even
   though the compiler happily compiles them.
+- Watch mode (Milestone 7) is global, not per-program: the shared workspace goes
+  read-only while *any* pilot is active, because there's still only the one
+  Milestone-0 spike workspace. Once saved/named multiple programs and routing exist,
+  this needs to become per-program.
+- Pilot cards have no name/mission framing (§15's "Pilot Max" flavor) — keyed by ship
+  symbol and job id only. Cosmetic, easy to add later.
+- `JobRunner.listJobs()` only returns what's currently loaded in memory: every
+  non-terminal job (loaded at scheduler startup) plus anything that went terminal
+  during this process's lifetime. A job that completed in a *previous* process run
+  drops off the dashboard after a restart — there's no job-history browser yet.
+- Ship-lock lease duration (90s) and the scheduler's tick/sweep intervals (1s/60s) are
+  hardcoded constants in `JobRunner.fs`/`JobScheduler.fs`, not configurable.
 - `JobRunner` only ever has one `Frame` per job (`scope = "main"`) — `CallCustomBlock`
   is one of the block types that fails cleanly above. The `Frame`/`PathEntry`/
   `LoopState` shapes support real nested calls already (Milestone 9 scope) so this
@@ -189,11 +246,9 @@ history.
 
 ## Next tasks
 
-1. Milestone 7 onward — see `plan.md` §19. Milestone 7 adds the real persistent shell
-   around the same pure `step` core (jobs table, ship locks, `next_wake_at`,
-   restart/clock-skew catch-up) — `JobRunner.fs`'s in-memory `ConcurrentDictionary` and
-   real-time polling loop are exactly the "minimal foreground loop" §14 says stands in
-   for that shell, not a design to carry forward as-is.
+1. Milestone 8 onward — see `plan.md` §19. Milestone 8 ("first missions") builds the
+   guided mission flow and progress tracking on top of the now-real, persistent
+   scheduler — no more scheduler-shell rework expected before then.
 
 ## Commands
 

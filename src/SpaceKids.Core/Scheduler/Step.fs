@@ -169,6 +169,38 @@ let private reconcile (baseline: ActionBaseline) (current: ShipSnapshot) : bool 
 
         cooldownAdvanced && current.cargoUnits <> unitsBefore
 
+// --- Pause/resume/cancel (§14/§15, Milestone 7) -------------------------------------
+
+/// After an action's success/reconciled-confirmation settles the job into an
+/// interruptible status (`job'.status` already set to `Running`/`WaitingForArrival`/
+/// `WaitingForCooldown`), applies any pending pause/cancel request *before* doing
+/// anything further — this is the one place that matters: without it, a pause
+/// requested mid-`AwaitingApiResponse`/`Reconciling` would only be noticed after the
+/// job had already run arbitrarily far past the point the player asked it to stop
+/// (`continueFn` may itself call `advance`, which keeps walking free transitions).
+/// Never abandons the action that just resolved — its ship/log update is already
+/// baked into `job'` either way.
+let private settleOrDefer
+    (job': JobState)
+    (settledEffects: Effect list)
+    (continueFn: JobState -> JobState * Effect list)
+    : JobState * Effect list =
+    if job'.cancelPending then
+        { job' with
+            status = Cancelled
+            cancelPending = false
+            pausePending = false
+            log = "Programm gestoppt." :: job'.log },
+        settledEffects @ [ JobCancelled job'.jobId ]
+    elif job'.pausePending then
+        { job' with
+            status = Paused job'.status
+            pausePending = false
+            log = "Programm pausiert." :: job'.log },
+        settledEffects
+    else
+        continueFn job'
+
 // --- The pure step core --------------------------------------------------------------
 
 let rec private advance (clock: Clock) (job: JobState) : JobState * Effect list =
@@ -321,11 +353,13 @@ and private handleApiResponse (clock: Clock) (job: JobState) (attemptNumber: int
 
         let until = DateTimeOffset.Parse arrival
 
-        { (job |> advanceJobPosition) with
-            lastKnownShip = Some ship'
-            status = WaitingForArrival until
-            log = "Unterwegs..." :: job.log },
-        [ StartWait(job.jobId, until, ArrivalWait) ]
+        settleOrDefer
+            { (job |> advanceJobPosition) with
+                lastKnownShip = Some ship'
+                status = WaitingForArrival until
+                log = "Unterwegs..." :: job.log }
+            [ StartWait(job.jobId, until, ArrivalWait) ]
+            (fun j -> j, [ StartWait(job.jobId, until, ArrivalWait) ])
     | AwaitingApiResponse(attempt, _, _), NavResultOk(navStatus, navWaypoint) when attempt = attemptNumber ->
         let ship' =
             { (job.lastKnownShip |> Option.get) with
@@ -334,13 +368,13 @@ and private handleApiResponse (clock: Clock) (job: JobState) (attemptNumber: int
 
         let logText = if navStatus = "IN_ORBIT" then "Habe den Andockplatz verlassen." else "Angedockt."
 
-        advance
-            clock
-            ({ job with
+        settleOrDefer
+            { job with
                 lastKnownShip = Some ship'
                 status = Running
                 log = logText :: job.log }
-             |> advanceJobPosition)
+            []
+            (fun j -> advance clock (advanceJobPosition j))
     | AwaitingApiResponse(attempt, _, _), ExtractOk(cooldownExpiration, cargoUnits, cargoInventory, yieldSymbol, yieldUnits) when
         attempt = attemptNumber
         ->
@@ -352,11 +386,13 @@ and private handleApiResponse (clock: Clock) (job: JobState) (attemptNumber: int
 
         let until = DateTimeOffset.Parse cooldownExpiration
 
-        { (job |> advanceJobPosition) with
-            lastKnownShip = Some ship'
-            status = WaitingForCooldown until
-            log = $"Abgebaut: {yieldUnits}x {yieldSymbol}." :: job.log },
-        [ StartWait(job.jobId, until, CooldownWait) ]
+        settleOrDefer
+            { (job |> advanceJobPosition) with
+                lastKnownShip = Some ship'
+                status = WaitingForCooldown until
+                log = $"Abgebaut: {yieldUnits}x {yieldSymbol}." :: job.log }
+            [ StartWait(job.jobId, until, CooldownWait) ]
+            (fun j -> j, [ StartWait(job.jobId, until, CooldownWait) ])
     | AwaitingApiResponse(attempt, _, _), TradeOk(cargoUnits, cargoInventory, transactionType, tradeSymbol, units, totalPrice) when
         attempt = attemptNumber
         ->
@@ -367,13 +403,13 @@ and private handleApiResponse (clock: Clock) (job: JobState) (attemptNumber: int
 
         let verb = if transactionType = "SELL" then "Verkauft" else "Gekauft"
 
-        advance
-            clock
-            ({ job with
+        settleOrDefer
+            { job with
                 lastKnownShip = Some ship'
                 status = Running
                 log = $"{verb}: {units}x {tradeSymbol} für {totalPrice} Credits." :: job.log }
-             |> advanceJobPosition)
+            []
+            (fun j -> advance clock (advanceJobPosition j))
     | Reconciling(attempt, action, baseline), ReconciliationShip current when attempt = attemptNumber ->
         let job' = { job with lastKnownShip = Some current }
 
@@ -382,45 +418,53 @@ and private handleApiResponse (clock: Clock) (job: JobState) (attemptNumber: int
             | NavigateBaseline _ ->
                 match current.navArrival with
                 | Some arrival when DateTimeOffset.Parse arrival > clock.now() ->
-                    { (job' |> advanceJobPosition) with
-                        status = WaitingForArrival(DateTimeOffset.Parse arrival)
-                        log = "Unterwegs (bereits bestätigt)." :: job'.log },
-                    [ StartWait(job.jobId, DateTimeOffset.Parse arrival, ArrivalWait) ]
+                    let until = DateTimeOffset.Parse arrival
+
+                    settleOrDefer
+                        { (job' |> advanceJobPosition) with
+                            status = WaitingForArrival until
+                            log = "Unterwegs (bereits bestätigt)." :: job'.log }
+                        [ StartWait(job.jobId, until, ArrivalWait) ]
+                        (fun j -> j, [ StartWait(job.jobId, until, ArrivalWait) ])
                 | _ ->
-                    advance
-                        clock
-                        ({ job' with
+                    settleOrDefer
+                        { job' with
                             status = Running
                             log = "Angekommen (bereits bestätigt)." :: job'.log }
-                         |> advanceJobPosition)
+                        []
+                        (fun j -> advance clock (advanceJobPosition j))
             | DockOrbitBaseline _ ->
-                advance
-                    clock
-                    ({ job' with
+                settleOrDefer
+                    { job' with
                         status = Running
                         log = "Bestätigt (bereits erledigt)." :: job'.log }
-                     |> advanceJobPosition)
+                    []
+                    (fun j -> advance clock (advanceJobPosition j))
             | CargoBaseline _ ->
-                advance
-                    clock
-                    ({ job' with
+                settleOrDefer
+                    { job' with
                         status = Running
                         log = "Bestätigt: Handel hat bereits stattgefunden." :: job'.log }
-                     |> advanceJobPosition)
+                    []
+                    (fun j -> advance clock (advanceJobPosition j))
             | ExtractBaseline _ ->
                 match current.cooldownExpiration with
                 | Some expiration when DateTimeOffset.Parse expiration > clock.now() ->
-                    { (job' |> advanceJobPosition) with
-                        status = WaitingForCooldown(DateTimeOffset.Parse expiration)
-                        log = "Bestätigt: Abbau hat bereits stattgefunden." :: job'.log },
-                    [ StartWait(job.jobId, DateTimeOffset.Parse expiration, CooldownWait) ]
+                    let until = DateTimeOffset.Parse expiration
+
+                    settleOrDefer
+                        { (job' |> advanceJobPosition) with
+                            status = WaitingForCooldown until
+                            log = "Bestätigt: Abbau hat bereits stattgefunden." :: job'.log }
+                        [ StartWait(job.jobId, until, CooldownWait) ]
+                        (fun j -> j, [ StartWait(job.jobId, until, CooldownWait) ])
                 | _ ->
-                    advance
-                        clock
-                        ({ job' with
+                    settleOrDefer
+                        { job' with
                             status = Running
                             log = "Bestätigt: Abbau hat bereits stattgefunden." :: job'.log }
-                         |> advanceJobPosition)
+                        []
+                        (fun j -> advance clock (advanceJobPosition j))
         else
             { job' with status = AwaitingApiResponse(attempt + 1, action, baseline) },
             [ QueueApiCall(job.jobId, job.shipSymbol, action, attempt + 1)
@@ -447,3 +491,51 @@ let step (clock: Clock) (job: JobState) (event: SchedulerEvent) : JobState * Eff
     | ApiResponseReceived(jobId, attemptNumber, result) when jobId = job.jobId ->
         handleApiResponse clock job attemptNumber result
     | ApiResponseReceived _ -> job, []
+    | PauseRequested ->
+        match job.status with
+        | Running
+        | WaitingForArrival _
+        | WaitingForCooldown _ -> { job with status = Paused job.status; log = "Programm pausiert." :: job.log }, []
+        | AwaitingApiResponse _
+        | Reconciling _ ->
+            if job.pausePending then
+                job, []
+            else
+                { job with
+                    pausePending = true
+                    log = "Pause angefordert – wird nach Bestätigung der aktuellen Aktion wirksam." :: job.log },
+                []
+        | Paused _
+        | Cancelled
+        | Completed
+        | Failed _ -> job, []
+    | ResumeRequested ->
+        match job.status with
+        | Paused Running -> advance clock { job with status = Running }
+        | Paused prior -> { job with status = prior }, []
+        | _ -> job, []
+    | CancelRequested ->
+        match job.status with
+        | Running
+        | WaitingForArrival _
+        | WaitingForCooldown _
+        | Paused _ ->
+            { job with status = Cancelled; log = "Programm gestoppt." :: job.log }, [ JobCancelled job.jobId ]
+        | AwaitingApiResponse _
+        | Reconciling _ ->
+            if job.cancelPending then
+                job, []
+            else
+                { job with
+                    cancelPending = true
+                    log = "Stopp angefordert – wird nach Bestätigung der aktuellen Aktion wirksam." :: job.log },
+                []
+        | Cancelled
+        | Completed
+        | Failed _ -> job, []
+
+/// The top frame's deepest position's blockId (§14) — what a persistent shell
+/// denormalizes into `jobs.current_block_id` for cheap dashboard queries without
+/// deserializing `execution_state_json` per row.
+let currentBlockId (job: JobState) : string option =
+    currentInstruction job |> Option.map blockIdOf

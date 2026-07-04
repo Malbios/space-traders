@@ -30,7 +30,7 @@ let mutable private agent =
       headquarters = headquarters
       credits = 175000L
       startingFaction = "COSMIC"
-      shipCount = 1 }
+      shipCount = 2 }
 
 let private routeWaypoint (symbol: string) : RouteWaypoint =
     { symbol = symbol
@@ -45,11 +45,8 @@ let private makeRoute (destination: string) (origin: string) (departure: DateTim
       departureTime = departure.ToString("o")
       arrival = arrival.ToString("o") }
 
-/// First fake endpoints with real side effects (Milestone 6) — every prior endpoint
-/// was read-only/immutable; `ship`/`agent` become mutable module state, guarded by a
-/// plain lock since ASP.NET Core can dispatch requests concurrently.
-let mutable private ship =
-    { symbol = "FAKE-AGENT-1"
+let private seedShip (symbol: string) : Ship =
+    { symbol = symbol
       registration = { role = "COMMAND" }
       nav =
         { systemSymbol = systemSymbol
@@ -60,20 +57,31 @@ let mutable private ship =
       fuel = { current = 400; capacity = 400 }
       cargo = { capacity = 40; units = 0; inventory = [] }
       cooldown =
-        { shipSymbol = "FAKE-AGENT-1"
+        { shipSymbol = symbol
           totalSeconds = 0
           remainingSeconds = 0
           expiration = (clock ()).ToString("o") } }
 
+/// Milestone 7 (§14): ship-lock rejection/reclaim is only testable with at least two
+/// independently mutable ships (one locked, one free) — a single mutable `ship`
+/// (Milestone 6) can't represent that. Keyed by ship symbol, guarded by the same
+/// `shipLock` every mutation already went through.
+let mutable private ships: Map<string, Ship> =
+    [ "FAKE-AGENT-1", seedShip "FAKE-AGENT-1"; "FAKE-AGENT-2", seedShip "FAKE-AGENT-2" ]
+    |> Map.ofList
+
 let private shipLock = obj ()
 
-/// Reads always go through the same lock writes use — `ship`/`agent` are plain
+/// Reads always go through the same lock writes use — `ships`/`agent` are plain
 /// mutable fields with no volatile/memory-barrier guarantee otherwise, and a request
 /// handler reading them runs on a different thread than whichever handler last wrote
 /// them (this is exactly what Milestone 6's reconciliation calls do: a `GetShip` from
 /// one request racing a `navigate`/`extract`/`sell` mutation from another).
-let private readShip () : Ship = lock shipLock (fun () -> ship)
+let private readShip (shipSymbol: string) : Ship = lock shipLock (fun () -> ships.[shipSymbol])
+let private readAllShips () : Ship list = lock shipLock (fun () -> ships |> Map.toList |> List.map snd)
 let private readAgent () : Agent = lock shipLock (fun () -> agent)
+
+let private routeShipSymbol (ctx: HttpContext) : string = ctx.Request.RouteValues.["shipSymbol"] :?> string
 
 let private contract =
     { id = "fake-contract-1"
@@ -187,13 +195,14 @@ let configureApp (app: WebApplication) =
     app.MapGet(
         "/my/ships",
         Func<HttpContext, Task<IResult>>(fun ctx ->
-            applyFault ctx (fun () -> withAuth ctx (fun () -> task { return ok [ readShip () ] })))
+            applyFault ctx (fun () -> withAuth ctx (fun () -> task { return ok (readAllShips ()) })))
     )
     |> ignore
 
     app.MapGet(
         "/my/ships/{shipSymbol}",
-        Func<HttpContext, Task<IResult>>(fun ctx -> applyFault ctx (fun () -> withAuth ctx (fun () -> task { return ok (readShip ()) })))
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault ctx (fun () -> withAuth ctx (fun () -> task { return ok (readShip (routeShipSymbol ctx)) })))
     )
     |> ignore
 
@@ -227,23 +236,28 @@ let configureApp (app: WebApplication) =
                         ctx
                         (fun () ->
                             task {
+                                let shipSymbol = routeShipSymbol ctx
                                 let! doc = readJsonBody ctx
                                 let dest = doc.RootElement.GetProperty("waypointSymbol").GetString()
                                 let departure = clock ()
                                 let arrival = departure.AddSeconds(fixedTravelSeconds)
+                                let current = readShip shipSymbol
 
                                 let responseNav =
-                                    { ship.nav with
+                                    { current.nav with
                                         waypointSymbol = dest
-                                        route = makeRoute dest ship.nav.waypointSymbol departure arrival
+                                        route = makeRoute dest current.nav.waypointSymbol departure arrival
                                         status = "IN_TRANSIT" }
 
-                                lock shipLock (fun () -> ship <- { ship with nav = { responseNav with status = "IN_ORBIT" } })
+                                let updated =
+                                    { current with nav = { responseNav with status = "IN_ORBIT" } }
+
+                                lock shipLock (fun () -> ships <- ships.Add(shipSymbol, updated))
 
                                 return
                                     ok
                                         { nav = responseNav
-                                          fuel = { current = ship.fuel.current; capacity = ship.fuel.capacity; consumed = None } }
+                                          fuel = { current = updated.fuel.current; capacity = updated.fuel.capacity; consumed = None } }
                             })))
     )
     |> ignore
@@ -258,8 +272,18 @@ let configureApp (app: WebApplication) =
                         ctx
                         (fun () ->
                             task {
-                                lock shipLock (fun () -> ship <- { ship with nav = { ship.nav with status = "IN_ORBIT" } })
-                                return ok { nav = ship.nav }
+                                let shipSymbol = routeShipSymbol ctx
+
+                                let updated =
+                                    lock
+                                        shipLock
+                                        (fun () ->
+                                            let current = ships.[shipSymbol]
+                                            let updated = { current with nav = { current.nav with status = "IN_ORBIT" } }
+                                            ships <- ships.Add(shipSymbol, updated)
+                                            updated)
+
+                                return ok { nav = updated.nav }
                             })))
     )
     |> ignore
@@ -274,8 +298,18 @@ let configureApp (app: WebApplication) =
                         ctx
                         (fun () ->
                             task {
-                                lock shipLock (fun () -> ship <- { ship with nav = { ship.nav with status = "DOCKED" } })
-                                return ok { nav = ship.nav }
+                                let shipSymbol = routeShipSymbol ctx
+
+                                let updated =
+                                    lock
+                                        shipLock
+                                        (fun () ->
+                                            let current = ships.[shipSymbol]
+                                            let updated = { current with nav = { current.nav with status = "DOCKED" } }
+                                            ships <- ships.Add(shipSymbol, updated)
+                                            updated)
+
+                                return ok { nav = updated.nav }
                             })))
     )
     |> ignore
@@ -290,52 +324,59 @@ let configureApp (app: WebApplication) =
                         ctx
                         (fun () ->
                             task {
+                                let shipSymbol = routeShipSymbol ctx
                                 let yieldSymbol = "IRON"
                                 let yieldUnits = 10
                                 let expiration = (clock ()).AddSeconds(fixedCooldownSeconds)
 
-                                lock
-                                    shipLock
-                                    (fun () ->
-                                        let newInventory =
-                                            match ship.cargo.inventory |> List.tryFind (fun i -> i.symbol = yieldSymbol) with
-                                            | Some _ ->
-                                                ship.cargo.inventory
-                                                |> List.map (fun i ->
-                                                    if i.symbol = yieldSymbol then
-                                                        { i with units = i.units + yieldUnits }
-                                                    else
-                                                        i)
-                                            | None ->
-                                                ship.cargo.inventory
-                                                @ [ { symbol = yieldSymbol
-                                                      name = "Iron"
-                                                      description = "Iron ore"
-                                                      units = yieldUnits } ]
+                                let updated =
+                                    lock
+                                        shipLock
+                                        (fun () ->
+                                            let current = ships.[shipSymbol]
 
-                                        ship <-
-                                            { ship with
-                                                cargo =
-                                                    { ship.cargo with
-                                                        units = ship.cargo.units + yieldUnits
-                                                        inventory = newInventory }
-                                                cooldown =
-                                                    // Ceiling, not truncation — `remainingSeconds > 0` is how
-                                                    // callers (JobRunner.cooldownExpirationOf) detect an active
-                                                    // cooldown at all; truncating a sub-1-second fixedCooldownSeconds
-                                                    // down to 0 would make a genuinely active cooldown invisible.
-                                                    { shipSymbol = ship.symbol
-                                                      totalSeconds = int (ceil fixedCooldownSeconds)
-                                                      remainingSeconds = int (ceil fixedCooldownSeconds)
-                                                      expiration = expiration.ToString("o") } })
+                                            let newInventory =
+                                                match current.cargo.inventory |> List.tryFind (fun i -> i.symbol = yieldSymbol) with
+                                                | Some _ ->
+                                                    current.cargo.inventory
+                                                    |> List.map (fun i ->
+                                                        if i.symbol = yieldSymbol then
+                                                            { i with units = i.units + yieldUnits }
+                                                        else
+                                                            i)
+                                                | None ->
+                                                    current.cargo.inventory
+                                                    @ [ { symbol = yieldSymbol
+                                                          name = "Iron"
+                                                          description = "Iron ore"
+                                                          units = yieldUnits } ]
+
+                                            let updated =
+                                                { current with
+                                                    cargo =
+                                                        { current.cargo with
+                                                            units = current.cargo.units + yieldUnits
+                                                            inventory = newInventory }
+                                                    cooldown =
+                                                        // Ceiling, not truncation — `remainingSeconds > 0` is how
+                                                        // callers (JobRunner.cooldownExpirationOf) detect an active
+                                                        // cooldown at all; truncating a sub-1-second fixedCooldownSeconds
+                                                        // down to 0 would make a genuinely active cooldown invisible.
+                                                        { shipSymbol = current.symbol
+                                                          totalSeconds = int (ceil fixedCooldownSeconds)
+                                                          remainingSeconds = int (ceil fixedCooldownSeconds)
+                                                          expiration = expiration.ToString("o") } }
+
+                                            ships <- ships.Add(shipSymbol, updated)
+                                            updated)
 
                                 return
                                     ok
                                         { extraction =
-                                            { shipSymbol = ship.symbol
+                                            { shipSymbol = updated.symbol
                                               ``yield`` = { symbol = yieldSymbol; units = yieldUnits } }
-                                          cooldown = ship.cooldown
-                                          cargo = ship.cargo }
+                                          cooldown = updated.cooldown
+                                          cargo = updated.cargo }
                             })))
     )
     |> ignore
@@ -350,40 +391,46 @@ let configureApp (app: WebApplication) =
                         ctx
                         (fun () ->
                             task {
+                                let shipSymbol = routeShipSymbol ctx
                                 let! doc = readJsonBody ctx
                                 let tradeSymbol = doc.RootElement.GetProperty("symbol").GetString()
                                 let units = doc.RootElement.GetProperty("units").GetInt32()
                                 let totalPrice = units * fixedPricePerUnit
 
-                                lock
-                                    shipLock
-                                    (fun () ->
-                                        let newInventory =
-                                            match ship.cargo.inventory |> List.tryFind (fun i -> i.symbol = tradeSymbol) with
-                                            | Some _ ->
-                                                ship.cargo.inventory
-                                                |> List.map (fun i ->
-                                                    if i.symbol = tradeSymbol then { i with units = i.units + units } else i)
-                                            | None ->
-                                                ship.cargo.inventory
-                                                @ [ { symbol = tradeSymbol
-                                                      name = tradeSymbol
-                                                      description = ""
-                                                      units = units } ]
+                                let updated =
+                                    lock
+                                        shipLock
+                                        (fun () ->
+                                            let current = ships.[shipSymbol]
 
-                                        ship <-
-                                            { ship with
-                                                cargo = { ship.cargo with units = ship.cargo.units + units; inventory = newInventory } }
+                                            let newInventory =
+                                                match current.cargo.inventory |> List.tryFind (fun i -> i.symbol = tradeSymbol) with
+                                                | Some _ ->
+                                                    current.cargo.inventory
+                                                    |> List.map (fun i ->
+                                                        if i.symbol = tradeSymbol then { i with units = i.units + units } else i)
+                                                | None ->
+                                                    current.cargo.inventory
+                                                    @ [ { symbol = tradeSymbol
+                                                          name = tradeSymbol
+                                                          description = ""
+                                                          units = units } ]
 
-                                        agent <- { agent with credits = agent.credits - int64 totalPrice })
+                                            let updated =
+                                                { current with
+                                                    cargo = { current.cargo with units = current.cargo.units + units; inventory = newInventory } }
+
+                                            ships <- ships.Add(shipSymbol, updated)
+                                            agent <- { agent with credits = agent.credits - int64 totalPrice }
+                                            updated)
 
                                 return
                                     ok
                                         { agent = agent
-                                          cargo = ship.cargo
+                                          cargo = updated.cargo
                                           transaction =
-                                            { waypointSymbol = ship.nav.waypointSymbol
-                                              shipSymbol = ship.symbol
+                                            { waypointSymbol = updated.nav.waypointSymbol
+                                              shipSymbol = updated.symbol
                                               tradeSymbol = tradeSymbol
                                               ``type`` = "PURCHASE"
                                               units = units
@@ -404,39 +451,45 @@ let configureApp (app: WebApplication) =
                         ctx
                         (fun () ->
                             task {
+                                let shipSymbol = routeShipSymbol ctx
                                 let! doc = readJsonBody ctx
                                 let tradeSymbol = doc.RootElement.GetProperty("symbol").GetString()
                                 let units = doc.RootElement.GetProperty("units").GetInt32()
                                 let totalPrice = units * fixedPricePerUnit
 
-                                lock
-                                    shipLock
-                                    (fun () ->
-                                        let newInventory =
-                                            ship.cargo.inventory
-                                            |> List.map (fun i ->
-                                                if i.symbol = tradeSymbol then
-                                                    { i with units = max 0 (i.units - units) }
-                                                else
-                                                    i)
-                                            |> List.filter (fun i -> i.units > 0)
+                                let updated =
+                                    lock
+                                        shipLock
+                                        (fun () ->
+                                            let current = ships.[shipSymbol]
 
-                                        ship <-
-                                            { ship with
-                                                cargo =
-                                                    { ship.cargo with
-                                                        units = max 0 (ship.cargo.units - units)
-                                                        inventory = newInventory } }
+                                            let newInventory =
+                                                current.cargo.inventory
+                                                |> List.map (fun i ->
+                                                    if i.symbol = tradeSymbol then
+                                                        { i with units = max 0 (i.units - units) }
+                                                    else
+                                                        i)
+                                                |> List.filter (fun i -> i.units > 0)
 
-                                        agent <- { agent with credits = agent.credits + int64 totalPrice })
+                                            let updated =
+                                                { current with
+                                                    cargo =
+                                                        { current.cargo with
+                                                            units = max 0 (current.cargo.units - units)
+                                                            inventory = newInventory } }
+
+                                            ships <- ships.Add(shipSymbol, updated)
+                                            agent <- { agent with credits = agent.credits + int64 totalPrice }
+                                            updated)
 
                                 return
                                     ok
                                         { agent = agent
-                                          cargo = ship.cargo
+                                          cargo = updated.cargo
                                           transaction =
-                                            { waypointSymbol = ship.nav.waypointSymbol
-                                              shipSymbol = ship.symbol
+                                            { waypointSymbol = updated.nav.waypointSymbol
+                                              shipSymbol = updated.symbol
                                               tradeSymbol = tradeSymbol
                                               ``type`` = "SELL"
                                               units = units
@@ -470,26 +523,14 @@ let resetForTests () =
     clock <- fun () -> DateTimeOffset.UtcNow
     fixedTravelSeconds <- 3.0
     fixedCooldownSeconds <- 3.0
+
     agent <-
         { symbol = "FAKE-AGENT"
           headquarters = headquarters
           credits = 175000L
           startingFaction = "COSMIC"
-          shipCount = 1 }
+          shipCount = 2 }
 
-    ship <-
-        { symbol = "FAKE-AGENT-1"
-          registration = { role = "COMMAND" }
-          nav =
-            { systemSymbol = systemSymbol
-              waypointSymbol = headquarters
-              route = makeRoute headquarters headquarters (clock ()) (clock ())
-              status = "DOCKED"
-              flightMode = "CRUISE" }
-          fuel = { current = 400; capacity = 400 }
-          cargo = { capacity = 40; units = 0; inventory = [] }
-          cooldown =
-            { shipSymbol = "FAKE-AGENT-1"
-              totalSeconds = 0
-              remainingSeconds = 0
-              expiration = (clock ()).ToString("o") } }
+    ships <-
+        [ "FAKE-AGENT-1", seedShip "FAKE-AGENT-1"; "FAKE-AGENT-2", seedShip "FAKE-AGENT-2" ]
+        |> Map.ofList

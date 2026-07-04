@@ -76,6 +76,27 @@ See `docs/05-agent-handoff.md` for full context on each of these.
 - [x] Added step mode (`JobService.step`), driving the same core one event at a time,
       alongside run mode (`JobService.run`).
 
+## Milestone 7: Persistent background jobs — done
+
+- [x] Persisted jobs and execution state (`jobs`/`programs`/`ship_locks` tables, a
+      real first use since Milestone 1) — the same `JobState`/`Step.step` shape
+      Milestone 6 built, unchanged beyond adding pause/resume/cancel.
+- [x] Added the real scheduler shell (`JobScheduler.fs`): resumes every non-terminal
+      job on startup (ambiguous-failure recovery for anything mid-call, clock-skew
+      catch-up for anything waiting), then polls due jobs and refreshes ship-lock
+      leases every tick.
+- [x] Added ship locks (§14): check-on-acquire lease reclaim plus a low-frequency
+      sweep, both reusing the same orphan-pause path.
+- [x] Resume-safe restart, proven via a fresh `JobScheduler.resumeAll` call against
+      the same on-disk database, including a job persisted mid-wait resuming with
+      its position intact.
+- [x] Added pause/resume/cancel to the pure scheduler core (deferred while an
+      action/reconciliation is in flight, never abandoning it) and wired them into
+      the pilot dashboard.
+- [x] Added watch mode: the shared workspace goes read-only while any pilot is
+      active (global, not per-program — no saved/named programs yet).
+- [x] Added the pilot dashboard (multiple concurrent jobs, one per ship).
+
 ## Later milestones
 
-See `plan.md` §19 for the full milestone list (7 through 10).
+See `plan.md` §19 for the full milestone list (8 through 10).

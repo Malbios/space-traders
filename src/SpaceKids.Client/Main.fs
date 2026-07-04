@@ -70,8 +70,9 @@ type QueueService =
     interface IRemoteService with
         member this.BasePath = "/queue"
 
-/// Milestone 6 (§14/§19): runs a compiled program against one real ship. In-memory
-/// only on the server (`JobRunner.fs`) — no persistence yet, that's Milestone 7.
+/// Milestone 6/7 (§14/§15/§19): runs a compiled program against one real ship,
+/// persisted server-side (`JobRunner.fs`/`JobScheduler.fs`) so it survives restarts
+/// and keeps making progress in the background.
 type JobStatusDto =
     {
         status: string
@@ -79,13 +80,28 @@ type JobStatusDto =
         log: string list
     }
 
+/// Milestone 7 (§15): one row of the pilot dashboard.
+type JobSummaryDto =
+    {
+        jobId: string
+        shipSymbol: string
+        status: string
+        statusDetail: string option
+        lastLogLine: string option
+    }
+
 type JobService =
     {
-        /// token, shipSymbol, current workspace JSON -> new job id.
-        startJob: string * string * string -> Async<string>
+        /// token, shipSymbol, current workspace JSON -> new job id, or a German
+        /// rejection message (e.g. the ship is already flown by another program).
+        startJob: string * string * string -> Async<Result<string, string>>
         step: string -> Async<JobStatusDto option>
         run: string -> Async<JobStatusDto option>
         getStatus: string -> Async<JobStatusDto option>
+        pause: string -> Async<unit>
+        resume: string -> Async<unit>
+        cancel: string -> Async<unit>
+        listJobs: unit -> Async<JobSummaryDto list>
     }
 
     interface IRemoteService with
@@ -105,10 +121,16 @@ type Model =
         dashboardError: string option
         queueStatus: QueueStatusDto option
         selectedShipSymbol: string option
-        activeJobId: string option
-        jobStatus: JobStatusDto option
-        jobBusy: bool
+        startingJob: bool
+        pilotError: string option
+        pilots: JobSummaryDto list
+        /// Milestone 7 (§15): true whenever any pilot is non-terminal — the shared
+        /// workspace is forced read-only while this holds, and the manual
+        /// read-only toggle is disabled (watch mode, §3a/§15).
+        watchModeLocked: bool
     }
+
+let private terminalPilotStatuses = [ "Completed"; "Failed"; "Cancelled" ]
 
 let initModel =
     {
@@ -124,9 +146,10 @@ let initModel =
         dashboardError = None
         queueStatus = None
         selectedShipSymbol = None
-        activeJobId = None
-        jobStatus = None
-        jobBusy = false
+        startingJob = false
+        pilotError = None
+        pilots = []
+        watchModeLocked = false
     }
 
 type Message =
@@ -154,10 +177,14 @@ type Message =
     | QueueStatusLoaded of QueueStatusDto
     | SelectShip of string
     | StartProgram
-    | ProgramStarted of string
-    | StepProgram
-    | RunProgram
-    | JobStatusUpdated of JobStatusDto option
+    | ProgramStartResult of Result<string, string>
+    | LoadPilots
+    | PilotsLoaded of JobSummaryDto list
+    | WatchModeReadOnlySet of bool
+    | PausePilot of string
+    | ResumePilot of string
+    | CancelPilot of string
+    | PilotActionDone
 
 let private callVoid (js: IJSRuntime) (identifier: string) (args: obj[]) : Async<unit> =
     js.InvokeVoidAsync(identifier, args).AsTask() |> Async.AwaitTask
@@ -261,7 +288,7 @@ let update
         match model.selectedShipSymbol with
         | None -> { model with status = "Bitte zuerst ein Schiff auswählen." }, Cmd.none
         | Some shipSymbol ->
-            { model with jobBusy = true },
+            { model with startingJob = true; pilotError = None },
             Cmd.OfAsync.perform
                 (fun () ->
                     async {
@@ -269,21 +296,37 @@ let update
                         return! jobRemote.startJob (model.tokenInput, shipSymbol, workspaceJson)
                     })
                 ()
-                ProgramStarted
-    | ProgramStarted jobId ->
-        { model with activeJobId = Some jobId; jobBusy = false; jobStatus = None }, Cmd.none
-    | StepProgram ->
-        match model.activeJobId with
-        | Some jobId ->
-            { model with jobBusy = true }, Cmd.OfAsync.perform (fun () -> jobRemote.step jobId) () JobStatusUpdated
-        | None -> model, Cmd.none
-    | RunProgram ->
-        match model.activeJobId with
-        | Some jobId ->
-            { model with jobBusy = true }, Cmd.OfAsync.perform (fun () -> jobRemote.run jobId) () JobStatusUpdated
-        | None -> model, Cmd.none
-    | JobStatusUpdated statusOpt ->
-        { model with jobStatus = statusOpt; jobBusy = false }, Cmd.none
+                ProgramStartResult
+    | ProgramStartResult(Ok _) ->
+        { model with startingJob = false }, Cmd.ofMsg LoadPilots
+    | ProgramStartResult(Error message) ->
+        { model with startingJob = false; pilotError = Some message }, Cmd.none
+    | LoadPilots ->
+        model, Cmd.OfAsync.perform (fun () -> jobRemote.listJobs ()) () PilotsLoaded
+    | PilotsLoaded pilots ->
+        let anyActive =
+            pilots |> List.exists (fun p -> not (List.contains p.status terminalPilotStatuses))
+
+        let readOnlyCmd =
+            if anyActive <> model.watchModeLocked then
+                Cmd.OfAsync.perform
+                    (fun () -> callVoid js "spaceKids.setReadOnly" [| box model.containerId; box anyActive |])
+                    ()
+                    (fun () -> WatchModeReadOnlySet anyActive)
+            else
+                Cmd.none
+
+        { model with pilots = pilots; watchModeLocked = anyActive }, readOnlyCmd
+    | WatchModeReadOnlySet value ->
+        { model with readOnly = value }, Cmd.none
+    | PausePilot jobId ->
+        model, Cmd.OfAsync.perform (fun () -> jobRemote.pause jobId) () (fun () -> PilotActionDone)
+    | ResumePilot jobId ->
+        model, Cmd.OfAsync.perform (fun () -> jobRemote.resume jobId) () (fun () -> PilotActionDone)
+    | CancelPilot jobId ->
+        model, Cmd.OfAsync.perform (fun () -> jobRemote.cancel jobId) () (fun () -> PilotActionDone)
+    | PilotActionDone ->
+        model, Cmd.ofMsg LoadPilots
 
 let private viewDashboard model dispatch =
     div {
@@ -365,9 +408,23 @@ let private viewQueueStatus model dispatch =
             }
     }
 
+/// Milestone 7 (§15): German status text for a pilot card.
+let private germanPilotStatus (status: string) : string =
+    match status with
+    | "Running" -> "Führt Programm aus"
+    | "AwaitingApiResponse" -> "Wartet auf Bestätigung"
+    | "WaitingForArrival" -> "Unterwegs"
+    | "WaitingForCooldown" -> "Wartet auf Abklingzeit"
+    | "Reconciling" -> "Prüft die letzte Aktion"
+    | "Paused" -> "Pausiert"
+    | "Cancelled" -> "Gestoppt"
+    | "Completed" -> "Fertig"
+    | "Failed" -> "Fehlgeschlagen"
+    | other -> other
+
 let private viewJobRunner model dispatch =
     div {
-        h2 { "Programm ausführen (Milestone 6)" }
+        h2 { "Programm ausführen (Milestone 7)" }
         match model.dashboard with
         | None -> p { "Zuerst anmelden, um ein Schiff auszuwählen." }
         | Some state ->
@@ -380,35 +437,41 @@ let private viewJobRunner model dispatch =
                         option { attr.value ship.symbol; ship.symbol }
                 }
                 button {
-                    attr.disabled (model.selectedShipSymbol.IsNone || model.jobBusy)
+                    attr.disabled (model.selectedShipSymbol.IsNone || model.startingJob)
                     on.click (fun _ -> dispatch StartProgram)
                     "Start"
                 }
-                button {
-                    attr.disabled (model.activeJobId.IsNone || model.jobBusy)
-                    on.click (fun _ -> dispatch StepProgram)
-                    "Einzelschritt"
-                }
-                button {
-                    attr.disabled (model.activeJobId.IsNone || model.jobBusy)
-                    on.click (fun _ -> dispatch RunProgram)
-                    "Ausführen"
-                }
             }
-        match model.jobStatus with
+        match model.pilotError with
+        | Some message -> p { $"Fehler: {message}" }
         | None -> ()
-        | Some job ->
-            div {
-                p { $"Status: {job.status}" }
-                match job.statusDetail with
-                | Some detail -> p { detail }
-                | None -> ()
-                h3 { "Aktivitätsprotokoll" }
-                ul {
-                    for entry in job.log do
-                        li { entry }
+
+        h3 { "Piloten" }
+        button { on.click (fun _ -> dispatch LoadPilots); "Piloten aktualisieren" }
+        if model.pilots.IsEmpty then
+            p { "Noch kein Pilot aktiv." }
+        else
+            for pilot in model.pilots do
+                let isTerminal = List.contains pilot.status terminalPilotStatuses
+                let isPaused = pilot.status = "Paused"
+
+                div {
+                    attr.style "border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem; margin: 0.5rem 0"
+                    p { $"🤖 Schiff: {pilot.shipSymbol}" }
+                    p { $"Status: {germanPilotStatus pilot.status}" }
+                    match pilot.statusDetail with
+                    | Some detail -> p { detail }
+                    | None -> ()
+                    match pilot.lastLogLine with
+                    | Some line -> p { $"Zuletzt: {line}" }
+                    | None -> ()
+                    if not isTerminal then
+                        if isPaused then
+                            button { on.click (fun _ -> dispatch (ResumePilot pilot.jobId)); "Fortsetzen" }
+                        else
+                            button { on.click (fun _ -> dispatch (PausePilot pilot.jobId)); "Pause" }
+                        button { on.click (fun _ -> dispatch (CancelPilot pilot.jobId)); "Stoppen" }
                 }
-            }
     }
 
 let view model dispatch =
@@ -421,11 +484,16 @@ let view model dispatch =
             button { on.click (fun _ -> dispatch Load); "Laden" }
             button { on.click (fun _ -> dispatch HighlightFirstBlock); "Ersten Block hervorheben" }
             button {
+                attr.disabled model.watchModeLocked
                 on.click (fun _ -> dispatch ToggleReadOnly)
                 if model.readOnly then "Bearbeiten erlauben" else "Nur ansehen"
             }
             button { on.click (fun _ -> dispatch SimulateRun); "Simuliere Ausführung" }
         }
+        if model.watchModeLocked then
+            p {
+                "Ein Pilot fliegt gerade ein Programm. Zum Bearbeiten müssen alle Piloten angehalten werden."
+            }
         h2 { "Programm" }
         div {
             attr.id model.containerId
@@ -455,6 +523,6 @@ type MyApp() =
         let queueRemote = this.Remote<QueueService>()
         let jobRemote = this.Remote<JobService>()
         Program.mkProgram
-            (fun _ -> initModel, Cmd.batch [ Cmd.ofMsg Init; Cmd.ofMsg LoadDashboard; Cmd.ofMsg LoadQueueStatus ])
+            (fun _ -> initModel, Cmd.batch [ Cmd.ofMsg Init; Cmd.ofMsg LoadDashboard; Cmd.ofMsg LoadQueueStatus; Cmd.ofMsg LoadPilots ])
             (update js remote agentRemote queueRemote jobRemote)
             view
