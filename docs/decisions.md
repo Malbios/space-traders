@@ -1228,3 +1228,98 @@ sessions' notes describe)/save/reopen/rename/delete, and a second run
 covering per-program watch mode's isolation (start a pilot on one open
 program, confirm a second open program stays editable, confirm the first
 re-locks when reopened). Zero console/page errors throughout both runs.
+
+## Milestone 12: bilingual support (German/English)
+
+A second, English-speaking child now uses the app, so the previously
+German-only UI (`plan.md` §4's original "the child-facing experience is
+German" — a deliberate, stated design decision, not a gap) needed a real
+runtime-switchable second language. User confirmed: the language preference
+is a new server-side settings row, not browser localStorage (survives
+clearing browser data/switching devices, consistent with this app's existing
+single-process/single-instance model), and translation should have full
+parity, including server-side error messages — not just the block catalog
+and UI chrome.
+
+**A single new `app_settings` row, no user/profile model needed.** This app
+has never had a user/profile concept (`AgentRepository.fs`: "single-user
+app... no multi-agent"); the settings row is new, standalone state. A
+`SettingsService`/`SettingsRemoting.fs` mirrors the smallest existing
+service (`QueueService`'s shape) — `getLocale`/`setLocale`, `"de"`/`"en"`
+only.
+
+**Blockly block *types* are already stable English-ish identifiers, not the
+labels — switching language never invalidates a saved program.** Serialized
+workspace JSON stores block types (`"sk_wait"`, `"getShipInfo"`, etc.), not
+display text; only what's *rendered* changes. Blockly doesn't auto-relabel
+already-instantiated block instances after `Blockly.setLocale`, though —
+`blockly-host.ts`'s new `setLocale` entry point captures every currently-open
+workspace's JSON, disposes it, re-injects a fresh one (preserving its
+custom-block/accessor toolbox entries, unlike `destroyWorkspace` which is a
+one-way teardown), and reloads the same JSON — same block types, freshly
+rendered labels. `blocks-catalog.ts`/`blocks.ts`/`toolbox-de.ts` all read a
+single shared `locale-state.ts` module-level flag live inside each block's
+own `init()`, rather than needing `registerCatalogBlocks()` to run again on
+switch.
+
+**Decoupling the DSL record contract from display language was a
+prerequisite, not optional.** `Compiler.fs`'s `ACCESSOR_BLOCKS` map (block
+type → field name) used the *German word itself* as the runtime `VRecord` map
+key (e.g. `"shipCargoCapacity" -> "Frachtkapazität"`), duplicated manually
+against `blocks-catalog.ts`'s own separate label copy (a footgun that
+comment already flagged). Fixed by converting every value to a canonical
+English key (`"CargoCapacity"`, `"Fulfilled"`, etc.) — the real runtime
+contract, now fully decoupled from whichever language an accessor block's
+own *label* displays in. `JobRunner.fs`'s `shipRecord`/`waypointRecord`/
+market/shipyard/contract builders all updated to match; one existing test
+asserting the old German field name (`Accessor("Treibstoff", ...)`) needed
+updating to the new canonical key (`"Fuel"`) — a pure rename, no behavior
+change. `sk_build_record`'s user-authored field names (§9 Outputs) are
+child-typed free text, not fixed catalog vocabulary — explicitly out of
+scope, and untouched.
+
+**`Strings` is a record, not a stringly-typed key lookup.** ~45 UI strings in
+`Main.fs` became fields on a `Strings` type with `de`/`en` values — the
+"boring, obvious" choice per this project's own house style: a record forces
+every locale to define every field at compile time, so a missing translation
+is a compile error, not a silent runtime gap discovered by a player. Fields
+with interpolated content became `'a -> string` functions instead of plain
+strings.
+
+**Server-side error-message translation stopped at `Validator.fs`,
+`JobRunner.fs`'s few literals, and `ProgramRepository.delete`'s refusal
+message — deliberately, matching the approved plan.** `Compiler.fs`'s own
+compile-time errors (e.g. `"Eingabe \"SECONDS\" fehlt."`) remain German-only:
+translating those would mean changing `Compiler.compileWorkspace`'s public
+signature, which ~26 existing call sites (mostly tests) depend on positionally
+— a much larger blast radius than the ~9 call sites `Validator.validate`/
+`revalidateAgainstCurrentDefinitions` actually had. Documented as a known
+follow-up gap (`docs/05-agent-handoff.md`), not silently dropped. A new
+`SpaceKids.Core.Dsl.Locale` (`De | En`, with `Locale.ofString` for the stored
+setting's raw string) is threaded through `Validator.fs`'s functions and
+every remoting handler that can produce one of these messages
+(`JobRemoting.fs`, `ProgramRemoting.fs`) — each reads the stored locale via
+`SettingsRepository.getLocale dbPath` before building a message, mirroring
+the existing `currentToken()`-per-call pattern already used for the stored
+agent token. `JobRunner.fs`'s `recoverJob`/`runInfoRead` run in a background
+scheduler-recovery path with no live request to read a locale from, so they
+read the stored setting synchronously (`Async.RunSynchronously`) — the same
+bridging pattern `JobRemoting.fs`'s own `customBlockLookup` already uses for
+exactly this reason.
+
+**Verification:** 119 tests total (63 Core, 20 Server, 36 Integration), all
+green — 3 new tests added for Part E's German/English message parity, the
+rest fixed-in-place or unchanged. `npm run typecheck` clean. Live-verified via
+a scripted `playwright` driver (no interactive browser tool available this
+session, same as Milestone 11's precedent) after Parts A, C, and D: the
+locale switcher persists across a reload; a program containing a catalog
+action block and an accessor block re-renders both labels and its toolbox
+category names when the language switches, with its serialized block *types*
+provably unchanged before/after; and representative UI headings/messages
+throughout the page (including inside an open program) switch language with
+zero console/page errors. Found and fixed one real bug during Part A's own
+verification: the persisted locale setting was loaded into the client model
+at startup but never actually applied to the Blockly JS side, so a freshly
+loaded page kept rendering new blocks in German regardless of the saved
+setting — fixed by having `LocaleLoaded` call `spaceKids.setLocale` itself,
+not just update the model.

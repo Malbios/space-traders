@@ -38,34 +38,38 @@ let private INFO_BLOCKS: Map<string, (string * string) list> =
 /// Blockly-block-type -> §8 record field name, for the accessor blocks (Milestone
 /// 9/Part B) — mirrors `blocks-catalog.ts`'s `accessorFieldNames` export (kept in
 /// sync manually; both are exhaustively listed in docs/04-block-catalog.md).
+/// Milestone 12 (bilingual support): these are canonical English keys, not display
+/// text — the runtime `VRecord` contract must not be coupled to whichever language
+/// an accessor block's own *label* happens to render in (that's a separate,
+/// locale-keyed string in `blocks-catalog.ts`).
 let private ACCESSOR_BLOCKS: Map<string, string> =
     Map.ofList [
         "shipName", "Name"
-        "shipWaypoint", "Wegpunkt"
+        "shipWaypoint", "Waypoint"
         "shipStatus", "Status"
-        "shipFuel", "Treibstoff"
-        "shipCargoUnits", "Frachteinheiten"
-        "shipCargoCapacity", "Frachtkapazität"
-        "cargoUnits", "Einheiten"
-        "cargoCapacity", "Kapazität"
-        "cargoGoods", "Waren"
+        "shipFuel", "Fuel"
+        "shipCargoUnits", "CargoUnits"
+        "shipCargoCapacity", "CargoCapacity"
+        "cargoUnits", "Units"
+        "cargoCapacity", "Capacity"
+        "cargoGoods", "Goods"
         "goodName", "Name"
-        "goodUnits", "Einheiten"
-        "shipyardWaypoint", "Wegpunkt"
-        "shipyardTypes", "Schiffstypen"
-        "shipyardTypeName", "Typ"
-        "shipyardTypePrice", "Preis"
-        "marketWaypoint", "Wegpunkt"
-        "marketGoods", "Handelswaren"
+        "goodUnits", "Units"
+        "shipyardWaypoint", "Waypoint"
+        "shipyardTypes", "Types"
+        "shipyardTypeName", "Type"
+        "shipyardTypePrice", "Price"
+        "marketWaypoint", "Waypoint"
+        "marketGoods", "Goods"
         "tradeGoodName", "Name"
-        "tradeGoodBuyPrice", "Kaufpreis"
-        "tradeGoodSellPrice", "Verkaufspreis"
+        "tradeGoodBuyPrice", "BuyPrice"
+        "tradeGoodSellPrice", "SellPrice"
         "contractId", "Id"
-        "contractType", "Typ"
-        "contractAccepted", "Angenommen"
-        "contractFulfilled", "Erfüllt"
+        "contractType", "Type"
+        "contractAccepted", "Accepted"
+        "contractFulfilled", "Fulfilled"
         "waypointSymbolField", "Symbol"
-        "waypointTypeField", "Typ"
+        "waypointTypeField", "Type"
     ]
 
 type private CompileState =

@@ -241,6 +241,46 @@ called).
       reopen/rename/delete, and two open programs proving per-program watch
       mode's isolation.
 
+## Milestone 12: Bilingual support (German/English) — done
+
+A second, English-speaking child needed a real runtime-switchable second
+language, not just a dev convenience — the app was previously German-only by
+deliberate design (`plan.md` §4).
+
+- [x] Part A — `app_settings` (new table, single row) +
+      `SettingsRepository`/`SettingsRemoting.fs`/`SettingsService`; a
+      Deutsch/English switcher in the UI, persisted server-side.
+- [x] Part B — decoupled the DSL's `VRecord` contract from display language:
+      `Compiler.fs`'s `ACCESSOR_BLOCKS` map and `JobRunner.fs`'s record
+      builders now use canonical English keys (e.g. `"CargoCapacity"`)
+      instead of the German words they used to double as.
+- [x] Part C — `blocks-catalog.ts`/`blocks.ts`/`toolbox-de.ts` read a shared
+      `locale-state.ts` flag live inside each block's own `init()`;
+      `blockly-host.ts`'s new `setLocale` entry point re-renders every open
+      workspace (destroy + reinit from its own serialized JSON) — block
+      *types* are stable identifiers, so a saved program is never
+      invalidated by a language switch.
+- [x] Part D — `Main.fs`'s ~45 UI strings became a `Strings` record (`de`/
+      `en` values) — a missing translation is a compile error, not a silent
+      runtime gap.
+- [x] Part E — server-side error messages (`Validator.fs`, a couple of
+      `JobRunner.fs` literals, `ProgramRepository.delete`'s refusal message)
+      translated by the stored locale. `Compiler.fs`'s own compile-time
+      errors are a deliberate, documented exception — not covered (see
+      `docs/05-agent-handoff.md`'s "Known limitations").
+- [x] Found and fixed a real bug during Part A's own live verification: the
+      persisted locale setting loaded into the model at startup but was
+      never applied to the Blockly JS side, so a freshly loaded page kept
+      rendering new blocks in German regardless of the saved setting.
+- [x] 119 tests total, all green (3 new for Part E's German/English message
+      parity); TypeScript typecheck clean; live Playwright verification via
+      a scripted `playwright` driver (no interactive browser tool available
+      this session) after Parts A, C, and D — the switcher persists across
+      reload, a program's catalog/accessor block labels and toolbox
+      category names switch language with its serialized block types
+      provably unchanged, and representative UI text throughout the page
+      switches with zero console/page errors.
+
 ## Later milestones
 
 Milestone 8 ("first missions") was removed from the roadmap entirely — not deferred,

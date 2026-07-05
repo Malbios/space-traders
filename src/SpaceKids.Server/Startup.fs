@@ -32,6 +32,7 @@ let main args =
     builder.Services.AddBoleroRemoting<JobRemoting.JobRemoteHandler>() |> ignore
     builder.Services.AddBoleroRemoting<CustomBlockRemoting.CustomBlockRemoteHandler>() |> ignore
     builder.Services.AddBoleroRemoting<ProgramRemoting.ProgramRemoteHandler>() |> ignore
+    builder.Services.AddBoleroRemoting<SettingsRemoting.SettingsRemoteHandler>() |> ignore
     builder.Services.AddHttpClient<SpaceTradersClient>(fun client ->
         client.BaseAddress <- Uri(builder.Configuration["SpaceTraders:BaseUrl"]))
     |> ignore

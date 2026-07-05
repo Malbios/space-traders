@@ -75,6 +75,17 @@ type QueueService =
     interface IRemoteService with
         member this.BasePath = "/queue"
 
+/// Milestone 12 (bilingual support): the single process-wide locale preference —
+/// `"de"`/`"en"` only, not attached to any user/profile (there is none).
+type SettingsService =
+    {
+        getLocale: unit -> Async<string>
+        setLocale: string -> Async<unit>
+    }
+
+    interface IRemoteService with
+        member this.BasePath = "/settings"
+
 /// Milestone 6/7 (§14/§15/§19): runs a compiled program against one real ship,
 /// persisted server-side (`JobRunner.fs`/`JobScheduler.fs`) so it survives restarts
 /// and keeps making progress in the background.
@@ -246,6 +257,9 @@ type Model =
         renameProgramInput: string
         programStatus: string
         staleWarnings: string list
+        /// Milestone 12 (bilingual support): `"de"`/`"en"`, loaded once at `Init`
+        /// from the stored server-side setting (see `SettingsService`).
+        locale: string
     }
 
 let private terminalPilotStatuses = [ "Completed"; "Failed"; "Cancelled" ]
@@ -285,6 +299,7 @@ let initModel =
         renameProgramInput = ""
         programStatus = ""
         staleWarnings = []
+        locale = "de"
     }
 
 type Message =
@@ -359,12 +374,448 @@ type Message =
     | ProgramRenamed
     | DeleteProgram of string
     | ProgramDeleteResult of string * Result<unit, string>
+    | LoadLocale
+    | LocaleLoaded of string
+    | SetLocale of string
+    | LocaleSet
 
 let private callVoid (js: IJSRuntime) (identifier: string) (args: obj[]) : Async<unit> =
     js.InvokeVoidAsync(identifier, args).AsTask() |> Async.AwaitTask
 
 let private call<'a> (js: IJSRuntime) (identifier: string) (args: obj[]) : Async<'a> =
     js.InvokeAsync<'a>(identifier, args).AsTask() |> Async.AwaitTask
+
+/// Milestone 12 (bilingual support): every UI string in this file, as a compile-time-
+/// checked record rather than a stringly-typed lookup — a locale missing a
+/// translation is a compile error, not a silent runtime gap. Interpolated messages
+/// are functions instead of plain strings.
+type Strings =
+    { workshopLoaded: string
+      savedToDb: string
+      nothingToLoad: string
+      loadedFromDb: string
+      blockHighlighted: string
+      readOnlyToggled: string
+      signaturePublished: string
+      simulating: string
+      simulationDone: string
+      pleaseOpenProgramFirst: string
+      pleaseSelectShipFirst: string
+      creating: string
+      blockCreated: string
+      workshopLoading: string
+      renamed: string
+      deleted: string
+      noBlockToSave: string
+      saving: string
+      savedVersion: int -> string
+      errorPrefix: string -> string
+      programCreated: string
+      programLoading: string
+      programLoaded: string
+
+      dashboardHeading: string
+      loadingEllipsis: string
+      tokenPlaceholder: string
+      login: string
+      pilotLabel: string -> string
+      balance: int64 -> string
+      headquarters: string -> string
+      shipsHeading: string
+      shipLine: string * string * string * string -> string
+      contractsHeading: string
+      contractLine: string * string * bool * bool -> string
+      waypointsHeading: string
+      waypointLine: string * string -> string
+      marketHeading: string
+      marketAt: string -> string
+      exportLine: string -> string
+
+      shipInspectorTitle: string -> string
+      closeButton: string
+      roleLine: string -> string
+      waypointLabel: string
+      statusAndFlightMode: string * string -> string
+      inTransitLine: string * string * string -> string
+      fuelLine: int * int -> string
+      cargoLine: int * int -> string
+      noCargo: string
+      cooldownLine: int -> string
+
+      waypointInspectorTitle: string -> string
+      typeAndPosition: string * int * int -> string
+      traitsHeading: string
+      noKnownTraits: string
+      shipsHereHeading: string
+      noShipsHere: string
+      loadMarket: string
+      tradeGoodLine: string * int * int -> string
+      shipyardHeading: string
+      loadShipyard: string
+      shipyardTypeLine: string * int -> string
+      shipNotFound: string -> string
+      waypointNotFound: string -> string
+
+      systemMapHeading: string
+
+      queueHeading: string
+      refresh: string
+      queueNotLoadedYet: string
+      pendingRequests: int -> string
+      serverResetDetected: string
+      apiUnreachableSince: string -> string
+      recentEventsHeading: string
+      eventLine: string * string * string * int * int -> string
+
+      pilotStatus: string -> string
+
+      jobRunnerHeading: string
+      pleaseLoginFirst: string
+      shipLabel: string
+      chooseOption: string
+      start: string
+      refreshPilots: string
+      pilotsHeading: string
+      noPilotsYet: string
+      pilotShipLine: string -> string
+      pilotStatusLine: string -> string
+      lastLogLine: string -> string
+      resume: string
+      pause: string
+      stop: string
+      stopWatching: string
+      watch: string
+      innerActiveLine: string -> string
+      openBlock: string
+      logbookHeading: string
+      noActivePilots: string
+      logbookLine: string * string -> string
+
+      customBlocksHeading: string
+      newBlockNamePlaceholder: string
+      newBlockButton: string
+      noCustomBlocksYet: string
+      customBlockLine: string * int -> string
+      openButton: string
+      deleteButton: string
+      renameButton: string
+      saveWorkshopButton: string
+
+      programsHeading: string
+      newProgramNamePlaceholder: string
+      newProgramButton: string
+      noProgramsYet: string
+      closeButton2: string
+
+      noProgramOpen: string
+      staleWarningsBanner: string
+      saveButton: string
+      loadButton: string
+      highlightFirstBlockButton: string
+      allowEditing: string
+      viewOnly: string
+      simulateRunButton: string
+      watchModeLockedBanner: string
+      programHeading: string
+      workshopHeading: string
+      workshopHint: string
+      publishSignatureButton: string }
+
+let private stringsDe: Strings =
+    { workshopLoaded = "Werkstatt geladen."
+      savedToDb = "In SQLite gespeichert."
+      nothingToLoad = "Nichts zum Laden."
+      loadedFromDb = "Aus SQLite geladen."
+      blockHighlighted = "Block hervorgehoben (falls vorhanden)."
+      readOnlyToggled = "Lesemodus umgeschaltet."
+      signaturePublished = "Signatur an Programm-Werkstatt übergeben."
+      simulating = "Simuliere Ausführung..."
+      simulationDone = "Simulation beendet."
+      pleaseOpenProgramFirst = "Bitte zuerst ein Programm öffnen."
+      pleaseSelectShipFirst = "Bitte zuerst ein Schiff auswählen."
+      creating = "Erstelle..."
+      blockCreated = "Block erstellt."
+      workshopLoading = "Werkstatt wird geladen..."
+      renamed = "Umbenannt."
+      deleted = "Gelöscht."
+      noBlockToSave = "Kein Block zum Speichern geöffnet."
+      saving = "Speichere..."
+      savedVersion = fun v -> $"Gespeichert (Version {v})."
+      errorPrefix = fun msg -> $"Fehler: {msg}"
+      programCreated = "Programm erstellt."
+      programLoading = "Lädt..."
+      programLoaded = "Programm geladen."
+
+      dashboardHeading = "Echte SpaceTraders-Daten (Milestone 2)"
+      loadingEllipsis = "Lädt..."
+      tokenPlaceholder = "SpaceTraders-Token einfügen"
+      login = "Anmelden"
+      pilotLabel = fun symbol -> $"Pilot: {symbol}"
+      balance = fun credits -> $"Kontostand: {credits} Credits"
+      headquarters = fun hq -> $"Hauptquartier: {hq}"
+      shipsHeading = "Schiffe"
+      shipLine = fun (symbol, role, status, waypoint) -> $"{symbol} — {role} — {status} bei {waypoint}"
+      contractsHeading = "Aufträge"
+      contractLine = fun (id, ``type``, accepted, fulfilled) -> $"{id} ({``type``}) — angenommen: {accepted}, erfüllt: {fulfilled}"
+      waypointsHeading = "Wegpunkte"
+      waypointLine = fun (symbol, ``type``) -> $"{symbol} ({``type``})"
+      marketHeading = "Markt"
+      marketAt = fun symbol -> $"Markt bei {symbol}"
+      exportLine = fun name -> $"Export: {name}"
+
+      shipInspectorTitle = fun symbol -> $"Schiff: {symbol}"
+      closeButton = "Schließen"
+      roleLine = fun role -> $"Rolle: {role}"
+      waypointLabel = "Wegpunkt: "
+      statusAndFlightMode = fun (status, flightMode) -> $"Status: {status} ({flightMode})"
+      inTransitLine = fun (origin, dest, arrival) -> $"Unterwegs von {origin} nach {dest}, Ankunft: {arrival}"
+      fuelLine = fun (current, capacity) -> $"Treibstoff: {current} / {capacity}"
+      cargoLine = fun (units, capacity) -> $"Fracht: {units} / {capacity}"
+      noCargo = "Keine Fracht an Bord."
+      cooldownLine = fun seconds -> $"Abklingzeit: noch {seconds}s"
+
+      waypointInspectorTitle = fun symbol -> $"Wegpunkt: {symbol}"
+      typeAndPosition = fun (``type``, x, y) -> $"Typ: {``type``} — Position: ({x}, {y})"
+      traitsHeading = "Eigenschaften"
+      noKnownTraits = "Keine bekannten Eigenschaften."
+      shipsHereHeading = "Schiffe hier"
+      noShipsHere = "Keine Schiffe an diesem Wegpunkt."
+      loadMarket = "Markt laden"
+      tradeGoodLine = fun (symbol, buy, sell) -> $"{symbol}: Kaufpreis {buy}, Verkaufspreis {sell}"
+      shipyardHeading = "Werft"
+      loadShipyard = "Werft laden"
+      shipyardTypeLine = fun (``type``, price) -> $"{``type``}: {price} Credits"
+      shipNotFound = fun symbol -> $"Schiff {symbol} nicht gefunden."
+      waypointNotFound = fun symbol -> $"Wegpunkt {symbol} nicht gefunden."
+
+      systemMapHeading = "Systemkarte"
+
+      queueHeading = "Warteschlange (Milestone 5)"
+      refresh = "Aktualisieren"
+      queueNotLoadedYet = "Noch nicht geladen."
+      pendingRequests = fun n -> $"Wartende Anfragen: {n}"
+      serverResetDetected = "Der Spielserver wurde zurückgesetzt. Ein neuer Kapitän muss erstellt werden."
+      apiUnreachableSince =
+          fun since ->
+              $"Die Raumfunkzentrale ist gerade nicht erreichbar (seit {since}). Deine Piloten machen weiter, sobald sie wieder Funkkontakt haben."
+      recentEventsHeading = "Letzte Ereignisse"
+      eventLine =
+          fun (time, endpoint, status, priority, attempt) -> $"{time} {endpoint} — {status} (Priorität {priority}, Versuch {attempt})"
+
+      pilotStatus =
+          fun status ->
+              match status with
+              | "Running" -> "Führt Programm aus"
+              | "AwaitingApiResponse" -> "Wartet auf Bestätigung"
+              | "WaitingForArrival" -> "Unterwegs"
+              | "WaitingForCooldown" -> "Wartet auf Abklingzeit"
+              | "Reconciling" -> "Prüft die letzte Aktion"
+              | "AwaitingInfoResponse" -> "Wartet auf Information"
+              | "Paused" -> "Pausiert"
+              | "Cancelled" -> "Gestoppt"
+              | "Completed" -> "Fertig"
+              | "Failed" -> "Fehlgeschlagen"
+              | other -> other
+
+      jobRunnerHeading = "Programm ausführen (Milestone 7)"
+      pleaseLoginFirst = "Zuerst anmelden, um ein Schiff auszuwählen."
+      shipLabel = "Schiff: "
+      chooseOption = "-- wählen --"
+      start = "Start"
+      refreshPilots = "Piloten aktualisieren"
+      pilotsHeading = "Piloten"
+      noPilotsYet = "Noch kein Pilot aktiv."
+      pilotShipLine = fun symbol -> $"🤖 Schiff: {symbol}"
+      pilotStatusLine = fun status -> $"Status: {status}"
+      lastLogLine = fun line -> $"Zuletzt: {line}"
+      resume = "Fortsetzen"
+      pause = "Pause"
+      stop = "Stoppen"
+      stopWatching = "Beobachtung stoppen"
+      watch = "Beobachten"
+      innerActiveLine = fun name -> $"Innen aktiv: \"{name}\" "
+      openBlock = "Block öffnen"
+      logbookHeading = "Logbuch"
+      noActivePilots = "Keine Piloten aktiv."
+      logbookLine = fun (symbol, line) -> $"🤖 {symbol}: {line}"
+
+      customBlocksHeading = "Eigene Blöcke (Milestone 9)"
+      newBlockNamePlaceholder = "Name des neuen Blocks"
+      newBlockButton = "Neuer Block"
+      noCustomBlocksYet = "Noch kein eigener Block gespeichert."
+      customBlockLine = fun (name, version) -> $"{name} (Version {version}) "
+      openButton = "Öffnen"
+      deleteButton = "Löschen"
+      renameButton = "Umbenennen"
+      saveWorkshopButton = "Workshop speichern"
+
+      programsHeading = "Programme"
+      newProgramNamePlaceholder = "Name des neuen Programms"
+      newProgramButton = "Neues Programm"
+      noProgramsYet = "Noch kein Programm gespeichert."
+      closeButton2 = "Schließen"
+
+      noProgramOpen = "Kein Programm geöffnet — wähle oder erstelle eines oben."
+      staleWarningsBanner = "Einige eigene Blöcke in diesem Programm haben sich geändert — bitte vor dem Ausführen prüfen."
+      saveButton = "Speichern"
+      loadButton = "Laden"
+      highlightFirstBlockButton = "Ersten Block hervorheben"
+      allowEditing = "Bearbeiten erlauben"
+      viewOnly = "Nur ansehen"
+      simulateRunButton = "Simuliere Ausführung"
+      watchModeLockedBanner = "Ein Pilot fliegt gerade ein Programm. Zum Bearbeiten müssen alle Piloten angehalten werden."
+      programHeading = "Programm"
+      workshopHeading = "Blockwerkstatt (Eigener Block definieren)"
+      workshopHint = "Ziehe \"Eigener Block\" auf die Fläche, öffne sein Zahnrad-Menü, füge eine Eingabe hinzu, dann:"
+      publishSignatureButton = "Signatur an Programm übergeben" }
+
+let private stringsEn: Strings =
+    { workshopLoaded = "Workshop loaded."
+      savedToDb = "Saved to SQLite."
+      nothingToLoad = "Nothing to load."
+      loadedFromDb = "Loaded from SQLite."
+      blockHighlighted = "Block highlighted (if any)."
+      readOnlyToggled = "Read-only mode toggled."
+      signaturePublished = "Signature handed off to the program workshop."
+      simulating = "Simulating run..."
+      simulationDone = "Simulation finished."
+      pleaseOpenProgramFirst = "Please open a program first."
+      pleaseSelectShipFirst = "Please select a ship first."
+      creating = "Creating..."
+      blockCreated = "Block created."
+      workshopLoading = "Loading workshop..."
+      renamed = "Renamed."
+      deleted = "Deleted."
+      noBlockToSave = "No block open to save."
+      saving = "Saving..."
+      savedVersion = fun v -> $"Saved (version {v})."
+      errorPrefix = fun msg -> $"Error: {msg}"
+      programCreated = "Program created."
+      programLoading = "Loading..."
+      programLoaded = "Program loaded."
+
+      dashboardHeading = "Real SpaceTraders data (Milestone 2)"
+      loadingEllipsis = "Loading..."
+      tokenPlaceholder = "Paste SpaceTraders token"
+      login = "Log in"
+      pilotLabel = fun symbol -> $"Pilot: {symbol}"
+      balance = fun credits -> $"Balance: {credits} credits"
+      headquarters = fun hq -> $"Headquarters: {hq}"
+      shipsHeading = "Ships"
+      shipLine = fun (symbol, role, status, waypoint) -> $"{symbol} — {role} — {status} at {waypoint}"
+      contractsHeading = "Contracts"
+      contractLine = fun (id, ``type``, accepted, fulfilled) -> $"{id} ({``type``}) — accepted: {accepted}, fulfilled: {fulfilled}"
+      waypointsHeading = "Waypoints"
+      waypointLine = fun (symbol, ``type``) -> $"{symbol} ({``type``})"
+      marketHeading = "Market"
+      marketAt = fun symbol -> $"Market at {symbol}"
+      exportLine = fun name -> $"Export: {name}"
+
+      shipInspectorTitle = fun symbol -> $"Ship: {symbol}"
+      closeButton = "Close"
+      roleLine = fun role -> $"Role: {role}"
+      waypointLabel = "Waypoint: "
+      statusAndFlightMode = fun (status, flightMode) -> $"Status: {status} ({flightMode})"
+      inTransitLine = fun (origin, dest, arrival) -> $"En route from {origin} to {dest}, arrival: {arrival}"
+      fuelLine = fun (current, capacity) -> $"Fuel: {current} / {capacity}"
+      cargoLine = fun (units, capacity) -> $"Cargo: {units} / {capacity}"
+      noCargo = "No cargo on board."
+      cooldownLine = fun seconds -> $"Cooldown: {seconds}s remaining"
+
+      waypointInspectorTitle = fun symbol -> $"Waypoint: {symbol}"
+      typeAndPosition = fun (``type``, x, y) -> $"Type: {``type``} — Position: ({x}, {y})"
+      traitsHeading = "Traits"
+      noKnownTraits = "No known traits."
+      shipsHereHeading = "Ships here"
+      noShipsHere = "No ships at this waypoint."
+      loadMarket = "Load market"
+      tradeGoodLine = fun (symbol, buy, sell) -> $"{symbol}: buy price {buy}, sell price {sell}"
+      shipyardHeading = "Shipyard"
+      loadShipyard = "Load shipyard"
+      shipyardTypeLine = fun (``type``, price) -> $"{``type``}: {price} credits"
+      shipNotFound = fun symbol -> $"Ship {symbol} not found."
+      waypointNotFound = fun symbol -> $"Waypoint {symbol} not found."
+
+      systemMapHeading = "System map"
+
+      queueHeading = "Queue (Milestone 5)"
+      refresh = "Refresh"
+      queueNotLoadedYet = "Not loaded yet."
+      pendingRequests = fun n -> $"Pending requests: {n}"
+      serverResetDetected = "The game server was reset. A new captain must be created."
+      apiUnreachableSince =
+          fun since -> $"Mission control is currently unreachable (since {since}). Your pilots will continue once contact is restored."
+      recentEventsHeading = "Recent events"
+      eventLine = fun (time, endpoint, status, priority, attempt) -> $"{time} {endpoint} — {status} (priority {priority}, attempt {attempt})"
+
+      pilotStatus =
+          fun status ->
+              match status with
+              | "Running" -> "Running program"
+              | "AwaitingApiResponse" -> "Awaiting confirmation"
+              | "WaitingForArrival" -> "En route"
+              | "WaitingForCooldown" -> "Waiting for cooldown"
+              | "Reconciling" -> "Checking last action"
+              | "AwaitingInfoResponse" -> "Awaiting information"
+              | "Paused" -> "Paused"
+              | "Cancelled" -> "Stopped"
+              | "Completed" -> "Done"
+              | "Failed" -> "Failed"
+              | other -> other
+
+      jobRunnerHeading = "Run program (Milestone 7)"
+      pleaseLoginFirst = "Log in first to select a ship."
+      shipLabel = "Ship: "
+      chooseOption = "-- choose --"
+      start = "Start"
+      refreshPilots = "Refresh pilots"
+      pilotsHeading = "Pilots"
+      noPilotsYet = "No pilot active yet."
+      pilotShipLine = fun symbol -> $"🤖 Ship: {symbol}"
+      pilotStatusLine = fun status -> $"Status: {status}"
+      lastLogLine = fun line -> $"Last: {line}"
+      resume = "Resume"
+      pause = "Pause"
+      stop = "Stop"
+      stopWatching = "Stop watching"
+      watch = "Watch"
+      innerActiveLine = fun name -> $"Active inside: \"{name}\" "
+      openBlock = "Open block"
+      logbookHeading = "Log"
+      noActivePilots = "No pilots active."
+      logbookLine = fun (symbol, line) -> $"🤖 {symbol}: {line}"
+
+      customBlocksHeading = "Custom blocks (Milestone 9)"
+      newBlockNamePlaceholder = "New block name"
+      newBlockButton = "New block"
+      noCustomBlocksYet = "No custom block saved yet."
+      customBlockLine = fun (name, version) -> $"{name} (version {version}) "
+      openButton = "Open"
+      deleteButton = "Delete"
+      renameButton = "Rename"
+      saveWorkshopButton = "Save workshop"
+
+      programsHeading = "Programs"
+      newProgramNamePlaceholder = "New program name"
+      newProgramButton = "New program"
+      noProgramsYet = "No program saved yet."
+      closeButton2 = "Close"
+
+      noProgramOpen = "No program open — choose or create one above."
+      staleWarningsBanner = "Some custom blocks in this program have changed — please check before running."
+      saveButton = "Save"
+      loadButton = "Load"
+      highlightFirstBlockButton = "Highlight first block"
+      allowEditing = "Allow editing"
+      viewOnly = "View only"
+      simulateRunButton = "Simulate run"
+      watchModeLockedBanner = "A pilot is currently flying a program. All pilots must be stopped before editing."
+      programHeading = "Program"
+      workshopHeading = "Block workshop (define a custom block)"
+      workshopHint = "Drag \"Custom block\" onto the canvas, open its gear menu, add an input, then:"
+      publishSignatureButton = "Hand signature to program" }
+
+let private stringsFor (locale: string) : Strings = if locale = "en" then stringsEn else stringsDe
 
 let update
     (js: IJSRuntime)
@@ -374,9 +825,12 @@ let update
     (jobRemote: JobService)
     (customBlockRemote: CustomBlockService)
     (programRemote: ProgramService)
+    (settingsRemote: SettingsService)
     message
     model
     =
+    let s = stringsFor model.locale
+
     match message with
     | Init ->
         // The main program container isn't initialized here — no program is open
@@ -384,7 +838,7 @@ let update
         // initializes it on demand, keyed by the program's own id.
         model, Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.initWorkspace" [| box model.workshopContainerId; box false |]) () (fun () -> Inited)
     | Inited ->
-        { model with status = "Werkstatt geladen." }, Cmd.none
+        { model with status = s.workshopLoaded }, Cmd.none
 
     | Save ->
         let saveToDb = async {
@@ -393,16 +847,16 @@ let update
         }
         model, Cmd.OfAsync.perform (fun () -> saveToDb) () (fun () -> Saved)
     | Saved ->
-        { model with status = "In SQLite gespeichert." }, Cmd.none
+        { model with status = s.savedToDb }, Cmd.none
 
     | Load ->
         model, Cmd.OfAsync.perform (fun () -> remote.load model.containerId) () LoadedFromDb
     | LoadedFromDb None ->
-        { model with status = "Nichts zum Laden." }, Cmd.none
+        { model with status = s.nothingToLoad }, Cmd.none
     | LoadedFromDb(Some json) ->
         model, Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.loadWorkspace" [| box model.containerId; box json |]) () (fun () -> Loaded)
     | Loaded ->
-        { model with status = "Aus SQLite geladen." }, Cmd.none
+        { model with status = s.loadedFromDb }, Cmd.none
 
     | HighlightFirstBlock ->
         let highlightFirst = async {
@@ -413,13 +867,13 @@ let update
         }
         model, Cmd.OfAsync.perform (fun () -> highlightFirst) () (fun () -> Highlighted)
     | Highlighted ->
-        { model with status = "Block hervorgehoben (falls vorhanden)." }, Cmd.none
+        { model with status = s.blockHighlighted }, Cmd.none
 
     | ToggleReadOnly ->
         let next = not model.readOnly
         model, Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.setReadOnly" [| box model.containerId; box next |]) () (fun () -> ReadOnlyToggled)
     | ReadOnlyToggled ->
-        { model with readOnly = not model.readOnly; status = "Lesemodus umgeschaltet." }, Cmd.none
+        { model with readOnly = not model.readOnly; status = s.readOnlyToggled }, Cmd.none
 
     | PublishSignature ->
         let existingId: obj = match model.publishedCustomBlockId with
@@ -431,13 +885,13 @@ let update
             ()
             Published
     | Published customBlockId ->
-        { model with publishedCustomBlockId = Some customBlockId; status = "Signatur an Programm-Werkstatt übergeben." }, Cmd.none
+        { model with publishedCustomBlockId = Some customBlockId; status = s.signaturePublished }, Cmd.none
 
     | SimulateRun ->
-        { model with status = "Simuliere Ausführung..." },
+        { model with status = s.simulating },
         Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.simulateRun" [| box model.containerId |]) () (fun () -> Simulated)
     | Simulated ->
-        { model with status = "Simulation beendet." }, Cmd.none
+        { model with status = s.simulationDone }, Cmd.none
 
     | TokenInputChanged value ->
         { model with tokenInput = value }, Cmd.none
@@ -461,8 +915,8 @@ let update
         { model with selectedShipSymbol = Some symbol }, Cmd.none
     | StartProgram ->
         match model.currentProgramId, model.selectedShipSymbol with
-        | None, _ -> { model with status = "Bitte zuerst ein Programm öffnen." }, Cmd.none
-        | Some _, None -> { model with status = "Bitte zuerst ein Schiff auswählen." }, Cmd.none
+        | None, _ -> { model with status = s.pleaseOpenProgramFirst }, Cmd.none
+        | Some _, None -> { model with status = s.pleaseSelectShipFirst }, Cmd.none
         | Some programId, Some shipSymbol ->
             { model with startingJob = true; pilotError = None },
             Cmd.OfAsync.perform
@@ -522,23 +976,23 @@ let update
         if model.newCustomBlockName.Trim() = "" then
             model, Cmd.none
         else
-            { model with workshopStatus = "Erstelle..." },
+            { model with workshopStatus = s.creating },
             Cmd.OfAsync.perform (fun () -> customBlockRemote.create model.newCustomBlockName) () CustomBlockCreated
     | CustomBlockCreated id ->
         let name = model.newCustomBlockName
-        { model with newCustomBlockName = ""; workshopStatus = "Block erstellt." },
+        { model with newCustomBlockName = ""; workshopStatus = s.blockCreated },
         Cmd.batch [ Cmd.ofMsg LoadCustomBlocks; Cmd.ofMsg (OpenCustomBlock(id, name)) ]
 
     | OpenCustomBlock(id, name) ->
         { model with
             openCustomBlockId = Some id
             renameNameInput = name
-            workshopStatus = "Werkstatt wird geladen..." },
+            workshopStatus = s.workshopLoading },
         Cmd.OfAsync.perform (fun () -> customBlockRemote.loadDefinition id) () CustomBlockDefinitionLoaded
     | CustomBlockDefinitionLoaded jsonOpt ->
         let json = jsonOpt |> Option.defaultValue """{"blocks":{"languageVersion":0,"blocks":[]}}"""
 
-        { model with workshopStatus = "Werkstatt geladen." },
+        { model with workshopStatus = s.workshopLoaded },
         Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.loadWorkspace" [| box model.workshopContainerId; box json |]) () (fun () -> Loaded)
 
     | RenameNameInputChanged value ->
@@ -546,7 +1000,7 @@ let update
     | RenameCustomBlock id ->
         model, Cmd.OfAsync.perform (fun () -> customBlockRemote.rename (id, model.renameNameInput)) () (fun () -> CustomBlockRenamed)
     | CustomBlockRenamed ->
-        { model with workshopStatus = "Umbenannt." }, Cmd.ofMsg LoadCustomBlocks
+        { model with workshopStatus = s.renamed }, Cmd.ofMsg LoadCustomBlocks
 
     | DeleteCustomBlock id ->
         model,
@@ -560,15 +1014,15 @@ let update
             CustomBlockDeleteResult
     | CustomBlockDeleteResult(id, Ok()) ->
         let openId = if model.openCustomBlockId = Some id then None else model.openCustomBlockId
-        { model with openCustomBlockId = openId; workshopStatus = "Gelöscht." }, Cmd.ofMsg LoadCustomBlocks
+        { model with openCustomBlockId = openId; workshopStatus = s.deleted }, Cmd.ofMsg LoadCustomBlocks
     | CustomBlockDeleteResult(_, Error message) ->
         { model with workshopStatus = message }, Cmd.none
 
     | SaveWorkshop ->
         match model.openCustomBlockId with
-        | None -> { model with workshopStatus = "Kein Block zum Speichern geöffnet." }, Cmd.none
+        | None -> { model with workshopStatus = s.noBlockToSave }, Cmd.none
         | Some id ->
-            { model with workshopStatus = "Speichere..." },
+            { model with workshopStatus = s.saving },
             Cmd.OfAsync.perform
                 (fun () ->
                     async {
@@ -587,9 +1041,9 @@ let update
                     Published
             | None -> Cmd.none
 
-        { model with workshopStatus = $"Gespeichert (Version {version})." }, Cmd.batch [ publishCmd; Cmd.ofMsg LoadCustomBlocks ]
+        { model with workshopStatus = s.savedVersion version }, Cmd.batch [ publishCmd; Cmd.ofMsg LoadCustomBlocks ]
     | WorkshopSaved(Error message) ->
-        { model with workshopStatus = $"Fehler: {message}" }, Cmd.none
+        { model with workshopStatus = s.errorPrefix message }, Cmd.none
 
     | WatchPilot jobId ->
         { model with watchedJobId = Some jobId; watchedFrames = [] }, Cmd.ofMsg WatchTick
@@ -683,10 +1137,10 @@ let update
         if model.newProgramName.Trim() = "" then
             model, Cmd.none
         else
-            { model with programStatus = "Erstelle..." },
+            { model with programStatus = s.creating },
             Cmd.OfAsync.perform (fun () -> programRemote.create model.newProgramName) () ProgramCreated
     | ProgramCreated id ->
-        { model with newProgramName = ""; programStatus = "Programm erstellt." },
+        { model with newProgramName = ""; programStatus = s.programCreated },
         Cmd.batch [ Cmd.ofMsg LoadPrograms; Cmd.ofMsg (OpenProgram id) ]
 
     | OpenProgram id ->
@@ -708,7 +1162,7 @@ let update
             containerId = id
             renameProgramInput = name
             staleWarnings = []
-            programStatus = "Lädt..." },
+            programStatus = s.programLoading },
         Cmd.batch [
             closeOldCmd
             Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.initWorkspace" [| box id; box false |]) () (fun () -> Inited)
@@ -727,7 +1181,7 @@ let update
                 Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.loadWorkspace" [| box model.containerId; box json |]) () (fun () -> Loaded)
             | None -> Cmd.none
 
-        { model with programStatus = "Programm geladen."; staleWarnings = warnings }, loadCmd
+        { model with programStatus = s.programLoaded; staleWarnings = warnings }, loadCmd
 
     | CloseProgram ->
         match model.currentProgramId with
@@ -741,7 +1195,7 @@ let update
     | RenameProgram id ->
         model, Cmd.OfAsync.perform (fun () -> programRemote.rename (id, model.renameProgramInput)) () (fun () -> ProgramRenamed)
     | ProgramRenamed ->
-        { model with programStatus = "Umbenannt." }, Cmd.ofMsg LoadPrograms
+        { model with programStatus = s.renamed }, Cmd.ofMsg LoadPrograms
 
     | DeleteProgram id ->
         model,
@@ -755,64 +1209,86 @@ let update
             ProgramDeleteResult
     | ProgramDeleteResult(id, Ok()) ->
         let closeCmd = if model.currentProgramId = Some id then Cmd.ofMsg CloseProgram else Cmd.none
-        { model with programStatus = "Gelöscht." }, Cmd.batch [ closeCmd; Cmd.ofMsg LoadPrograms ]
+        { model with programStatus = s.deleted }, Cmd.batch [ closeCmd; Cmd.ofMsg LoadPrograms ]
     | ProgramDeleteResult(_, Error message) ->
         { model with programStatus = message }, Cmd.none
 
+    | LoadLocale ->
+        model, Cmd.OfAsync.perform (fun () -> settingsRemote.getLocale ()) () LocaleLoaded
+    | LocaleLoaded locale ->
+        // The persisted setting must reach the JS side too — otherwise a freshly
+        // loaded page keeps rendering new blocks in German regardless of what was
+        // saved, since `locale-state.ts`'s own `currentLocale` defaults to "de"
+        // until something explicitly tells it otherwise.
+        { model with locale = locale },
+        Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.setLocale" [| box locale |]) () (fun () -> LocaleSet)
+    | SetLocale locale ->
+        { model with locale = locale },
+        Cmd.batch [
+            Cmd.OfAsync.perform (fun () -> settingsRemote.setLocale locale) () (fun () -> LocaleSet)
+            // `spaceKids.setLocale` re-renders every currently-open workspace under
+            // the new locale itself (recreating each one's blocks from its own
+            // serialized JSON) — nothing else needs to destroy/reinit anything here.
+            Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.setLocale" [| box locale |]) () (fun () -> LocaleSet)
+        ]
+    | LocaleSet -> model, Cmd.none
+
 let private viewDashboard model dispatch =
+    let s = stringsFor model.locale
+
     div {
-        h2 { "Echte SpaceTraders-Daten (Milestone 2)" }
+        h2 { s.dashboardHeading }
         if model.dashboardLoading then
-            p { "Lädt..." }
+            p { s.loadingEllipsis }
         match model.dashboardError with
-        | Some err -> p { $"Fehler: {err}" }
+        | Some err -> p { s.errorPrefix err }
         | None -> ()
         match model.dashboard with
         | None ->
             div {
                 input {
                     attr.``type`` "text"
-                    attr.placeholder "SpaceTraders-Token einfügen"
+                    attr.placeholder s.tokenPlaceholder
                     attr.value model.tokenInput
                     on.change (fun e -> dispatch (TokenInputChanged(string e.Value)))
                 }
-                button { on.click (fun _ -> dispatch SubmitToken); "Anmelden" }
+                button { on.click (fun _ -> dispatch SubmitToken); s.login }
             }
         | Some state ->
             div {
-                h3 { $"Pilot: {state.agent.symbol}" }
-                p { $"Kontostand: {state.agent.credits} Credits" }
-                p { $"Hauptquartier: {state.agent.headquarters}" }
-                h3 { "Schiffe" }
+                h3 { s.pilotLabel state.agent.symbol }
+                p { s.balance state.agent.credits }
+                p { s.headquarters state.agent.headquarters }
+                h3 { s.shipsHeading }
                 ul {
                     for ship in state.ships do
                         li {
                             attr.style "cursor: pointer; text-decoration: underline"
                             on.click (fun _ -> dispatch (InspectShip ship.symbol))
-                            $"{ship.symbol} — {ship.registration.role} — {ship.nav.status} bei {ship.nav.waypointSymbol}"
+                            s.shipLine (ship.symbol, ship.registration.role, ship.nav.status, ship.nav.waypointSymbol)
                         }
                 }
-                h3 { "Aufträge" }
+                h3 { s.contractsHeading }
                 ul {
                     for contract in state.contracts do
-                        li { $"{contract.id} ({contract.``type``}) — angenommen: {contract.accepted}, erfüllt: {contract.fulfilled}" }
+                        li { s.contractLine (contract.id, contract.``type``, contract.accepted, contract.fulfilled) }
                 }
-                h3 { "Wegpunkte" }
+                h3 { s.waypointsHeading }
                 ul {
                     for waypoint in state.waypoints do
                         li {
                             attr.style "cursor: pointer; text-decoration: underline"
                             on.click (fun _ -> dispatch (InspectWaypoint waypoint.symbol))
-                            $"{waypoint.symbol} ({waypoint.``type``})"
+                            s.waypointLine (waypoint.symbol, waypoint.``type``)
                         }
                 }
-                h3 { "Markt" }
+                h3 { s.marketHeading }
                 for market in state.markets do
                     div {
-                        p { $"Markt bei {market.symbol}" }
+                        p { s.marketAt market.symbol }
                         ul {
                             for good in market.exports do
-                                li { $"Export: {good.name}" }
+                                li { s.exportLine good.name }
                         }
                     }
             }
@@ -820,64 +1296,62 @@ let private viewDashboard model dispatch =
 
 /// Entity inspector (visual-map feature): every field already on `Ship` — no
 /// data gap here, unlike waypoints (see `viewWaypointInspector`).
-let private viewShipInspector (ship: Ship) dispatch =
+let private viewShipInspector (s: Strings) (ship: Ship) dispatch =
     div {
         attr.style "border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem; margin: 0.5rem 0"
-        h3 { $"Schiff: {ship.symbol}" }
-        button { on.click (fun _ -> dispatch CloseInspector); "Schließen" }
-        p { $"Rolle: {ship.registration.role}" }
+        h3 { s.shipInspectorTitle ship.symbol }
+        button { on.click (fun _ -> dispatch CloseInspector); s.closeButton }
+        p { s.roleLine ship.registration.role }
         p {
-            "Wegpunkt: "
+            s.waypointLabel
             a {
                 attr.style "cursor: pointer; text-decoration: underline"
                 on.click (fun _ -> dispatch (InspectWaypoint ship.nav.waypointSymbol))
                 ship.nav.waypointSymbol
             }
         }
-        p { $"Status: {ship.nav.status} ({ship.nav.flightMode})" }
+        p { s.statusAndFlightMode (ship.nav.status, ship.nav.flightMode) }
         if ship.nav.status = "IN_TRANSIT" then
-            p {
-                $"Unterwegs von {ship.nav.route.origin.symbol} nach {ship.nav.route.destination.symbol}, Ankunft: {ship.nav.route.arrival}"
-            }
-        p { $"Treibstoff: {ship.fuel.current} / {ship.fuel.capacity}" }
-        p { $"Fracht: {ship.cargo.units} / {ship.cargo.capacity}" }
+            p { s.inTransitLine (ship.nav.route.origin.symbol, ship.nav.route.destination.symbol, ship.nav.route.arrival) }
+        p { s.fuelLine (ship.fuel.current, ship.fuel.capacity) }
+        p { s.cargoLine (ship.cargo.units, ship.cargo.capacity) }
         if ship.cargo.inventory.IsEmpty then
-            p { "Keine Fracht an Bord." }
+            p { s.noCargo }
         else
             ul {
                 for item in ship.cargo.inventory do
                     li { $"{item.name}: {item.units}" }
             }
         if ship.cooldown.remainingSeconds > 0 then
-            p { $"Abklingzeit: noch {ship.cooldown.remainingSeconds}s" }
+            p { s.cooldownLine ship.cooldown.remainingSeconds }
     }
 
 /// Entity inspector (visual-map feature): unlike `Ship`, `Waypoint` is thin on
 /// its own (§'s "waypoint traits" addition) — traits, ships currently here (from
 /// `state.ships`, not the waypoint itself), and lazily-loaded market/shipyard
 /// data (gated on the matching trait) fill in "all the details."
-let private viewWaypointInspector (waypoint: Waypoint) (state: DashboardState) model dispatch =
-    let shipsHere = state.ships |> List.filter (fun s -> s.nav.waypointSymbol = waypoint.symbol)
+let private viewWaypointInspector (strings: Strings) (waypoint: Waypoint) (state: DashboardState) model dispatch =
+    let shipsHere = state.ships |> List.filter (fun sh -> sh.nav.waypointSymbol = waypoint.symbol)
     let hasTrait symbol = waypoint.traits |> List.exists (fun t -> t.symbol = symbol)
 
     div {
         attr.style "border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem; margin: 0.5rem 0"
-        h3 { $"Wegpunkt: {waypoint.symbol}" }
-        button { on.click (fun _ -> dispatch CloseInspector); "Schließen" }
-        p { $"Typ: {waypoint.``type``} — Position: ({waypoint.x}, {waypoint.y})" }
+        h3 { strings.waypointInspectorTitle waypoint.symbol }
+        button { on.click (fun _ -> dispatch CloseInspector); strings.closeButton }
+        p { strings.typeAndPosition (waypoint.``type``, waypoint.x, waypoint.y) }
 
-        h4 { "Eigenschaften" }
+        h4 { strings.traitsHeading }
         if waypoint.traits.IsEmpty then
-            p { "Keine bekannten Eigenschaften." }
+            p { strings.noKnownTraits }
         else
             ul {
                 for t in waypoint.traits do
                     li { $"{t.name}: {t.description}" }
             }
 
-        h4 { "Schiffe hier" }
+        h4 { strings.shipsHereHeading }
         if shipsHere.IsEmpty then
-            p { "Keine Schiffe an diesem Wegpunkt." }
+            p { strings.noShipsHere }
         else
             ul {
                 for ship in shipsHere do
@@ -889,37 +1363,39 @@ let private viewWaypointInspector (waypoint: Waypoint) (state: DashboardState) m
             }
 
         if hasTrait "MARKETPLACE" then
-            h4 { "Markt" }
+            h4 { strings.marketHeading }
             match model.waypointMarket with
-            | None -> button { on.click (fun _ -> dispatch (LoadWaypointMarket waypoint.symbol)); "Markt laden" }
+            | None -> button { on.click (fun _ -> dispatch (LoadWaypointMarket waypoint.symbol)); strings.loadMarket }
             | Some market ->
                 ul {
                     for good in market.tradeGoods do
-                        li { $"{good.symbol}: Kaufpreis {good.purchasePrice}, Verkaufspreis {good.sellPrice}" }
+                        li { strings.tradeGoodLine (good.symbol, good.purchasePrice, good.sellPrice) }
                 }
 
         if hasTrait "SHIPYARD" then
-            h4 { "Werft" }
+            h4 { strings.shipyardHeading }
             match model.waypointShipyard with
-            | None -> button { on.click (fun _ -> dispatch (LoadWaypointShipyard waypoint.symbol)); "Werft laden" }
+            | None -> button { on.click (fun _ -> dispatch (LoadWaypointShipyard waypoint.symbol)); strings.loadShipyard }
             | Some shipyard ->
                 ul {
                     for entry in shipyard.ships do
-                        li { $"{entry.``type``}: {entry.purchasePrice} Credits" }
+                        li { strings.shipyardTypeLine (entry.``type``, entry.purchasePrice) }
                 }
     }
 
 let private viewInspector (state: DashboardState) model dispatch =
+    let s = stringsFor model.locale
+
     match model.inspecting with
     | None -> Node.Empty()
     | Some(InspectedShip shipSymbol) ->
-        match state.ships |> List.tryFind (fun s -> s.symbol = shipSymbol) with
-        | Some ship -> viewShipInspector ship dispatch
-        | None -> div { $"Schiff {shipSymbol} nicht gefunden." }
+        match state.ships |> List.tryFind (fun sh -> sh.symbol = shipSymbol) with
+        | Some ship -> viewShipInspector s ship dispatch
+        | None -> div { s.shipNotFound shipSymbol }
     | Some(InspectedWaypoint waypointSymbol) ->
         match state.waypoints |> List.tryFind (fun w -> w.symbol = waypointSymbol) with
-        | Some waypoint -> viewWaypointInspector waypoint state model dispatch
-        | None -> div { $"Wegpunkt {waypointSymbol} nicht gefunden." }
+        | Some waypoint -> viewWaypointInspector s waypoint state model dispatch
+        | None -> div { s.waypointNotFound waypointSymbol }
 
 // --- Visual system map (§9's "later idea," Milestone 10-adjacent) ------------------
 // Pure F#/Bolero.Html — `svg` is a predefined element builder, and `circle`/
@@ -990,11 +1466,11 @@ let private interpolatedShipPosition (waypoints: Waypoint list) (ship: Ship) : (
         |> List.tryFind (fun w -> w.symbol = ship.nav.waypointSymbol)
         |> Option.map (fun w -> float w.x, float w.y)
 
-let private viewSystemMap (state: DashboardState) dispatch =
+let private viewSystemMap (s: Strings) (state: DashboardState) dispatch =
     let bounds = computeMapBounds state.waypoints
 
     div {
-        h2 { "Systemkarte" }
+        h2 { s.systemMapHeading }
         svg {
             "viewBox" => $"0 0 {mapViewSize} {mapViewSize}"
             attr.style "width: 100%; max-width: 400px; height: 400px; border: 1px solid #ccc"
@@ -1053,79 +1529,64 @@ let private viewSystemMap (state: DashboardState) dispatch =
     }
 
 let private viewQueueStatus model dispatch =
+    let s = stringsFor model.locale
+
     div {
-        h2 { "Warteschlange (Milestone 5)" }
-        button { on.click (fun _ -> dispatch LoadQueueStatus); "Aktualisieren" }
+        h2 { s.queueHeading }
+        button { on.click (fun _ -> dispatch LoadQueueStatus); s.refresh }
         match model.queueStatus with
-        | None -> p { "Noch nicht geladen." }
+        | None -> p { s.queueNotLoadedYet }
         | Some status ->
             div {
-                p { $"Wartende Anfragen: {status.pendingCount}" }
+                p { s.pendingRequests status.pendingCount }
                 if status.serverResetDetected then
-                    p { "Der Spielserver wurde zurückgesetzt. Ein neuer Kapitän muss erstellt werden." }
+                    p { s.serverResetDetected }
                 match status.unreachableSince with
                 | Some since ->
                     let sinceText = since.ToString("HH:mm:ss")
-                    p {
-                        $"Die Raumfunkzentrale ist gerade nicht erreichbar (seit {sinceText}). Deine Piloten machen weiter, sobald sie wieder Funkkontakt haben."
-                    }
+                    p { s.apiUnreachableSince sinceText }
                 | None -> ()
-                h3 { "Letzte Ereignisse" }
+                h3 { s.recentEventsHeading }
                 ul {
                     for evt in status.recentEvents do
                         let requestedAtText = evt.requestedAt.ToString("HH:mm:ss")
-                        li {
-                            $"{requestedAtText} {evt.endpoint} — {evt.status} (Priorität {evt.priority}, Versuch {evt.attempt})"
-                        }
+                        li { s.eventLine (requestedAtText, evt.endpoint, evt.status, evt.priority, evt.attempt) }
                 }
             }
     }
 
-/// Milestone 7 (§15): German status text for a pilot card.
-let private germanPilotStatus (status: string) : string =
-    match status with
-    | "Running" -> "Führt Programm aus"
-    | "AwaitingApiResponse" -> "Wartet auf Bestätigung"
-    | "WaitingForArrival" -> "Unterwegs"
-    | "WaitingForCooldown" -> "Wartet auf Abklingzeit"
-    | "Reconciling" -> "Prüft die letzte Aktion"
-    | "AwaitingInfoResponse" -> "Wartet auf Information"
-    | "Paused" -> "Pausiert"
-    | "Cancelled" -> "Gestoppt"
-    | "Completed" -> "Fertig"
-    | "Failed" -> "Fehlgeschlagen"
-    | other -> other
-
 let private viewJobRunner model dispatch =
+    let s = stringsFor model.locale
+
     div {
-        h2 { "Programm ausführen (Milestone 7)" }
+        h2 { s.jobRunnerHeading }
         match model.dashboard with
-        | None -> p { "Zuerst anmelden, um ein Schiff auszuwählen." }
+        | None -> p { s.pleaseLoginFirst }
         | Some state ->
             div {
-                label { "Schiff: " }
+                label { s.shipLabel }
                 select {
                     on.change (fun e -> dispatch (SelectShip(string e.Value)))
-                    option { attr.value ""; "-- wählen --" }
+                    option { attr.value ""; s.chooseOption }
                     for ship in state.ships do
                         option { attr.value ship.symbol; ship.symbol }
                 }
                 button {
                     attr.disabled (model.currentProgramId.IsNone || model.selectedShipSymbol.IsNone || model.startingJob)
                     on.click (fun _ -> dispatch StartProgram)
-                    "Start"
+                    s.start
                 }
             }
             if model.currentProgramId.IsNone then
-                p { "Bitte zuerst ein Programm öffnen." }
+                p { s.pleaseOpenProgramFirst }
         match model.pilotError with
-        | Some message -> p { $"Fehler: {message}" }
+        | Some message -> p { s.errorPrefix message }
         | None -> ()
 
-        h3 { "Piloten" }
-        button { on.click (fun _ -> dispatch LoadPilots); "Piloten aktualisieren" }
+        h3 { s.pilotsHeading }
+        button { on.click (fun _ -> dispatch LoadPilots); s.refreshPilots }
         if model.pilots.IsEmpty then
-            p { "Noch kein Pilot aktiv." }
+            p { s.noPilotsYet }
         else
             for pilot in model.pilots do
                 let isTerminal = List.contains pilot.status terminalPilotStatuses
@@ -1133,24 +1594,24 @@ let private viewJobRunner model dispatch =
 
                 div {
                     attr.style "border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem; margin: 0.5rem 0"
-                    p { $"🤖 Schiff: {pilot.shipSymbol}" }
-                    p { $"Status: {germanPilotStatus pilot.status}" }
+                    p { s.pilotShipLine pilot.shipSymbol }
+                    p { s.pilotStatusLine (s.pilotStatus pilot.status) }
                     match pilot.statusDetail with
                     | Some detail -> p { detail }
                     | None -> ()
                     match pilot.lastLogLine with
-                    | Some line -> p { $"Zuletzt: {line}" }
+                    | Some line -> p { s.lastLogLine line }
                     | None -> ()
                     if not isTerminal then
                         if isPaused then
-                            button { on.click (fun _ -> dispatch (ResumePilot pilot.jobId)); "Fortsetzen" }
+                            button { on.click (fun _ -> dispatch (ResumePilot pilot.jobId)); s.resume }
                         else
-                            button { on.click (fun _ -> dispatch (PausePilot pilot.jobId)); "Pause" }
-                        button { on.click (fun _ -> dispatch (CancelPilot pilot.jobId)); "Stoppen" }
+                            button { on.click (fun _ -> dispatch (PausePilot pilot.jobId)); s.pause }
+                        button { on.click (fun _ -> dispatch (CancelPilot pilot.jobId)); s.stop }
                         if model.watchedJobId = Some pilot.jobId then
-                            button { on.click (fun _ -> dispatch StopWatching); "Beobachtung stoppen" }
+                            button { on.click (fun _ -> dispatch StopWatching); s.stopWatching }
                         else
-                            button { on.click (fun _ -> dispatch (WatchPilot pilot.jobId)); "Beobachten" }
+                            button { on.click (fun _ -> dispatch (WatchPilot pilot.jobId)); s.watch }
 
                     if model.watchedJobId = Some pilot.jobId then
                         match model.watchedFrames with
@@ -1161,49 +1622,51 @@ let private viewJobRunner model dispatch =
                                 model.customBlocks |> List.tryFind (fun b -> b.id = innerScope) |> Option.map (fun b -> b.name) |> Option.defaultValue innerScope
 
                             p {
-                                $"Innen aktiv: \"{innerName}\" "
-                                button { on.click (fun _ -> dispatch (OpenCustomBlock(innerScope, innerName))); "Block öffnen" }
+                                s.innerActiveLine innerName
+                                button { on.click (fun _ -> dispatch (OpenCustomBlock(innerScope, innerName))); s.openBlock }
                             }
                         | _ -> ()
                 }
 
-        h3 { "Logbuch" }
+        h3 { s.logbookHeading }
         let activePilots = model.pilots |> List.filter (fun p -> not (List.contains p.status terminalPilotStatuses))
 
         if activePilots.IsEmpty then
-            p { "Keine Piloten aktiv." }
+            p { s.noActivePilots }
         else
             ul {
                 for pilot in activePilots do
                     li {
                         match pilot.lastLogLine with
-                        | Some line -> $"🤖 {pilot.shipSymbol}: {line}"
-                        | None -> $"🤖 {pilot.shipSymbol}: {germanPilotStatus pilot.status}"
+                        | Some line -> s.logbookLine (pilot.shipSymbol, line)
+                        | None -> s.logbookLine (pilot.shipSymbol, s.pilotStatus pilot.status)
                     }
             }
     }
 
 let private viewCustomBlockLibrary model dispatch =
+    let s = stringsFor model.locale
+
     div {
-        h2 { "Eigene Blöcke (Milestone 9)" }
+        h2 { s.customBlocksHeading }
         div {
             input {
                 attr.``type`` "text"
-                attr.placeholder "Name des neuen Blocks"
+                attr.placeholder s.newBlockNamePlaceholder
                 attr.value model.newCustomBlockName
                 on.change (fun e -> dispatch (NewCustomBlockNameChanged(string e.Value)))
             }
-            button { on.click (fun _ -> dispatch CreateCustomBlock); "Neuer Block" }
+            button { on.click (fun _ -> dispatch CreateCustomBlock); s.newBlockButton }
         }
         if model.customBlocks.IsEmpty then
-            p { "Noch kein eigener Block gespeichert." }
+            p { s.noCustomBlocksYet }
         else
             ul {
                 for b in model.customBlocks do
                     li {
-                        $"{b.name} (Version {b.version}) "
-                        button { on.click (fun _ -> dispatch (OpenCustomBlock(b.id, b.name))); "Öffnen" }
-                        button { on.click (fun _ -> dispatch (DeleteCustomBlock b.id)); "Löschen" }
+                        s.customBlockLine (b.name, b.version)
+                        button { on.click (fun _ -> dispatch (OpenCustomBlock(b.id, b.name))); s.openButton }
+                        button { on.click (fun _ -> dispatch (DeleteCustomBlock b.id)); s.deleteButton }
                     }
             }
         match model.openCustomBlockId with
@@ -1215,34 +1678,36 @@ let private viewCustomBlockLibrary model dispatch =
                     attr.value model.renameNameInput
                     on.change (fun e -> dispatch (RenameNameInputChanged(string e.Value)))
                 }
-                button { on.click (fun _ -> dispatch (RenameCustomBlock id)); "Umbenennen" }
-                button { on.click (fun _ -> dispatch SaveWorkshop); "Workshop speichern" }
+                button { on.click (fun _ -> dispatch (RenameCustomBlock id)); s.renameButton }
+                button { on.click (fun _ -> dispatch SaveWorkshop); s.saveWorkshopButton }
             }
         if model.workshopStatus <> "" then
             p { model.workshopStatus }
     }
 
 let private viewProgramLibrary model dispatch =
+    let s = stringsFor model.locale
+
     div {
-        h2 { "Programme" }
+        h2 { s.programsHeading }
         div {
             input {
                 attr.``type`` "text"
-                attr.placeholder "Name des neuen Programms"
+                attr.placeholder s.newProgramNamePlaceholder
                 attr.value model.newProgramName
                 on.change (fun e -> dispatch (NewProgramNameChanged(string e.Value)))
             }
-            button { on.click (fun _ -> dispatch CreateProgram); "Neues Programm" }
+            button { on.click (fun _ -> dispatch CreateProgram); s.newProgramButton }
         }
         if model.programs.IsEmpty then
-            p { "Noch kein Programm gespeichert." }
+            p { s.noProgramsYet }
         else
             ul {
                 for p in model.programs do
                     li {
                         $"{p.name} "
-                        button { on.click (fun _ -> dispatch (OpenProgram p.id)); "Öffnen" }
-                        button { on.click (fun _ -> dispatch (DeleteProgram p.id)); "Löschen" }
+                        button { on.click (fun _ -> dispatch (OpenProgram p.id)); s.openButton }
+                        button { on.click (fun _ -> dispatch (DeleteProgram p.id)); s.deleteButton }
                     }
             }
         match model.currentProgramId with
@@ -1254,58 +1719,70 @@ let private viewProgramLibrary model dispatch =
                     attr.value model.renameProgramInput
                     on.change (fun e -> dispatch (RenameProgramInputChanged(string e.Value)))
                 }
-                button { on.click (fun _ -> dispatch (RenameProgram id)); "Umbenennen" }
-                button { on.click (fun _ -> dispatch CloseProgram); "Schließen" }
+                button { on.click (fun _ -> dispatch (RenameProgram id)); s.renameButton }
+                button { on.click (fun _ -> dispatch CloseProgram); s.closeButton2 }
             }
         if model.programStatus <> "" then
             p { model.programStatus }
     }
 
 let view model dispatch =
+    let s = stringsFor model.locale
+
     div {
         attr.style "font-family: sans-serif; padding: 1rem"
         h1 { "SpaceKids – Blockly-Spike (Milestone 0)" }
+        div {
+            button {
+                attr.disabled (model.locale = "de")
+                on.click (fun _ -> dispatch (SetLocale "de"))
+                "Deutsch"
+            }
+            button {
+                attr.disabled (model.locale = "en")
+                on.click (fun _ -> dispatch (SetLocale "en"))
+                "English"
+            }
+        }
         p { model.status }
         viewProgramLibrary model dispatch
         match model.currentProgramId with
-        | None -> p { "Kein Programm geöffnet — wähle oder erstelle eines oben." }
+        | None -> p { s.noProgramOpen }
         | Some _ ->
             div {
                 if not model.staleWarnings.IsEmpty then
                     div {
                         attr.style "border: 1px solid #cc8800; background: #fff8e6; padding: 0.5rem; margin-bottom: 0.5rem"
-                        p { "Einige eigene Blöcke in diesem Programm haben sich geändert — bitte vor dem Ausführen prüfen." }
+                        p { s.staleWarningsBanner }
                         ul {
                             for w in model.staleWarnings do
                                 li { w }
                         }
                     }
                 div {
-                    button { on.click (fun _ -> dispatch Save); "Speichern" }
-                    button { on.click (fun _ -> dispatch Load); "Laden" }
-                    button { on.click (fun _ -> dispatch HighlightFirstBlock); "Ersten Block hervorheben" }
+                    button { on.click (fun _ -> dispatch Save); s.saveButton }
+                    button { on.click (fun _ -> dispatch Load); s.loadButton }
+                    button { on.click (fun _ -> dispatch HighlightFirstBlock); s.highlightFirstBlockButton }
                     button {
                         attr.disabled model.watchModeLocked
                         on.click (fun _ -> dispatch ToggleReadOnly)
-                        if model.readOnly then "Bearbeiten erlauben" else "Nur ansehen"
+                        if model.readOnly then s.allowEditing else s.viewOnly
                     }
-                    button { on.click (fun _ -> dispatch SimulateRun); "Simuliere Ausführung" }
+                    button { on.click (fun _ -> dispatch SimulateRun); s.simulateRunButton }
                 }
                 if model.watchModeLocked then
-                    p {
-                        "Ein Pilot fliegt gerade ein Programm. Zum Bearbeiten müssen alle Piloten angehalten werden."
-                    }
-                h2 { "Programm" }
+                    p { s.watchModeLockedBanner }
+                h2 { s.programHeading }
                 div {
                     attr.id model.containerId
                     attr.style "height: 360px; width: 100%; border: 1px solid #ccc; margin-top: 0.5rem"
                 }
             }
         viewCustomBlockLibrary model dispatch
-        h2 { "Blockwerkstatt (Eigener Block definieren)" }
+        h2 { s.workshopHeading }
         p {
-            "Ziehe \"Eigener Block\" auf die Fläche, öffne sein Zahnrad-Menü, füge eine Eingabe hinzu, dann:"
-            button { on.click (fun _ -> dispatch PublishSignature); "Signatur an Programm übergeben" }
+            s.workshopHint
+            button { on.click (fun _ -> dispatch PublishSignature); s.publishSignatureButton }
         }
         div {
             attr.id model.workshopContainerId
@@ -1314,7 +1791,7 @@ let view model dispatch =
         viewDashboard model dispatch
         match model.dashboard with
         | Some state ->
-            viewSystemMap state dispatch
+            viewSystemMap s state dispatch
             viewInspector state model dispatch
         | None -> Node.Empty()
         viewQueueStatus model dispatch
@@ -1332,6 +1809,7 @@ type MyApp() =
         let jobRemote = this.Remote<JobService>()
         let customBlockRemote = this.Remote<CustomBlockService>()
         let programRemote = this.Remote<ProgramService>()
+        let settingsRemote = this.Remote<SettingsService>()
         Program.mkProgram
             (fun _ ->
                 initModel,
@@ -1342,7 +1820,8 @@ type MyApp() =
                     Cmd.ofMsg LoadPilots
                     Cmd.ofMsg LoadCustomBlocks
                     Cmd.ofMsg LoadPrograms
+                    Cmd.ofMsg LoadLocale
                     Cmd.ofMsg MapTick
                 ])
-            (update js remote agentRemote queueRemote jobRemote customBlockRemote programRemote)
+            (update js remote agentRemote queueRemote jobRemote customBlockRemote programRemote settingsRemote)
             view

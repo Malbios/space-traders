@@ -11,7 +11,7 @@ open SpaceKids.Client.Main
 /// the handler's `Handler` property, matching `AgentRemoting.fs`'s own
 /// `fetchWaypointMarket`/`fetchWaypointShipyard` shape) so tests can call it
 /// directly without instantiating a Bolero remote handler.
-let staleWarnings (dbPath: string) (programId: string) : Async<string list> =
+let staleWarnings (dbPath: string) (locale: SpaceKids.Core.Dsl.Locale) (programId: string) : Async<string list> =
     async {
         let! snapshotJson = Persistence.ProgramRepository.latestCompiledSnapshot dbPath programId
 
@@ -24,7 +24,7 @@ let staleWarnings (dbPath: string) (programId: string) : Async<string list> =
                 Persistence.CustomBlockRepository.load dbPath customBlockId |> Async.RunSynchronously
 
             return
-                SpaceKids.Core.Dsl.Validator.revalidateAgainstCurrentDefinitions customBlockLookup compiled
+                SpaceKids.Core.Dsl.Validator.revalidateAgainstCurrentDefinitions locale customBlockLookup compiled
                 |> List.map (fun e -> e.message)
     }
 
@@ -38,6 +38,12 @@ type ProgramRemoteHandler(ctx: IRemoteContext) =
 
     let toSummaryDto (p: Persistence.ProgramRepository.ProgramSummary) : ProgramSummaryDto = { id = p.id; name = p.name }
 
+    let currentLocale () : Async<SpaceKids.Core.Dsl.Locale> =
+        async {
+            let! raw = Persistence.SettingsRepository.getLocale dbPath
+            return SpaceKids.Core.Dsl.Locale.ofString raw
+        }
+
     override this.Handler =
         {
             list = fun () -> async { let! programs = Persistence.ProgramRepository.list dbPath in return programs |> List.map toSummaryDto }
@@ -46,9 +52,15 @@ type ProgramRemoteHandler(ctx: IRemoteContext) =
                 fun id ->
                     async {
                         let! workspaceJson = Persistence.WorkspaceRepository.load dbPath id
-                        let! warnings = staleWarnings dbPath id
+                        let! locale = currentLocale ()
+                        let! warnings = staleWarnings dbPath locale id
                         return (workspaceJson, warnings)
                     }
             rename = fun (id, name) -> Persistence.ProgramRepository.rename dbPath id name
-            delete = fun id -> Persistence.ProgramRepository.delete dbPath id
+            delete =
+                fun id ->
+                    async {
+                        let! locale = currentLocale ()
+                        return! Persistence.ProgramRepository.delete dbPath locale id
+                    }
         }

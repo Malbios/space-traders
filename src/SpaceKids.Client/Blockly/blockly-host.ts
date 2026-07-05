@@ -1,6 +1,6 @@
 import * as Blockly from "blockly/core";
 import "blockly/blocks";
-import { applyGermanLocale } from "./i18n-locale";
+import { applyBlocklyLocale } from "./i18n-locale";
 import {
     registerTrivialBlocks,
     registerDefinitionShellBlock,
@@ -12,6 +12,7 @@ import {
 import { registerCatalogBlocks } from "./blocks-catalog";
 import { buildCatalogToolbox } from "./toolbox-de";
 import { serializeWorkspace as serialize, loadWorkspace as load } from "./workspace-serialization";
+import { Locale, setCurrentLocale } from "./locale-state";
 
 /**
  * The seam (§3a): the sole owner of every Blockly instance on the page. Elmish never
@@ -19,7 +20,7 @@ import { serializeWorkspace as serialize, loadWorkspace as load } from "./worksp
  * string (or a primitive), invoked from F# via IJSRuntime against `window.spaceKids.*`.
  */
 
-applyGermanLocale();
+applyBlocklyLocale("de");
 registerTrivialBlocks();
 registerDefinitionShellBlock();
 registerCallerBlock();
@@ -65,6 +66,50 @@ function initWorkspace(containerId: string, readOnly: boolean): void {
     });
     workspaces.set(containerId, ws);
     onWorkspaceChanged(containerId);
+}
+
+/**
+ * Milestone 12 (bilingual support): switches the active locale and re-renders every
+ * currently-open workspace under it. Blockly doesn't relabel already-instantiated
+ * block instances after `Blockly.setLocale` — the only way to get existing blocks to
+ * show the new language is to recreate them, so this captures each open workspace's
+ * JSON, disposes it, re-injects a fresh one (preserving its custom-block/accessor
+ * toolbox entries, unlike `destroyWorkspace` which is a one-way teardown), and reloads
+ * the same JSON — same block *types*, freshly rendered labels.
+ */
+function setLocale(locale: Locale): void {
+    setCurrentLocale(locale);
+    applyBlocklyLocale(locale);
+
+    for (const containerId of [...workspaces.keys()]) {
+        const ws = workspaces.get(containerId)!;
+        const json = serialize(ws);
+        const readOnly = ws.options.readOnly;
+        const customBlockIds = customBlockIdsByContainer.get(containerId) ?? [];
+        const dynamicAccessorTypes = dynamicAccessorTypesByContainer.get(containerId) ?? [];
+
+        ws.dispose();
+
+        const el = document.getElementById(containerId);
+        if (!el) {
+            workspaces.delete(containerId);
+            customBlockIdsByContainer.delete(containerId);
+            dynamicAccessorTypesByContainer.delete(containerId);
+            changeLogByContainer.delete(containerId);
+            continue;
+        }
+
+        const newWs = Blockly.inject(el, {
+            toolbox: buildCatalogToolbox(customBlockIds, dynamicAccessorTypes) as Blockly.utils.toolbox.ToolboxDefinition,
+            readOnly,
+        });
+        workspaces.set(containerId, newWs);
+        customBlockIdsByContainer.set(containerId, customBlockIds);
+        dynamicAccessorTypesByContainer.set(containerId, dynamicAccessorTypes);
+        changeLogByContainer.set(containerId, []);
+        onWorkspaceChanged(containerId);
+        load(newWs, json);
+    }
 }
 
 function destroyWorkspace(containerId: string): void {
@@ -196,6 +241,7 @@ interface SpaceKidsHost {
     getChangeLog: typeof getChangeLog;
     publishCustomBlockSignature: typeof publishCustomBlockSignature;
     simulateRun: typeof simulateRun;
+    setLocale: typeof setLocale;
 }
 
 declare global {
@@ -216,4 +262,5 @@ window.spaceKids = {
     getChangeLog,
     publishCustomBlockSignature,
     simulateRun,
+    setLocale,
 };

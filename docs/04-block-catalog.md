@@ -272,72 +272,75 @@ input (`TARGET`, the record) and no other inputs.
 
 ```txt
 Schiff (getShipInfo, one item of getFleetInfo's list)
-  Name, Wegpunkt, Status, Treibstoff, Frachteinheiten, Frachtkapazität
+  Name, Waypoint, Status, Fuel, CargoUnits, CargoCapacity
 
 Fracht (getCargo)
-  Einheiten, Kapazität, Waren (Liste von Ware)
+  Units, Capacity, Goods (Liste von Ware)
 
-Ware (one item of Fracht's Waren list)
-  Name, Einheiten
+Ware (one item of Fracht's Goods list)
+  Name, Units
 
 Werft (getShipyard)
-  Wegpunkt, Schiffstypen (Liste von Schiffstyp)
+  Waypoint, Types (Liste von Schiffstyp)
 
-Schiffstyp (one item of Werft's Schiffstypen list)
-  Typ, Preis
+Schiffstyp (one item of Werft's Types list)
+  Type, Price
 
 Markt (getMarket)
-  Wegpunkt, Handelswaren (Liste von Handelsware)
+  Waypoint, Goods (Liste von Handelsware)
 
-Handelsware (one item of Markt's Handelswaren list)
-  Name, Kaufpreis, Verkaufspreis
+Handelsware (one item of Markt's Goods list)
+  Name, BuyPrice, SellPrice
 
 Auftrag (one item of getContracts' list)
-  Id, Typ, Angenommen, Erfüllt
+  Id, Type, Accepted, Fulfilled
 
 Wegpunkt (one item of getWaypoints' list)
-  Symbol, Typ
+  Symbol, Type
 ```
 
 Accessor blocks (Blockly type -> German label -> record field, all colour 65,
-"Zugriffe" toolbox category):
+"Zugriffe" toolbox category). The record field names are canonical English keys
+(Milestone 12/bilingual support decoupled the runtime `VRecord` contract from
+display language — the field is never itself shown to the player, only the
+accessor block's own German/English label is):
 
 ```txt
 shipName             Name aus Schiff              -> Schiff.Name
-shipWaypoint         Wegpunkt aus Schiff           -> Schiff.Wegpunkt
+shipWaypoint         Wegpunkt aus Schiff           -> Schiff.Waypoint
 shipStatus           Status aus Schiff             -> Schiff.Status
-shipFuel             Treibstoff aus Schiff         -> Schiff.Treibstoff
-shipCargoUnits       Frachteinheiten aus Schiff    -> Schiff.Frachteinheiten
-shipCargoCapacity    Frachtkapazität aus Schiff    -> Schiff.Frachtkapazität
-cargoUnits           Einheiten aus Fracht          -> Fracht.Einheiten
-cargoCapacity        Kapazität aus Fracht          -> Fracht.Kapazität
-cargoGoods           Waren aus Fracht              -> Fracht.Waren
+shipFuel             Treibstoff aus Schiff         -> Schiff.Fuel
+shipCargoUnits       Frachteinheiten aus Schiff    -> Schiff.CargoUnits
+shipCargoCapacity    Frachtkapazität aus Schiff    -> Schiff.CargoCapacity
+cargoUnits           Einheiten aus Fracht          -> Fracht.Units
+cargoCapacity        Kapazität aus Fracht          -> Fracht.Capacity
+cargoGoods           Waren aus Fracht              -> Fracht.Goods
 goodName             Name aus Ware                 -> Ware.Name
-goodUnits            Einheiten aus Ware            -> Ware.Einheiten
-shipyardWaypoint     Wegpunkt aus Werft            -> Werft.Wegpunkt
-shipyardTypes        Schiffstypen aus Werft        -> Werft.Schiffstypen
-shipyardTypeName     Typ aus Schiffstyp            -> Schiffstyp.Typ
-shipyardTypePrice    Preis aus Schiffstyp          -> Schiffstyp.Preis
-marketWaypoint       Wegpunkt aus Markt            -> Markt.Wegpunkt
-marketGoods          Handelswaren aus Markt        -> Markt.Handelswaren
+goodUnits            Einheiten aus Ware            -> Ware.Units
+shipyardWaypoint     Wegpunkt aus Werft            -> Werft.Waypoint
+shipyardTypes        Schiffstypen aus Werft        -> Werft.Types
+shipyardTypeName     Typ aus Schiffstyp            -> Schiffstyp.Type
+shipyardTypePrice    Preis aus Schiffstyp          -> Schiffstyp.Price
+marketWaypoint       Wegpunkt aus Markt            -> Markt.Waypoint
+marketGoods          Handelswaren aus Markt        -> Markt.Goods
 tradeGoodName        Name aus Handelsware          -> Handelsware.Name
-tradeGoodBuyPrice    Kaufpreis aus Handelsware     -> Handelsware.Kaufpreis
-tradeGoodSellPrice   Verkaufspreis aus Handelsware -> Handelsware.Verkaufspreis
+tradeGoodBuyPrice    Kaufpreis aus Handelsware     -> Handelsware.BuyPrice
+tradeGoodSellPrice   Verkaufspreis aus Handelsware -> Handelsware.SellPrice
 contractId           Id aus Auftrag                -> Auftrag.Id
-contractType         Typ aus Auftrag               -> Auftrag.Typ
-contractAccepted     Angenommen aus Auftrag        -> Auftrag.Angenommen
-contractFulfilled    Erfüllt aus Auftrag           -> Auftrag.Erfüllt
+contractType         Typ aus Auftrag               -> Auftrag.Type
+contractAccepted     Angenommen aus Auftrag        -> Auftrag.Accepted
+contractFulfilled    Erfüllt aus Auftrag           -> Auftrag.Fulfilled
 waypointSymbolField  Symbol aus Wegpunkt           -> Wegpunkt.Symbol
-waypointTypeField    Typ aus Wegpunkt              -> Wegpunkt.Typ
+waypointTypeField    Typ aus Wegpunkt              -> Wegpunkt.Type
 ```
 
 Registered in `blocks-catalog.ts`'s `ACCESSOR_BLOCKS` array (also exported as
 `accessorFieldNames` for reference) and compiled by `Compiler.fs`'s own
 `ACCESSOR_BLOCKS: Map<string, string>` — the two tables are kept in sync manually;
-this doc is the source of truth for both. `Markt.Handelswaren`'s and
-`Werft.Schiffstypen`'s price fields are only populated by the real API when a ship is
-present at that waypoint — otherwise both fall back to a price of 0 (documented
-simplification, same class as "market is always headquarters").
+this doc is the source of truth for both. `Markt.Goods`'s and `Werft.Types`'s price
+fields are only populated by the real API when a ship is present at that waypoint —
+otherwise both fall back to a price of 0 (documented simplification, same class as
+"market is always headquarters").
 
 ## Custom-block structured outputs (§9, Milestone 9/Part C)
 

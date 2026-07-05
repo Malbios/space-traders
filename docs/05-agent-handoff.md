@@ -326,25 +326,54 @@ history.
   called) now has its real call site: `ProgramRemoting.fs`'s `loadDefinition`
   compares a reopened program's last compiled snapshot against live
   custom-block definitions and surfaces mismatches as a dismissible banner.
+- Bilingual support (Milestone 12): a single `app_settings` row (`getLocale`/
+  `setLocale`, `SettingsService`) picks German or English for everything a
+  player sees — Blockly's own chrome, every catalog/custom block label and
+  tooltip, all `Main.fs` UI text (a `Strings` record with `de`/`en` values,
+  not a stringly-typed lookup — a missing translation is a compile error),
+  and most server-side error messages. `Compiler.fs`'s own compile-time
+  errors (e.g. missing-input messages) are **not** covered — still German
+  only, a deliberate, documented gap (see below), not an oversight. The DSL's
+  `VRecord` field keys used to literally be the German display word
+  (`"Frachtkapazität"`) — Milestone 12 made them canonical English keys
+  (`"CargoCapacity"`) decoupled from whichever language the accessor block's
+  own label renders in; if you're adding a new §8 accessor block, follow that
+  convention (English key in `Compiler.fs`'s `ACCESSOR_BLOCKS` and
+  `JobRunner.fs`'s record builders, translated label only in
+  `blocks-catalog.ts`).
+
+## Known limitations
+
+- `Compiler.fs`'s own compile-time error messages (missing input, unknown
+  block type, etc.) are still German-only — Milestone 12's translation effort
+  stopped at `Validator.fs`/`JobRunner.fs`'s few literals/
+  `ProgramRepository.delete`'s refusal message, deliberately, because
+  `Compiler.compileWorkspace`'s public signature has ~26 existing call sites
+  (mostly tests) that would all need updating to add a `Locale` parameter —
+  a much larger blast radius than `Validator.validate`'s own ~9. Translating
+  these fully is a legitimate follow-up, not done here.
 
 ## Next tasks
 
 1. plan.md's roadmap (§19) has nothing outstanding: Milestones 9 (custom
-   reusable blocks, §9), 10 (fleet mode), and 11 (saved/named multiple-program
-   library) are all done. Milestone 9: real call-stack execution, persistence,
-   typed inputs/structured outputs, the Blockwerkstatt UI, and cross-view
-   highlighting. Milestone 10: queue priority differentiation (background vs.
-   interactive), a fleet-level Logbuch, and a test proving concurrent-pilot
-   reconciliation doesn't cross-contaminate. Milestone 11: a real program
-   library (create/open/rename/delete), per-program watch mode, and the
-   structural-mismatch check's first real call site. The entity inspector +
-   visual system map (plan.md's own "later idea," grown into a real drill-down
-   feature per the user's own redirect) is also done: waypoint traits,
-   on-demand market/shipyard, a ship/waypoint inspector with full
-   cross-navigation, and an SVG map with clickable, auto-refreshing markers.
-   Milestone 8 ("first missions") was removed from the roadmap entirely, not
-   deferred — see `docs/decisions.md`. Any further work now comes from known
-   limitations logged elsewhere in this doc, not an existing roadmap item.
+   reusable blocks, §9), 10 (fleet mode), 11 (saved/named multiple-program
+   library), and 12 (bilingual support) are all done. Milestone 9: real
+   call-stack execution, persistence, typed inputs/structured outputs, the
+   Blockwerkstatt UI, and cross-view highlighting. Milestone 10: queue
+   priority differentiation (background vs. interactive), a fleet-level
+   Logbuch, and a test proving concurrent-pilot reconciliation doesn't
+   cross-contaminate. Milestone 11: a real program library
+   (create/open/rename/delete), per-program watch mode, and the
+   structural-mismatch check's first real call site. Milestone 12: a
+   runtime-switchable German/English UI, block catalog, and (mostly)
+   server-side error messages. The entity inspector + visual system map
+   (plan.md's own "later idea," grown into a real drill-down feature per the
+   user's own redirect) is also done: waypoint traits, on-demand
+   market/shipyard, a ship/waypoint inspector with full cross-navigation, and
+   an SVG map with clickable, auto-refreshing markers. Milestone 8 ("first
+   missions") was removed from the roadmap entirely, not deferred — see
+   `docs/decisions.md`. Any further work now comes from known limitations
+   logged elsewhere in this doc, not an existing roadmap item.
 
 ## Commands
 

@@ -118,7 +118,7 @@ let latestCompiledSnapshot (dbPath: string) (programId: string) : Async<string o
 /// history doesn't block deletion, only a live pilot does.
 let private terminalStates = [ "Completed"; "Failed"; "Cancelled" ]
 
-let delete (dbPath: string) (id: string) : Async<Result<unit, string>> =
+let delete (dbPath: string) (locale: SpaceKids.Core.Dsl.Locale) (id: string) : Async<Result<unit, string>> =
     async {
         use conn = Database.openConnection dbPath
 
@@ -135,7 +135,12 @@ let delete (dbPath: string) (id: string) : Async<Result<unit, string>> =
         let activeCount = checkCmd.ExecuteScalar() :?> int64
 
         if activeCount > 0L then
-            return Error "Kann nicht gelöscht werden — ein Pilot fliegt dieses Programm gerade."
+            let message =
+                match locale with
+                | SpaceKids.Core.Dsl.De -> "Kann nicht gelöscht werden — ein Pilot fliegt dieses Programm gerade."
+                | SpaceKids.Core.Dsl.En -> "Cannot be deleted — a pilot is currently flying this program."
+
+            return Error message
         else
             use deleteCmd = conn.CreateCommand()
             deleteCmd.CommandText <- "DELETE FROM program_definitions WHERE id = $id;"

@@ -1,95 +1,189 @@
 import * as Blockly from "blockly/core";
+import { getCurrentLocale } from "./locale-state";
 
 /**
- * The real German block catalog (§6/§7, docs/04-block-catalog.md) — every
- * SpaceTraders-specific action and information block planned for the first release.
- * No execution behavior here — shape (label, inputs, connections) only. DSL compilation
- * is Milestone 4; custom-block callers are Milestone 9 (see `blocks.ts` for that spike).
+ * The real block catalog (§6/§7, docs/04-block-catalog.md) — every SpaceTraders-specific
+ * action and information block planned for the first release. No execution behavior
+ * here — shape (label, inputs, connections) only. DSL compilation is Milestone 4;
+ * custom-block callers are Milestone 9 (see `blocks.ts` for that spike).
+ *
+ * Milestone 12 (bilingual support): every label/tooltip is `{ de, en }` — the current
+ * locale (`locale-state.ts`) is read live inside each block's own `init()`, so switching
+ * locale never needs `registerCatalogBlocks()` to run again; it only needs whichever
+ * workspace is open to be torn down and recreated (Blockly doesn't relabel
+ * already-instantiated blocks), which `blockly-host.ts`'s `setLocale` entry point drives.
  */
+
+interface LocalizedText {
+    de: string;
+    en: string;
+}
+
+function t(text: LocalizedText): string {
+    return text[getCurrentLocale()];
+}
 
 interface ValueInputSpec {
     /** Blockly input name, e.g. "TRADE_SYMBOL". */
     name: string;
-    /** German field label shown next to the input socket, e.g. "Ware". */
-    label: string;
+    label: LocalizedText;
 }
 
 interface CatalogBlockSpec {
     /** Blockly type identifier — kept English per §7. */
     type: string;
-    /** German block label. */
-    label: string;
-    tooltip: string;
+    label: LocalizedText;
+    tooltip: LocalizedText;
     inputs: ValueInputSpec[];
 }
 
 const ACTION_BLOCKS: CatalogBlockSpec[] = [
-    { type: "navigate", label: "Fliege zu Wegpunkt", tooltip: "Fliegt das ausgewählte Schiff zu einem Wegpunkt.", inputs: [{ name: "DESTINATION", label: "Wegpunkt" }] },
-    { type: "orbit", label: "Gehe in Umlaufbahn", tooltip: "Bringt das Schiff in die Umlaufbahn.", inputs: [] },
-    { type: "dock", label: "Docke an", tooltip: "Lässt das Schiff andocken.", inputs: [] },
-    { type: "extract", label: "Baue Rohstoffe ab", tooltip: "Baut Rohstoffe am aktuellen Asteroidenfeld ab.", inputs: [] },
-    { type: "survey", label: "Scanne Asteroidenfeld", tooltip: "Scannt das aktuelle Asteroidenfeld.", inputs: [] },
+    {
+        type: "navigate",
+        label: { de: "Fliege zu Wegpunkt", en: "Fly to waypoint" },
+        tooltip: { de: "Fliegt das ausgewählte Schiff zu einem Wegpunkt.", en: "Flies the selected ship to a waypoint." },
+        inputs: [{ name: "DESTINATION", label: { de: "Wegpunkt", en: "Waypoint" } }],
+    },
+    {
+        type: "orbit",
+        label: { de: "Gehe in Umlaufbahn", en: "Enter orbit" },
+        tooltip: { de: "Bringt das Schiff in die Umlaufbahn.", en: "Puts the ship into orbit." },
+        inputs: [],
+    },
+    {
+        type: "dock",
+        label: { de: "Docke an", en: "Dock" },
+        tooltip: { de: "Lässt das Schiff andocken.", en: "Docks the ship." },
+        inputs: [],
+    },
+    {
+        type: "extract",
+        label: { de: "Baue Rohstoffe ab", en: "Extract resources" },
+        tooltip: { de: "Baut Rohstoffe am aktuellen Asteroidenfeld ab.", en: "Extracts resources at the current asteroid field." },
+        inputs: [],
+    },
+    {
+        type: "survey",
+        label: { de: "Scanne Asteroidenfeld", en: "Survey asteroid field" },
+        tooltip: { de: "Scannt das aktuelle Asteroidenfeld.", en: "Surveys the current asteroid field." },
+        inputs: [],
+    },
     {
         type: "buyGood",
-        label: "Kaufe Ware",
-        tooltip: "Kauft eine Ware auf dem Marktplatz.",
+        label: { de: "Kaufe Ware", en: "Buy goods" },
+        tooltip: { de: "Kauft eine Ware auf dem Marktplatz.", en: "Buys a good on the marketplace." },
         inputs: [
-            { name: "TRADE_SYMBOL", label: "Ware" },
-            { name: "UNITS", label: "Menge" },
+            { name: "TRADE_SYMBOL", label: { de: "Ware", en: "Good" } },
+            { name: "UNITS", label: { de: "Menge", en: "Units" } },
         ],
     },
     {
         type: "sellGood",
-        label: "Verkaufe Ware",
-        tooltip: "Verkauft eine Ware auf dem Marktplatz.",
+        label: { de: "Verkaufe Ware", en: "Sell goods" },
+        tooltip: { de: "Verkauft eine Ware auf dem Marktplatz.", en: "Sells a good on the marketplace." },
         inputs: [
-            { name: "TRADE_SYMBOL", label: "Ware" },
-            { name: "UNITS", label: "Menge" },
+            { name: "TRADE_SYMBOL", label: { de: "Ware", en: "Good" } },
+            { name: "UNITS", label: { de: "Menge", en: "Units" } },
         ],
     },
     {
         type: "deliverContract",
-        label: "Liefere Fracht",
-        tooltip: "Liefert Fracht für einen Auftrag ab.",
+        label: { de: "Liefere Fracht", en: "Deliver cargo" },
+        tooltip: { de: "Liefert Fracht für einen Auftrag ab.", en: "Delivers cargo for a contract." },
         inputs: [
-            { name: "CONTRACT_ID", label: "Auftrag" },
-            { name: "TRADE_SYMBOL", label: "Ware" },
-            { name: "UNITS", label: "Menge" },
+            { name: "CONTRACT_ID", label: { de: "Auftrag", en: "Contract" } },
+            { name: "TRADE_SYMBOL", label: { de: "Ware", en: "Good" } },
+            { name: "UNITS", label: { de: "Menge", en: "Units" } },
         ],
     },
-    { type: "acceptContract", label: "Nimm Auftrag an", tooltip: "Nimmt einen Auftrag an.", inputs: [{ name: "CONTRACT_ID", label: "Auftrag" }] },
+    {
+        type: "acceptContract",
+        label: { de: "Nimm Auftrag an", en: "Accept contract" },
+        tooltip: { de: "Nimmt einen Auftrag an.", en: "Accepts a contract." },
+        inputs: [{ name: "CONTRACT_ID", label: { de: "Auftrag", en: "Contract" } }],
+    },
     {
         type: "purchaseShip",
-        label: "Kaufe Schiff",
-        tooltip: "Kauft ein neues Schiff auf einer Werft.",
+        label: { de: "Kaufe Schiff", en: "Buy ship" },
+        tooltip: { de: "Kauft ein neues Schiff auf einer Werft.", en: "Buys a new ship at a shipyard." },
         inputs: [
-            { name: "SHIP_TYPE", label: "Schiffstyp" },
-            { name: "WAYPOINT", label: "Wegpunkt" },
+            { name: "SHIP_TYPE", label: { de: "Schiffstyp", en: "Ship type" } },
+            { name: "WAYPOINT", label: { de: "Wegpunkt", en: "Waypoint" } },
         ],
     },
-    { type: "refuel", label: "Tanke auf", tooltip: "Tankt das Schiff auf.", inputs: [] },
+    {
+        type: "refuel",
+        label: { de: "Tanke auf", en: "Refuel" },
+        tooltip: { de: "Tankt das Schiff auf.", en: "Refuels the ship." },
+        inputs: [],
+    },
 ];
 
 const INFO_BLOCKS: CatalogBlockSpec[] = [
-    { type: "getShipInfo", label: "Hole Schiffsinformationen", tooltip: "Gibt Informationen über das ausgewählte Schiff zurück.", inputs: [] },
-    { type: "getFleetInfo", label: "Hole Flotteninformationen", tooltip: "Gibt Informationen über die gesamte Flotte zurück.", inputs: [] },
-    { type: "getWaypoints", label: "Hole Wegpunkte", tooltip: "Gibt die Wegpunkte eines Sternensystems zurück.", inputs: [{ name: "SYSTEM_SYMBOL", label: "Sternensystem" }] },
-    { type: "getMarket", label: "Hole Marktdaten", tooltip: "Gibt die Marktdaten eines Wegpunkts zurück.", inputs: [{ name: "WAYPOINT_SYMBOL", label: "Wegpunkt" }] },
-    { type: "getShipyard", label: "Hole Werftdaten", tooltip: "Gibt die Werftdaten eines Wegpunkts zurück.", inputs: [{ name: "WAYPOINT_SYMBOL", label: "Wegpunkt" }] },
-    { type: "getContracts", label: "Hole Auftragsdaten", tooltip: "Gibt die aktuellen Aufträge zurück.", inputs: [] },
-    { type: "getCargo", label: "Hole Fracht", tooltip: "Gibt die Fracht des ausgewählten Schiffs zurück.", inputs: [] },
-    { type: "getFuel", label: "Hole Treibstoff", tooltip: "Gibt den Treibstoffstand des ausgewählten Schiffs zurück.", inputs: [] },
-    { type: "getCredits", label: "Hole Credits", tooltip: "Gibt den aktuellen Kontostand zurück.", inputs: [] },
+    {
+        type: "getShipInfo",
+        label: { de: "Hole Schiffsinformationen", en: "Get ship info" },
+        tooltip: { de: "Gibt Informationen über das ausgewählte Schiff zurück.", en: "Returns information about the selected ship." },
+        inputs: [],
+    },
+    {
+        type: "getFleetInfo",
+        label: { de: "Hole Flotteninformationen", en: "Get fleet info" },
+        tooltip: { de: "Gibt Informationen über die gesamte Flotte zurück.", en: "Returns information about the whole fleet." },
+        inputs: [],
+    },
+    {
+        type: "getWaypoints",
+        label: { de: "Hole Wegpunkte", en: "Get waypoints" },
+        tooltip: { de: "Gibt die Wegpunkte eines Sternensystems zurück.", en: "Returns the waypoints of a star system." },
+        inputs: [{ name: "SYSTEM_SYMBOL", label: { de: "Sternensystem", en: "System" } }],
+    },
+    {
+        type: "getMarket",
+        label: { de: "Hole Marktdaten", en: "Get market data" },
+        tooltip: { de: "Gibt die Marktdaten eines Wegpunkts zurück.", en: "Returns the market data of a waypoint." },
+        inputs: [{ name: "WAYPOINT_SYMBOL", label: { de: "Wegpunkt", en: "Waypoint" } }],
+    },
+    {
+        type: "getShipyard",
+        label: { de: "Hole Werftdaten", en: "Get shipyard data" },
+        tooltip: { de: "Gibt die Werftdaten eines Wegpunkts zurück.", en: "Returns the shipyard data of a waypoint." },
+        inputs: [{ name: "WAYPOINT_SYMBOL", label: { de: "Wegpunkt", en: "Waypoint" } }],
+    },
+    {
+        type: "getContracts",
+        label: { de: "Hole Auftragsdaten", en: "Get contracts" },
+        tooltip: { de: "Gibt die aktuellen Aufträge zurück.", en: "Returns the current contracts." },
+        inputs: [],
+    },
+    {
+        type: "getCargo",
+        label: { de: "Hole Fracht", en: "Get cargo" },
+        tooltip: { de: "Gibt die Fracht des ausgewählten Schiffs zurück.", en: "Returns the cargo of the selected ship." },
+        inputs: [],
+    },
+    {
+        type: "getFuel",
+        label: { de: "Hole Treibstoff", en: "Get fuel" },
+        tooltip: { de: "Gibt den Treibstoffstand des ausgewählten Schiffs zurück.", en: "Returns the fuel level of the selected ship." },
+        inputs: [],
+    },
+    {
+        type: "getCredits",
+        label: { de: "Hole Credits", en: "Get credits" },
+        tooltip: { de: "Gibt den aktuellen Kontostand zurück.", en: "Returns the current account balance." },
+        inputs: [],
+    },
 ];
 
 interface AccessorBlockSpec {
     /** Blockly type identifier — kept English per §7. */
     type: string;
-    /** German block label, e.g. "Wegpunkt aus Schiff". */
-    label: string;
-    tooltip: string;
-    /** The DSL record field this pulls out (§8) — matches the German key
-     * `SpaceKids.Server.JobRunner`'s info-read conversion puts into the `VRecord`. */
+    label: LocalizedText;
+    tooltip: LocalizedText;
+    /** The DSL record field this pulls out (§8) — a canonical English key, decoupled
+     * from display language (Milestone 12) — matches
+     * `SpaceKids.Server.JobRunner`'s info-read conversion into the `VRecord`. */
     fieldName: string;
 }
 
@@ -103,40 +197,40 @@ interface AccessorBlockSpec {
  */
 const ACCESSOR_BLOCKS: AccessorBlockSpec[] = [
     // Schiff (getShipInfo / getFleetInfo items)
-    { type: "shipName", label: "Name aus Schiff", tooltip: "Gibt den Namen eines Schiffs zurück.", fieldName: "Name" },
-    { type: "shipWaypoint", label: "Wegpunkt aus Schiff", tooltip: "Gibt den aktuellen Wegpunkt eines Schiffs zurück.", fieldName: "Wegpunkt" },
-    { type: "shipStatus", label: "Status aus Schiff", tooltip: "Gibt den Status eines Schiffs zurück.", fieldName: "Status" },
-    { type: "shipFuel", label: "Treibstoff aus Schiff", tooltip: "Gibt den Treibstoffstand eines Schiffs zurück.", fieldName: "Treibstoff" },
-    { type: "shipCargoUnits", label: "Frachteinheiten aus Schiff", tooltip: "Gibt die belegten Frachteinheiten eines Schiffs zurück.", fieldName: "Frachteinheiten" },
-    { type: "shipCargoCapacity", label: "Frachtkapazität aus Schiff", tooltip: "Gibt die Frachtkapazität eines Schiffs zurück.", fieldName: "Frachtkapazität" },
+    { type: "shipName", label: { de: "Name aus Schiff", en: "Name from ship" }, tooltip: { de: "Gibt den Namen eines Schiffs zurück.", en: "Returns a ship's name." }, fieldName: "Name" },
+    { type: "shipWaypoint", label: { de: "Wegpunkt aus Schiff", en: "Waypoint from ship" }, tooltip: { de: "Gibt den aktuellen Wegpunkt eines Schiffs zurück.", en: "Returns a ship's current waypoint." }, fieldName: "Waypoint" },
+    { type: "shipStatus", label: { de: "Status aus Schiff", en: "Status from ship" }, tooltip: { de: "Gibt den Status eines Schiffs zurück.", en: "Returns a ship's status." }, fieldName: "Status" },
+    { type: "shipFuel", label: { de: "Treibstoff aus Schiff", en: "Fuel from ship" }, tooltip: { de: "Gibt den Treibstoffstand eines Schiffs zurück.", en: "Returns a ship's fuel level." }, fieldName: "Fuel" },
+    { type: "shipCargoUnits", label: { de: "Frachteinheiten aus Schiff", en: "Cargo units from ship" }, tooltip: { de: "Gibt die belegten Frachteinheiten eines Schiffs zurück.", en: "Returns a ship's used cargo units." }, fieldName: "CargoUnits" },
+    { type: "shipCargoCapacity", label: { de: "Frachtkapazität aus Schiff", en: "Cargo capacity from ship" }, tooltip: { de: "Gibt die Frachtkapazität eines Schiffs zurück.", en: "Returns a ship's cargo capacity." }, fieldName: "CargoCapacity" },
     // Fracht (getCargo)
-    { type: "cargoUnits", label: "Einheiten aus Fracht", tooltip: "Gibt die belegten Einheiten einer Fracht zurück.", fieldName: "Einheiten" },
-    { type: "cargoCapacity", label: "Kapazität aus Fracht", tooltip: "Gibt die Kapazität einer Fracht zurück.", fieldName: "Kapazität" },
-    { type: "cargoGoods", label: "Waren aus Fracht", tooltip: "Gibt die Liste der Waren einer Fracht zurück.", fieldName: "Waren" },
+    { type: "cargoUnits", label: { de: "Einheiten aus Fracht", en: "Units from cargo" }, tooltip: { de: "Gibt die belegten Einheiten einer Fracht zurück.", en: "Returns the used units of a cargo." }, fieldName: "Units" },
+    { type: "cargoCapacity", label: { de: "Kapazität aus Fracht", en: "Capacity from cargo" }, tooltip: { de: "Gibt die Kapazität einer Fracht zurück.", en: "Returns the capacity of a cargo." }, fieldName: "Capacity" },
+    { type: "cargoGoods", label: { de: "Waren aus Fracht", en: "Goods from cargo" }, tooltip: { de: "Gibt die Liste der Waren einer Fracht zurück.", en: "Returns the list of goods in a cargo." }, fieldName: "Goods" },
     // Ware (a Fracht's Waren list item)
-    { type: "goodName", label: "Name aus Ware", tooltip: "Gibt den Namen einer Ware zurück.", fieldName: "Name" },
-    { type: "goodUnits", label: "Einheiten aus Ware", tooltip: "Gibt die Einheiten einer Ware zurück.", fieldName: "Einheiten" },
+    { type: "goodName", label: { de: "Name aus Ware", en: "Name from good" }, tooltip: { de: "Gibt den Namen einer Ware zurück.", en: "Returns a good's name." }, fieldName: "Name" },
+    { type: "goodUnits", label: { de: "Einheiten aus Ware", en: "Units from good" }, tooltip: { de: "Gibt die Einheiten einer Ware zurück.", en: "Returns a good's units." }, fieldName: "Units" },
     // Werft (getShipyard)
-    { type: "shipyardWaypoint", label: "Wegpunkt aus Werft", tooltip: "Gibt den Wegpunkt einer Werft zurück.", fieldName: "Wegpunkt" },
-    { type: "shipyardTypes", label: "Schiffstypen aus Werft", tooltip: "Gibt die Liste der Schiffstypen einer Werft zurück.", fieldName: "Schiffstypen" },
+    { type: "shipyardWaypoint", label: { de: "Wegpunkt aus Werft", en: "Waypoint from shipyard" }, tooltip: { de: "Gibt den Wegpunkt einer Werft zurück.", en: "Returns a shipyard's waypoint." }, fieldName: "Waypoint" },
+    { type: "shipyardTypes", label: { de: "Schiffstypen aus Werft", en: "Ship types from shipyard" }, tooltip: { de: "Gibt die Liste der Schiffstypen einer Werft zurück.", en: "Returns the list of ship types at a shipyard." }, fieldName: "Types" },
     // Schiffstyp (a Werft's Schiffstypen list item)
-    { type: "shipyardTypeName", label: "Typ aus Schiffstyp", tooltip: "Gibt die Typbezeichnung eines Schiffstyps zurück.", fieldName: "Typ" },
-    { type: "shipyardTypePrice", label: "Preis aus Schiffstyp", tooltip: "Gibt den Preis eines Schiffstyps zurück.", fieldName: "Preis" },
+    { type: "shipyardTypeName", label: { de: "Typ aus Schiffstyp", en: "Type from ship type" }, tooltip: { de: "Gibt die Typbezeichnung eines Schiffstyps zurück.", en: "Returns a ship type's designation." }, fieldName: "Type" },
+    { type: "shipyardTypePrice", label: { de: "Preis aus Schiffstyp", en: "Price from ship type" }, tooltip: { de: "Gibt den Preis eines Schiffstyps zurück.", en: "Returns a ship type's price." }, fieldName: "Price" },
     // Markt (getMarket)
-    { type: "marketWaypoint", label: "Wegpunkt aus Markt", tooltip: "Gibt den Wegpunkt eines Marktes zurück.", fieldName: "Wegpunkt" },
-    { type: "marketGoods", label: "Handelswaren aus Markt", tooltip: "Gibt die Liste der Handelswaren eines Marktes zurück.", fieldName: "Handelswaren" },
+    { type: "marketWaypoint", label: { de: "Wegpunkt aus Markt", en: "Waypoint from market" }, tooltip: { de: "Gibt den Wegpunkt eines Marktes zurück.", en: "Returns a market's waypoint." }, fieldName: "Waypoint" },
+    { type: "marketGoods", label: { de: "Handelswaren aus Markt", en: "Trade goods from market" }, tooltip: { de: "Gibt die Liste der Handelswaren eines Marktes zurück.", en: "Returns the list of trade goods at a market." }, fieldName: "Goods" },
     // Handelsware (a Markt's Handelswaren list item)
-    { type: "tradeGoodName", label: "Name aus Handelsware", tooltip: "Gibt den Namen einer Handelsware zurück.", fieldName: "Name" },
-    { type: "tradeGoodBuyPrice", label: "Kaufpreis aus Handelsware", tooltip: "Gibt den Kaufpreis einer Handelsware zurück.", fieldName: "Kaufpreis" },
-    { type: "tradeGoodSellPrice", label: "Verkaufspreis aus Handelsware", tooltip: "Gibt den Verkaufspreis einer Handelsware zurück.", fieldName: "Verkaufspreis" },
+    { type: "tradeGoodName", label: { de: "Name aus Handelsware", en: "Name from trade good" }, tooltip: { de: "Gibt den Namen einer Handelsware zurück.", en: "Returns a trade good's name." }, fieldName: "Name" },
+    { type: "tradeGoodBuyPrice", label: { de: "Kaufpreis aus Handelsware", en: "Buy price from trade good" }, tooltip: { de: "Gibt den Kaufpreis einer Handelsware zurück.", en: "Returns a trade good's buy price." }, fieldName: "BuyPrice" },
+    { type: "tradeGoodSellPrice", label: { de: "Verkaufspreis aus Handelsware", en: "Sell price from trade good" }, tooltip: { de: "Gibt den Verkaufspreis einer Handelsware zurück.", en: "Returns a trade good's sell price." }, fieldName: "SellPrice" },
     // Auftrag (getContracts items)
-    { type: "contractId", label: "Id aus Auftrag", tooltip: "Gibt die Id eines Auftrags zurück.", fieldName: "Id" },
-    { type: "contractType", label: "Typ aus Auftrag", tooltip: "Gibt den Typ eines Auftrags zurück.", fieldName: "Typ" },
-    { type: "contractAccepted", label: "Angenommen aus Auftrag", tooltip: "Gibt zurück, ob ein Auftrag angenommen wurde.", fieldName: "Angenommen" },
-    { type: "contractFulfilled", label: "Erfüllt aus Auftrag", tooltip: "Gibt zurück, ob ein Auftrag erfüllt wurde.", fieldName: "Erfüllt" },
+    { type: "contractId", label: { de: "Id aus Auftrag", en: "Id from contract" }, tooltip: { de: "Gibt die Id eines Auftrags zurück.", en: "Returns a contract's id." }, fieldName: "Id" },
+    { type: "contractType", label: { de: "Typ aus Auftrag", en: "Type from contract" }, tooltip: { de: "Gibt den Typ eines Auftrags zurück.", en: "Returns a contract's type." }, fieldName: "Type" },
+    { type: "contractAccepted", label: { de: "Angenommen aus Auftrag", en: "Accepted from contract" }, tooltip: { de: "Gibt zurück, ob ein Auftrag angenommen wurde.", en: "Returns whether a contract was accepted." }, fieldName: "Accepted" },
+    { type: "contractFulfilled", label: { de: "Erfüllt aus Auftrag", en: "Fulfilled from contract" }, tooltip: { de: "Gibt zurück, ob ein Auftrag erfüllt wurde.", en: "Returns whether a contract was fulfilled." }, fieldName: "Fulfilled" },
     // Wegpunkt (getWaypoints items)
-    { type: "waypointSymbolField", label: "Symbol aus Wegpunkt", tooltip: "Gibt das Symbol eines Wegpunkts zurück.", fieldName: "Symbol" },
-    { type: "waypointTypeField", label: "Typ aus Wegpunkt", tooltip: "Gibt den Typ eines Wegpunkts zurück.", fieldName: "Typ" },
+    { type: "waypointSymbolField", label: { de: "Symbol aus Wegpunkt", en: "Symbol from waypoint" }, tooltip: { de: "Gibt das Symbol eines Wegpunkts zurück.", en: "Returns a waypoint's symbol." }, fieldName: "Symbol" },
+    { type: "waypointTypeField", label: { de: "Typ aus Wegpunkt", en: "Type from waypoint" }, tooltip: { de: "Gibt den Typ eines Wegpunkts zurück.", en: "Returns a waypoint's type." }, fieldName: "Type" },
 ];
 
 const ACTION_COLOUR = 160;
@@ -146,9 +240,9 @@ const ACCESSOR_COLOUR = 65;
 function registerBlock(spec: CatalogBlockSpec, colour: number, asValue: boolean): void {
     Blockly.Blocks[spec.type] = {
         init: function (this: Blockly.Block) {
-            this.appendDummyInput().appendField(spec.label);
+            this.appendDummyInput().appendField(t(spec.label));
             spec.inputs.forEach((inputSpec) => {
-                this.appendValueInput(inputSpec.name).appendField(inputSpec.label);
+                this.appendValueInput(inputSpec.name).appendField(t(inputSpec.label));
             });
             if (asValue) {
                 this.setOutput(true, null);
@@ -157,13 +251,23 @@ function registerBlock(spec: CatalogBlockSpec, colour: number, asValue: boolean)
                 this.setNextStatement(true, null);
             }
             this.setColour(colour);
-            this.setTooltip(spec.tooltip);
+            this.setTooltip(t(spec.tooltip));
         },
     };
 }
 
+/** Catalog accessor blocks read `currentLocale` live in their own `init()` — unlike
+ * `registerDynamicAccessorBlock` below (custom-block accessors), whose label is
+ * child-authored free text, not fixed catalog vocabulary, and stays locale-independent. */
 function registerAccessorBlock(spec: AccessorBlockSpec): void {
-    registerDynamicAccessorBlock(spec.type, spec.label, spec.tooltip);
+    Blockly.Blocks[spec.type] = {
+        init: function (this: Blockly.Block) {
+            this.appendValueInput("TARGET").appendField(t(spec.label));
+            this.setOutput(true, null);
+            this.setColour(ACCESSOR_COLOUR);
+            this.setTooltip(t(spec.tooltip));
+        },
+    };
 }
 
 /**
@@ -171,6 +275,8 @@ function registerAccessorBlock(spec: AccessorBlockSpec): void {
  * shape the fixed §8 accessor blocks above use. Exported for Milestone 9/Part C's
  * per-custom-block structured-output accessors (`accessor_<customBlockId>_<field>`),
  * which are generated dynamically per block rather than declared statically here.
+ * Takes a plain string label/tooltip (child-authored field names, out of scope for
+ * Milestone 12's bilingual support), unlike the fixed catalog's own `registerAccessorBlock`.
  */
 export function registerDynamicAccessorBlock(blockType: string, label: string, tooltip: string): void {
     Blockly.Blocks[blockType] = {

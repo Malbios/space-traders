@@ -75,7 +75,7 @@ let rec private declaredNames (instructions: Instruction list) : string list =
         | WhileUntil(_, _, _, body) -> declaredNames body
         | _ -> [])
 
-let private checkScope (scopeName: string) (declared: Set<string>) (instructions: Instruction list) : DslError list =
+let private checkScope (locale: Locale) (scopeName: string) (declared: Set<string>) (instructions: Instruction list) : DslError list =
     let allDeclared = declared + Set.ofList (declaredNames instructions)
     instructions
     |> List.collect (fun instr ->
@@ -84,8 +84,12 @@ let private checkScope (scopeName: string) (declared: Set<string>) (instructions
         |> List.filter (fun name -> not (allDeclared.Contains name))
         |> List.distinct
         |> List.map (fun name ->
-            { blockId = None
-              message = $"Die Variable \"{name}\" ist in {scopeName} nicht bekannt." }))
+            let message =
+                match locale with
+                | De -> $"Die Variable \"{name}\" ist in {scopeName} nicht bekannt."
+                | En -> $"The variable \"{name}\" is not known in {scopeName}."
+
+            { blockId = None; message = message }))
 
 let private literalTypeMismatch (inputType: string) (arg: Expr) : bool =
     match inputType, arg with
@@ -93,7 +97,7 @@ let private literalTypeMismatch (inputType: string) (arg: Expr) : bool =
     | "Zahl", Literal(BoolLit _) -> true
     | _ -> false
 
-let private checkCustomBlockCalls (program: CompiledProgram) (instructions: Instruction list) : DslError list =
+let private checkCustomBlockCalls (locale: Locale) (program: CompiledProgram) (instructions: Instruction list) : DslError list =
     instructions
     |> List.collect (fun instr ->
         let _, callIds = walk instr
@@ -101,8 +105,12 @@ let private checkCustomBlockCalls (program: CompiledProgram) (instructions: Inst
         |> List.collect (fun customBlockId ->
             match program.customBlocks.TryFind customBlockId with
             | None ->
-                [ { blockId = None
-                    message = $"Der eigene Block \"{customBlockId}\" fehlt in der vollständigen Abschlussmenge (transitive closure)." } ]
+                let message =
+                    match locale with
+                    | De -> $"Der eigene Block \"{customBlockId}\" fehlt in der vollständigen Abschlussmenge (transitive closure)."
+                    | En -> $"The custom block \"{customBlockId}\" is missing from the transitive closure."
+
+                [ { blockId = None; message = message } ]
             | Some compiled ->
                 match instr with
                 | CallCustomBlock(_, _, arguments, _) ->
@@ -110,35 +118,58 @@ let private checkCustomBlockCalls (program: CompiledProgram) (instructions: Inst
                     let actualNames = arguments |> Map.toList |> List.map fst |> Set.ofList
                     let missing = Set.difference expectedNames actualNames
                     let extra = Set.difference actualNames expectedNames
+
+                    let missingMessage n =
+                        match locale with
+                        | De -> $"Eingabe \"{n}\" fehlt beim Aufruf von \"{customBlockId}\"."
+                        | En -> $"Input \"{n}\" is missing from the call to \"{customBlockId}\"."
+
+                    let extraMessage n =
+                        match locale with
+                        | De -> $"Unbekannte Eingabe \"{n}\" beim Aufruf von \"{customBlockId}\"."
+                        | En -> $"Unknown input \"{n}\" in the call to \"{customBlockId}\"."
+
                     let arityErrors =
-                        (missing |> Set.toList |> List.map (fun n -> $"Eingabe \"{n}\" fehlt beim Aufruf von \"{customBlockId}\"."))
-                        @ (extra |> Set.toList |> List.map (fun n -> $"Unbekannte Eingabe \"{n}\" beim Aufruf von \"{customBlockId}\"."))
+                        (missing |> Set.toList |> List.map missingMessage) @ (extra |> Set.toList |> List.map extraMessage)
+
                     let typeErrors =
                         compiled.signature.inputs
                         |> List.choose (fun input ->
                             arguments.TryFind input.name
                             |> Option.bind (fun arg ->
                                 if literalTypeMismatch input.inputType arg then
-                                    Some $"Eingabe \"{input.name}\" bei \"{customBlockId}\" hat den falschen Typ."
+                                    let message =
+                                        match locale with
+                                        | De -> $"Eingabe \"{input.name}\" bei \"{customBlockId}\" hat den falschen Typ."
+                                        | En -> $"Input \"{input.name}\" at \"{customBlockId}\" has the wrong type."
+
+                                    Some message
                                 else
                                     None))
+
                     (arityErrors @ typeErrors) |> List.map (fun m -> { blockId = None; message = m })
                 | _ -> []))
 
-let rec private detectCycles (program: CompiledProgram) : DslError list =
+let rec private detectCycles (locale: Locale) (program: CompiledProgram) : DslError list =
     let visited = System.Collections.Generic.HashSet<string>()
     let onStack = System.Collections.Generic.HashSet<string>()
     let errors = ResizeArray<DslError>()
 
     let rec visit (id: string) (depth: int) =
         if depth > maxCustomBlockDepth then
-            errors.Add
-                { blockId = None
-                  message = $"Eigene Blöcke sind zu tief verschachtelt (mehr als {maxCustomBlockDepth} Ebenen)." }
+            let message =
+                match locale with
+                | De -> $"Eigene Blöcke sind zu tief verschachtelt (mehr als {maxCustomBlockDepth} Ebenen)."
+                | En -> $"Custom blocks are nested too deeply (more than {maxCustomBlockDepth} levels)."
+
+            errors.Add { blockId = None; message = message }
         elif onStack.Contains id then
-            errors.Add
-                { blockId = None
-                  message = $"Der eigene Block \"{id}\" ruft sich selbst auf (direkt oder über andere Blöcke) — das ist nicht erlaubt." }
+            let message =
+                match locale with
+                | De -> $"Der eigene Block \"{id}\" ruft sich selbst auf (direkt oder über andere Blöcke) — das ist nicht erlaubt."
+                | En -> $"The custom block \"{id}\" calls itself (directly or through other blocks) — this is not allowed."
+
+            errors.Add { blockId = None; message = message }
         elif not (visited.Contains id) then
             visited.Add id |> ignore
             onStack.Add id |> ignore
@@ -156,27 +187,43 @@ let rec private detectCycles (program: CompiledProgram) : DslError list =
     List.ofSeq errors
 
 /// The full static-validation pass (§11) for an already-compiled program.
-let validate (program: CompiledProgram) : DslError list =
+let validate (locale: Locale) (program: CompiledProgram) : DslError list =
     let startBlockError =
         if List.isEmpty program.instructions then
-            [ { blockId = None; message = "Das Programm hat keinen Startblock." } ]
+            let message =
+                match locale with
+                | De -> "Das Programm hat keinen Startblock."
+                | En -> "The program has no start block."
+
+            [ { blockId = None; message = message } ]
         else
             []
 
-    let programScopeErrors = checkScope "im Hauptprogramm" Set.empty program.instructions
+    let mainScopeName =
+        match locale with
+        | De -> "im Hauptprogramm"
+        | En -> "in the main program"
+
+    let programScopeErrors = checkScope locale mainScopeName Set.empty program.instructions
 
     let customBlockScopeErrors =
         program.customBlocks
         |> Map.toList
         |> List.collect (fun (id, compiled) ->
             let paramNames = compiled.signature.inputs |> List.map (fun i -> i.name) |> Set.ofList
-            checkScope $"im eigenen Block \"{id}\"" paramNames compiled.instructions)
+
+            let scopeName =
+                match locale with
+                | De -> $"im eigenen Block \"{id}\""
+                | En -> $"in the custom block \"{id}\""
+
+            checkScope locale scopeName paramNames compiled.instructions)
 
     let callErrors =
-        checkCustomBlockCalls program program.instructions
-        @ (program.customBlocks |> Map.toList |> List.collect (fun (_, c) -> checkCustomBlockCalls program c.instructions))
+        checkCustomBlockCalls locale program program.instructions
+        @ (program.customBlocks |> Map.toList |> List.collect (fun (_, c) -> checkCustomBlockCalls locale program c.instructions))
 
-    let cycleErrors = detectCycles program
+    let cycleErrors = detectCycles locale program
 
     startBlockError @ programScopeErrors @ customBlockScopeErrors @ callErrors @ cycleErrors
 
@@ -185,6 +232,7 @@ let validate (program: CompiledProgram) : DslError list =
 /// already-compiled program later — nothing has had a chance to drift within a single
 /// fresh `Compiler.compileWorkspace` call.
 let revalidateAgainstCurrentDefinitions
+    (locale: Locale)
     (lookup: string -> CustomBlockDefinition option)
     (program: CompiledProgram)
     : DslError list =
@@ -192,8 +240,18 @@ let revalidateAgainstCurrentDefinitions
     |> Map.toList
     |> List.collect (fun (id, compiled) ->
         match lookup id with
-        | None -> [ { blockId = None; message = $"Der eigene Block \"{id}\" existiert nicht mehr." } ]
+        | None ->
+            let message =
+                match locale with
+                | De -> $"Der eigene Block \"{id}\" existiert nicht mehr."
+                | En -> $"The custom block \"{id}\" no longer exists."
+
+            [ { blockId = None; message = message } ]
         | Some definition when definition.signature <> compiled.signature ->
-            [ { blockId = None
-                message = $"Der eigene Block \"{id}\" wurde geändert (andere Eingaben oder Ergebnis) und muss neu geprüft werden." } ]
+            let message =
+                match locale with
+                | De -> $"Der eigene Block \"{id}\" wurde geändert (andere Eingaben oder Ergebnis) und muss neu geprüft werden."
+                | En -> $"The custom block \"{id}\" has changed (different inputs or result) and must be re-checked."
+
+            [ { blockId = None; message = message } ]
         | Some _ -> [])

@@ -707,7 +707,7 @@ let ``a program calling a custom block loaded from the repository compiles and r
             | Error errors -> failwith $"expected Ok, got errors: %A{errors}"
             | Ok program -> program
 
-        Assert.Empty(Validator.validate compiled)
+        Assert.Empty(Validator.validate SpaceKids.Core.Dsl.De compiled)
 
         let initialShip = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
         let jobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" compiled initialShip
@@ -731,7 +731,7 @@ let ``an info-read plus accessor chain resolves against the real fake over HTTP`
 
         let instructions =
             [ InfoRead("b1", "getShipInfo", Map.empty, "$t1")
-              SetVariable("b2", "treibstoff", Accessor("Treibstoff", TempRef "$t1")) ]
+              SetVariable("b2", "treibstoff", Accessor("Fuel", TempRef "$t1")) ]
 
         let jobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" (program instructions) initialShip
 

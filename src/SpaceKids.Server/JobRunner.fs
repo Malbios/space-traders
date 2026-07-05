@@ -71,24 +71,24 @@ let private shipRecord (ship: Ship) : Value =
     VRecord(
         Map.ofList
             [ "Name", VString ship.symbol
-              "Wegpunkt", VString ship.nav.waypointSymbol
+              "Waypoint", VString ship.nav.waypointSymbol
               "Status", VString ship.nav.status
-              "Treibstoff", VNumber(float ship.fuel.current)
-              "Frachteinheiten", VNumber(float ship.cargo.units)
-              "Frachtkapazität", VNumber(float ship.cargo.capacity) ]
+              "Fuel", VNumber(float ship.fuel.current)
+              "CargoUnits", VNumber(float ship.cargo.units)
+              "CargoCapacity", VNumber(float ship.cargo.capacity) ]
     )
 
 let private contractRecord (c: Contract) : Value =
     VRecord(
         Map.ofList
             [ "Id", VString c.id
-              "Typ", VString c.``type``
-              "Angenommen", VBool c.accepted
-              "Erfüllt", VBool c.fulfilled ]
+              "Type", VString c.``type``
+              "Accepted", VBool c.accepted
+              "Fulfilled", VBool c.fulfilled ]
     )
 
 let private waypointRecord (w: Waypoint) : Value =
-    VRecord(Map.ofList [ "Symbol", VString w.symbol; "Typ", VString w.``type`` ])
+    VRecord(Map.ofList [ "Symbol", VString w.symbol; "Type", VString w.``type`` ])
 
 /// `RequestQueue.enqueue`'s `AmbiguousFailure` can arrive wrapped in an
 /// `AggregateException` depending on the Async<->Task interop path it crosses (the
@@ -287,17 +287,15 @@ let private runInfoRead
                                 VRecord(
                                     Map.ofList
                                         [ "Name", VString g.symbol
-                                          "Kaufpreis", VNumber(float g.purchasePrice)
-                                          "Verkaufspreis", VNumber(float g.sellPrice) ]
+                                          "BuyPrice", VNumber(float g.purchasePrice)
+                                          "SellPrice", VNumber(float g.sellPrice) ]
                                 ))
                         else
                             (market.exports @ market.imports @ market.exchange)
                             |> List.map (fun g ->
-                                VRecord(
-                                    Map.ofList [ "Name", VString g.name; "Kaufpreis", VNumber 0.0; "Verkaufspreis", VNumber 0.0 ]
-                                ))
+                                VRecord(Map.ofList [ "Name", VString g.name; "BuyPrice", VNumber 0.0; "SellPrice", VNumber 0.0 ]))
 
-                    return InfoOk(VRecord(Map.ofList [ "Wegpunkt", VString waypointSymbol; "Handelswaren", VList goods ]))
+                    return InfoOk(VRecord(Map.ofList [ "Waypoint", VString waypointSymbol; "Goods", VList goods ]))
                 })
         | "getShipyard" ->
             let waypointSymbol = requireArg "waypointSymbol"
@@ -312,12 +310,12 @@ let private runInfoRead
                         if not r.shipyard.ships.IsEmpty then
                             r.shipyard.ships
                             |> List.map (fun s ->
-                                VRecord(Map.ofList [ "Typ", VString s.``type``; "Preis", VNumber(float s.purchasePrice) ]))
+                                VRecord(Map.ofList [ "Type", VString s.``type``; "Price", VNumber(float s.purchasePrice) ]))
                         else
                             r.shipyard.shipTypes
-                            |> List.map (fun t -> VRecord(Map.ofList [ "Typ", VString t.``type``; "Preis", VNumber 0.0 ]))
+                            |> List.map (fun t -> VRecord(Map.ofList [ "Type", VString t.``type``; "Price", VNumber 0.0 ]))
 
-                    return InfoOk(VRecord(Map.ofList [ "Wegpunkt", VString waypointSymbol; "Schiffstypen", VList types ]))
+                    return InfoOk(VRecord(Map.ofList [ "Waypoint", VString waypointSymbol; "Types", VList types ]))
                 })
         | "getContracts" ->
             "getContracts",
@@ -334,15 +332,15 @@ let private runInfoRead
 
                     let items =
                         ship.cargo.inventory
-                        |> List.map (fun i -> VRecord(Map.ofList [ "Name", VString i.name; "Einheiten", VNumber(float i.units) ]))
+                        |> List.map (fun i -> VRecord(Map.ofList [ "Name", VString i.name; "Units", VNumber(float i.units) ]))
 
                     return
                         InfoOk(
                             VRecord(
                                 Map.ofList
-                                    [ "Einheiten", VNumber(float ship.cargo.units)
-                                      "Kapazität", VNumber(float ship.cargo.capacity)
-                                      "Waren", VList items ]
+                                    [ "Units", VNumber(float ship.cargo.units)
+                                      "Capacity", VNumber(float ship.cargo.capacity)
+                                      "Goods", VList items ]
                             )
                         )
                 })
@@ -360,7 +358,13 @@ let private runInfoRead
                     let! agent = client.GetAgent(token)
                     return InfoOk(VNumber(float agent.credits))
                 })
-        | other -> failwith $"Unbekannter Info-Block: {other}"
+        | other ->
+            let locale =
+                Persistence.SettingsRepository.getLocale dbPath |> Async.RunSynchronously |> SpaceKids.Core.Dsl.Locale.ofString
+
+            match locale with
+            | SpaceKids.Core.Dsl.De -> failwith $"Unbekannter Info-Block: {other}"
+            | SpaceKids.Core.Dsl.En -> failwith $"Unknown info block: {other}"
 
     async {
         try
@@ -566,6 +570,21 @@ let recoverJob (client: SpaceTradersClient) (dbPath: string) (token: string) (jo
             match job.status with
             | Running -> do! tick client dbPath token backgroundPriority jobId WakeTick
             | AwaitingApiResponse(attempt, _, _) ->
+                // Milestone 12 (bilingual support): this is a background scheduler-
+                // recovery path, not a per-request handler, so there's no live request
+                // to read a locale from — a synchronous local SQLite read (same
+                // bridging pattern `JobRemoting.fs`'s `customBlockLookup` already
+                // uses) is the pragmatic choice here.
+                let locale =
+                    Persistence.SettingsRepository.getLocale dbPath
+                    |> Async.RunSynchronously
+                    |> SpaceKids.Core.Dsl.Locale.ofString
+
+                let message =
+                    match locale with
+                    | SpaceKids.Core.Dsl.De -> "Server wurde neu gestartet"
+                    | SpaceKids.Core.Dsl.En -> "Server was restarted"
+
                 do!
                     tick
                         client
@@ -573,7 +592,7 @@ let recoverJob (client: SpaceTradersClient) (dbPath: string) (token: string) (jo
                         token
                         backgroundPriority
                         jobId
-                        (ApiResponseReceived(jobId, attempt, ApiAmbiguous "Server wurde neu gestartet"))
+                        (ApiResponseReceived(jobId, attempt, ApiAmbiguous message))
             | Reconciling(attempt, _, baseline) ->
                 let reconcileEffect =
                     match baseline with

@@ -89,8 +89,18 @@ let ``validate rejects a program with no start block`` () =
     match Compiler.compileWorkspace noCustomBlocks json with
     | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
     | Ok program ->
-        let errors = Validator.validate program
+        let errors = Validator.validate De program
         Assert.Contains(errors, fun e -> e.message.Contains("keinen Startblock"))
+
+[<Fact>]
+let ``validate's no-start-block message is English when the locale is English (Milestone 12)`` () =
+    let json = """{ "blocks": { "languageVersion": 0, "blocks": [] } }"""
+
+    match Compiler.compileWorkspace noCustomBlocks json with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        let errors = Validator.validate En program
+        Assert.Contains(errors, fun e -> e.message.Contains("no start block"))
 
 [<Fact>]
 let ``validate rejects a variable reference out of scope`` () =
@@ -106,7 +116,7 @@ let ``validate rejects a variable reference out of scope`` () =
     match Compiler.compileWorkspace noCustomBlocks json with
     | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
     | Ok program ->
-        let errors = Validator.validate program
+        let errors = Validator.validate De program
         Assert.Contains(errors, fun e -> e.message.Contains("Nichtdeklariert"))
 
 let private customBlockCallJson (blockId: string) (customBlockId: string) (argInputs: string) =
@@ -188,7 +198,7 @@ let ``validate rejects a custom-block call with mismatched arguments`` () =
     match Compiler.compileWorkspace lookup json with
     | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
     | Ok program ->
-        let errors = Validator.validate program
+        let errors = Validator.validate De program
         Assert.Contains(errors, fun e -> e.message.Contains("Anzahl") && e.message.Contains("fehlt"))
 
 [<Fact>]
@@ -207,7 +217,7 @@ let ``revalidateAgainstCurrentDefinitions catches a signature that changed after
     | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
     | Ok program ->
         // No drift yet — same lookup used to compile and to revalidate.
-        Assert.Empty(Validator.revalidateAgainstCurrentDefinitions compileLookup program)
+        Assert.Empty(Validator.revalidateAgainstCurrentDefinitions De compileLookup program)
 
         // The signature changed since compile (a new required input was added).
         let changedLookup =
@@ -218,7 +228,7 @@ let ``revalidateAgainstCurrentDefinitions catches a signature that changed after
                         signature = { inputs = [ { name = "Anzahl"; inputType = "Zahl" } ]; output = None; outputFields = None } }
             | _ -> None
 
-        let errors = Validator.revalidateAgainstCurrentDefinitions changedLookup program
+        let errors = Validator.revalidateAgainstCurrentDefinitions De changedLookup program
         Assert.Contains(errors, fun e -> e.message.Contains("block-a") && e.message.Contains("geändert"))
 
 // --- Part B (Milestone 9, §8): accessor blocks compile to Accessor, Eval resolves them ---
@@ -241,7 +251,7 @@ let ``an accessor block compiles to Accessor over its TARGET input`` () =
     | Ok program ->
         Assert.Equal<Instruction list>(
             [ InfoRead("b3", "getShipInfo", Map.empty, "$t1")
-              SetVariable("b1", "treibstoff", Accessor("Treibstoff", TempRef "$t1")) ],
+              SetVariable("b1", "treibstoff", Accessor("Fuel", TempRef "$t1")) ],
             program.instructions
         )
 

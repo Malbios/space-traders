@@ -267,7 +267,7 @@ let ``delete succeeds for a program with no active job`` () =
         MigrationRunner.run dbPath
         let id = ProgramRepository.create dbPath "Unbenutzt" |> Async.RunSynchronously
 
-        match ProgramRepository.delete dbPath id |> Async.RunSynchronously with
+        match ProgramRepository.delete dbPath Locale.De id |> Async.RunSynchronously with
         | Ok() -> ()
         | Error message -> Assert.Fail($"expected deletion to succeed, got: {message}")
 
@@ -287,7 +287,7 @@ let ``delete succeeds for a program whose only job history is terminal`` () =
         JobRepository.insert dbPath "job-1" programSnapshotId "FAKE-AGENT-1" "Completed" "{}" None
         |> Async.RunSynchronously
 
-        match ProgramRepository.delete dbPath id |> Async.RunSynchronously with
+        match ProgramRepository.delete dbPath Locale.De id |> Async.RunSynchronously with
         | Ok() -> ()
         | Error message -> Assert.Fail($"expected deletion to succeed despite terminal history, got: {message}")
     finally
@@ -304,12 +304,29 @@ let ``delete is refused while a non-terminal job is flying the program`` () =
         JobRepository.insert dbPath "job-2" programSnapshotId "FAKE-AGENT-1" "Running" "{}" None
         |> Async.RunSynchronously
 
-        match ProgramRepository.delete dbPath id |> Async.RunSynchronously with
+        match ProgramRepository.delete dbPath Locale.De id |> Async.RunSynchronously with
         | Error message -> Assert.Contains("Pilot", message)
         | Ok() -> Assert.Fail("expected deletion to be refused while a pilot is active")
 
         let programs = ProgramRepository.list dbPath |> Async.RunSynchronously
         Assert.Contains(programs, fun p -> p.id = id)
+    finally
+        deleteDbFiles dbPath
+
+[<Fact>]
+let ``delete refusal message is English when the locale is English (Milestone 12)`` () =
+    let dbPath = tempDbPath ()
+    try
+        MigrationRunner.run dbPath
+        let id = ProgramRepository.create dbPath "Active" |> Async.RunSynchronously
+        let programSnapshotId = ProgramRepository.insert dbPath id "{}" |> Async.RunSynchronously
+
+        JobRepository.insert dbPath "job-3" programSnapshotId "FAKE-AGENT-1" "Running" "{}" None
+        |> Async.RunSynchronously
+
+        match ProgramRepository.delete dbPath Locale.En id |> Async.RunSynchronously with
+        | Error message -> Assert.Contains("pilot", message)
+        | Ok() -> Assert.Fail("expected deletion to be refused while a pilot is active")
     finally
         deleteDbFiles dbPath
 
@@ -333,7 +350,7 @@ let ``staleWarnings is empty when nothing referenced has changed since the progr
         let snapshotJson = JobStateJson.serializeProgram (aProgramCallingCustomBlock blockId compiledBlock)
         ProgramRepository.insert dbPath programId snapshotJson |> Async.RunSynchronously |> ignore
 
-        let warnings = ProgramRemoting.staleWarnings dbPath programId |> Async.RunSynchronously
+        let warnings = ProgramRemoting.staleWarnings dbPath Locale.De programId |> Async.RunSynchronously
         Assert.Empty(warnings)
     finally
         deleteDbFiles dbPath
@@ -355,9 +372,31 @@ let ``staleWarnings flags a program whose custom block signature has since chang
         let changedBlock = aCompiledBlock [ "Zahl"; "Anzahl" ] (Some "Zahl")
         CustomBlockRepository.saveVersion dbPath blockId "{}" changedBlock |> Async.RunSynchronously |> ignore
 
-        let warnings = ProgramRemoting.staleWarnings dbPath programId |> Async.RunSynchronously
+        let warnings = ProgramRemoting.staleWarnings dbPath Locale.De programId |> Async.RunSynchronously
         Assert.Single(warnings) |> ignore
         Assert.Contains(blockId, warnings.[0])
+    finally
+        deleteDbFiles dbPath
+
+[<Fact>]
+let ``staleWarnings message is English when the locale is English (Milestone 12)`` () =
+    let dbPath = tempDbPath ()
+    try
+        MigrationRunner.run dbPath
+        let blockId = CustomBlockRepository.insert dbPath "Double" None |> Async.RunSynchronously
+        let originalBlock = aCompiledBlock [ "Zahl" ] (Some "Zahl")
+        CustomBlockRepository.saveVersion dbPath blockId "{}" originalBlock |> Async.RunSynchronously |> ignore
+
+        let programId = ProgramRepository.create dbPath "Uses Double" |> Async.RunSynchronously
+        let snapshotJson = JobStateJson.serializeProgram (aProgramCallingCustomBlock blockId originalBlock)
+        ProgramRepository.insert dbPath programId snapshotJson |> Async.RunSynchronously |> ignore
+
+        let changedBlock = aCompiledBlock [ "Zahl"; "Anzahl" ] (Some "Zahl")
+        CustomBlockRepository.saveVersion dbPath blockId "{}" changedBlock |> Async.RunSynchronously |> ignore
+
+        let warnings = ProgramRemoting.staleWarnings dbPath Locale.En programId |> Async.RunSynchronously
+        let warning = Assert.Single(warnings)
+        Assert.Contains("has changed", warning)
     finally
         deleteDbFiles dbPath
 
@@ -368,7 +407,7 @@ let ``staleWarnings is empty for a program that has never been run`` () =
         MigrationRunner.run dbPath
         let programId = ProgramRepository.create dbPath "Noch nie geflogen" |> Async.RunSynchronously
 
-        let warnings = ProgramRemoting.staleWarnings dbPath programId |> Async.RunSynchronously
+        let warnings = ProgramRemoting.staleWarnings dbPath Locale.De programId |> Async.RunSynchronously
         Assert.Empty(warnings)
     finally
         deleteDbFiles dbPath

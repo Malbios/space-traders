@@ -1,50 +1,71 @@
 import * as Blockly from "blockly/core";
 import { registerDynamicAccessorBlock } from "./blocks-catalog";
+import { getCurrentLocale } from "./locale-state";
 
 /**
- * German primitive blocks (§7) plus the real custom-block mechanics (§9, Milestone 9).
- * `sk_show_message`/`sk_wait` are the Milestone 0 toolchain spike; everything else
- * here is the real Blockwerkstatt machinery — the definition shell (typed, dynamic
- * inputs via a mutator), a generic parameter-getter, a generic caller block shared by
- * every custom block, and the "build a record" block for structured outputs (§9
- * Outputs).
+ * Non-catalog primitive/structural blocks (§9's Blockwerkstatt machinery): the
+ * definition shell (typed, dynamic inputs via a mutator), a generic parameter-getter, a
+ * generic caller block shared by every custom block, the "build a record" block for
+ * structured outputs (§9 Outputs), plus `sk_show_message`/`sk_wait` (the Milestone 0
+ * toolchain spike).
+ *
+ * Milestone 12 (bilingual support): labels/tooltips read the current locale
+ * (`locale-state.ts`) live in each block's own `init()`, same pattern as the catalog.
  */
+
 export function registerTrivialBlocks(): void {
     Blockly.Blocks["sk_show_message"] = {
         init: function (this: Blockly.Block) {
-            this.appendValueInput("TEXT").setCheck("String").appendField("Zeige Nachricht");
+            this.appendValueInput("TEXT")
+                .setCheck("String")
+                .appendField(getCurrentLocale() === "en" ? "Show message" : "Zeige Nachricht");
             this.setPreviousStatement(true, null);
             this.setNextStatement(true, null);
             this.setColour(210);
-            this.setTooltip("Zeigt eine Nachricht im Logbuch an.");
+            this.setTooltip(
+                getCurrentLocale() === "en" ? "Shows a message in the log." : "Zeigt eine Nachricht im Logbuch an.",
+            );
         },
     };
 
     Blockly.Blocks["sk_wait"] = {
         init: function (this: Blockly.Block) {
-            this.appendValueInput("SECONDS").setCheck("Number").appendField("Warte");
-            this.appendDummyInput().appendField("Sekunden");
+            this.appendValueInput("SECONDS")
+                .setCheck("Number")
+                .appendField(getCurrentLocale() === "en" ? "Wait" : "Warte");
+            this.appendDummyInput().appendField(getCurrentLocale() === "en" ? "seconds" : "Sekunden");
             this.setPreviousStatement(true, null);
             this.setNextStatement(true, null);
             this.setColour(210);
-            this.setTooltip("Wartet eine bestimmte Anzahl Sekunden.");
+            this.setTooltip(
+                getCurrentLocale() === "en" ? "Waits for a given number of seconds." : "Wartet eine bestimmte Anzahl Sekunden.",
+            );
         },
     };
 }
 
-/**
- * One custom block input's shape (§9c). All six input types share this one Blockly
+/** One custom block input's shape (§9c). All six input types share this one Blockly
  * mutator-arg block (a type dropdown + a name field) rather than six separate block
  * types — inputs stay untyped value sockets with a text label only, consistent with
  * this project's existing "plain value sockets, not typed" simplification for the
  * fixed 20-block catalog (docs/05-agent-handoff.md).
- */
+ *
+ * `typeLabel` is purely decorative (no runtime type-checking depends on it) and is
+ * persisted as-is once a custom block is saved — switching locale after saving does not
+ * retroactively re-translate an already-saved input's stored `typeLabel`, only which
+ * options are offered when adding a *new* one (a known, documented simplification,
+ * same class as Milestone 11's "existing dev-stage rows aren't migrated"). */
 export interface CustomBlockInputSpec {
     name: string;
     typeLabel: string;
 }
 
-export const INPUT_TYPE_LABELS = ["Schiff", "Wegpunkt", "Ware", "Anzahl", "Preisgrenze", "Liste"] as const;
+const INPUT_TYPE_LABELS_DE = ["Schiff", "Wegpunkt", "Ware", "Anzahl", "Preisgrenze", "Liste"] as const;
+const INPUT_TYPE_LABELS_EN = ["Ship", "Waypoint", "Good", "Number", "Price limit", "List"] as const;
+
+export function inputTypeLabels(): readonly string[] {
+    return getCurrentLocale() === "en" ? INPUT_TYPE_LABELS_EN : INPUT_TYPE_LABELS_DE;
+}
 
 export interface CustomBlockSignature {
     id: string;
@@ -71,11 +92,18 @@ interface DefBlockExtraState {
 export function registerDefinitionShellBlock(): void {
     Blockly.Blocks["sk_custom_block_def"] = {
         init: function (this: Blockly.Block) {
-            this.appendDummyInput("NAME_ROW").appendField("Eigener Block").appendField(new Blockly.FieldTextInput("Mein Block"), "BLOCK_NAME");
-            this.appendStatementInput("BODY").setCheck(null).appendField("Inhalt");
-            this.appendValueInput("RETURN").setCheck(null).appendField("Ergebnis");
+            const en = getCurrentLocale() === "en";
+            this.appendDummyInput("NAME_ROW")
+                .appendField(en ? "Custom block" : "Eigener Block")
+                .appendField(new Blockly.FieldTextInput(en ? "My block" : "Mein Block"), "BLOCK_NAME");
+            this.appendStatementInput("BODY").setCheck(null).appendField(en ? "Body" : "Inhalt");
+            this.appendValueInput("RETURN").setCheck(null).appendField(en ? "Result" : "Ergebnis");
             this.setColour(290);
-            this.setTooltip("Definiert die Logik eines eigenen, wiederverwendbaren Blocks.");
+            this.setTooltip(
+                en
+                    ? "Defines the logic of a custom, reusable block."
+                    : "Definiert die Logik eines eigenen, wiederverwendbaren Blocks.",
+            );
             this.setMutator(
                 new Blockly.icons.MutatorIcon(["sk_custom_block_def_mutator_arg"], this as unknown as Blockly.BlockSvg),
             );
@@ -108,7 +136,7 @@ export function registerDefinitionShellBlock(): void {
             let argBlock = containerBlock.getInputTargetBlock("STACK");
             while (argBlock) {
                 const b = argBlock as unknown as { skArgName?: string; skArgType?: string };
-                newInputs.push({ name: b.skArgName ?? "eingabe", typeLabel: b.skArgType ?? "Anzahl" });
+                newInputs.push({ name: b.skArgName ?? "eingabe", typeLabel: b.skArgType ?? inputTypeLabels()[3]! });
                 argBlock = argBlock.nextConnection && argBlock.nextConnection.targetBlock();
             }
             (this as unknown as { skInputs: CustomBlockInputSpec[] }).skInputs = newInputs;
@@ -118,10 +146,15 @@ export function registerDefinitionShellBlock(): void {
 
     Blockly.Blocks["sk_custom_block_def_mutator_container"] = {
         init: function (this: Blockly.Block) {
-            this.appendDummyInput().appendField("Eingaben");
+            const en = getCurrentLocale() === "en";
+            this.appendDummyInput().appendField(en ? "Inputs" : "Eingaben");
             this.appendStatementInput("STACK");
             this.setColour(290);
-            this.setTooltip("Eingaben des eigenen Blocks (Reihenfolge = Reihenfolge im Block).");
+            this.setTooltip(
+                en
+                    ? "Inputs of the custom block (order = order in the block)."
+                    : "Eingaben des eigenen Blocks (Reihenfolge = Reihenfolge im Block).",
+            );
             this.contextMenu = false;
         },
     };
@@ -129,7 +162,7 @@ export function registerDefinitionShellBlock(): void {
     Blockly.Blocks["sk_custom_block_def_mutator_arg"] = {
         init: function (this: Blockly.Block) {
             this.appendDummyInput()
-                .appendField(new Blockly.FieldDropdown(INPUT_TYPE_LABELS.map((t) => [t, t] as [string, string])), "ARG_TYPE")
+                .appendField(new Blockly.FieldDropdown(() => inputTypeLabels().map((t) => [t, t] as [string, string])), "ARG_TYPE")
                 .appendField(new Blockly.FieldTextInput("n"), "ARG_NAME");
             this.setPreviousStatement(true);
             this.setNextStatement(true);
@@ -153,8 +186,9 @@ function rebuildInputRow(block: Blockly.BlockSvg): void {
         i++;
     }
     const inputs = (block as unknown as { skInputs: CustomBlockInputSpec[] }).skInputs ?? [];
+    const en = getCurrentLocale() === "en";
     inputs.forEach((input, index) => {
-        block.appendDummyInput(`INPUT_${index}`).appendField(`Eingabe: ${input.typeLabel} ${input.name}`);
+        block.appendDummyInput(`INPUT_${index}`).appendField(`${en ? "Input" : "Eingabe"}: ${input.typeLabel} ${input.name}`);
     });
 }
 
@@ -166,11 +200,15 @@ function registerParamGetBlock(): void {
     Blockly.Blocks["sk_param_get"] = {
         init: function (this: Blockly.Block) {
             this.appendDummyInput()
-                .appendField("Eingabe:")
+                .appendField(getCurrentLocale() === "en" ? "Input:" : "Eingabe:")
                 .appendField(new Blockly.FieldDropdown(() => currentWorkshopParamOptions(this)), "PARAM_NAME");
             this.setOutput(true, null);
             this.setColour(65);
-            this.setTooltip("Liest den Wert einer Eingabe des eigenen Blocks.");
+            this.setTooltip(
+                getCurrentLocale() === "en"
+                    ? "Reads the value of one of the custom block's inputs."
+                    : "Liest den Wert einer Eingabe des eigenen Blocks.",
+            );
         },
     };
 }
@@ -178,7 +216,8 @@ function registerParamGetBlock(): void {
 function currentWorkshopParamOptions(block: Blockly.Block): [string, string][] {
     const defBlock = block.workspace.getBlocksByType("sk_custom_block_def", false)[0];
     const inputs = defBlock ? ((defBlock as unknown as { skInputs: CustomBlockInputSpec[] }).skInputs ?? []) : [];
-    return inputs.length > 0 ? inputs.map((i) => [i.name, i.name] as [string, string]) : [["(keine Eingaben)", ""]];
+    const none = getCurrentLocale() === "en" ? "(no inputs)" : "(keine Eingaben)";
+    return inputs.length > 0 ? inputs.map((i) => [i.name, i.name] as [string, string]) : [[none, ""]];
 }
 
 interface RecordFieldSpec {
@@ -199,10 +238,14 @@ interface BuildRecordExtraState {
 function registerBuildRecordBlock(): void {
     Blockly.Blocks["sk_build_record"] = {
         init: function (this: Blockly.Block) {
-            this.appendDummyInput("HEADER").appendField("Datensatz");
+            this.appendDummyInput("HEADER").appendField(getCurrentLocale() === "en" ? "Record" : "Datensatz");
             this.setOutput(true, null);
             this.setColour(65);
-            this.setTooltip("Baut einen Datensatz mit benannten Feldern (Ergebnis eines eigenen Blocks).");
+            this.setTooltip(
+                getCurrentLocale() === "en"
+                    ? "Builds a record with named fields (the result of a custom block)."
+                    : "Baut einen Datensatz mit benannten Feldern (Ergebnis eines eigenen Blocks).",
+            );
             this.setMutator(new Blockly.icons.MutatorIcon(["sk_build_record_mutator_arg"], this as unknown as Blockly.BlockSvg));
             (this as unknown as { skFields: RecordFieldSpec[] }).skFields = [];
         },
@@ -232,7 +275,7 @@ function registerBuildRecordBlock(): void {
             let argBlock = containerBlock.getInputTargetBlock("STACK");
             while (argBlock) {
                 const b = argBlock as unknown as { skFieldName?: string };
-                newFields.push({ name: b.skFieldName ?? "Feld" });
+                newFields.push({ name: b.skFieldName ?? (getCurrentLocale() === "en" ? "field" : "Feld") });
                 argBlock = argBlock.nextConnection && argBlock.nextConnection.targetBlock();
             }
             (this as unknown as { skFields: RecordFieldSpec[] }).skFields = newFields;
@@ -242,17 +285,24 @@ function registerBuildRecordBlock(): void {
 
     Blockly.Blocks["sk_build_record_mutator_container"] = {
         init: function (this: Blockly.Block) {
-            this.appendDummyInput().appendField("Felder");
+            const en = getCurrentLocale() === "en";
+            this.appendDummyInput().appendField(en ? "Fields" : "Felder");
             this.appendStatementInput("STACK");
             this.setColour(65);
-            this.setTooltip("Felder des Datensatzes (Reihenfolge = Reihenfolge im Block).");
+            this.setTooltip(
+                en
+                    ? "Fields of the record (order = order in the block)."
+                    : "Felder des Datensatzes (Reihenfolge = Reihenfolge im Block).",
+            );
             this.contextMenu = false;
         },
     };
 
     Blockly.Blocks["sk_build_record_mutator_arg"] = {
         init: function (this: Blockly.Block) {
-            this.appendDummyInput().appendField("Feld").appendField(new Blockly.FieldTextInput("feld"), "FIELD_NAME");
+            this.appendDummyInput()
+                .appendField(getCurrentLocale() === "en" ? "Field" : "Feld")
+                .appendField(new Blockly.FieldTextInput(getCurrentLocale() === "en" ? "field" : "feld"), "FIELD_NAME");
             this.setPreviousStatement(true);
             this.setNextStatement(true);
             this.setColour(65);
@@ -329,6 +379,7 @@ export function registerCallerBlock(): void {
 
 function rebuildCallerShape(block: Blockly.Block, customBlockId: string): void {
     const signature = signatureCache.get(customBlockId);
+    const en = getCurrentLocale() === "en";
 
     const previousArgNames = (block as unknown as { skArgNames?: string[] }).skArgNames ?? [];
     for (const name of previousArgNames) {
@@ -340,7 +391,7 @@ function rebuildCallerShape(block: Blockly.Block, customBlockId: string): void {
         block.removeInput("HEADER");
     }
 
-    const label = signature ? signature.name : `Unbekannter Block (${customBlockId})`;
+    const label = signature ? signature.name : en ? `Unknown block (${customBlockId})` : `Unbekannter Block (${customBlockId})`;
     block.appendDummyInput("HEADER").appendField(label);
 
     const inputs = signature?.inputs ?? [];
@@ -348,7 +399,15 @@ function rebuildCallerShape(block: Blockly.Block, customBlockId: string): void {
         block.appendValueInput(input.name).appendField(`${input.typeLabel} ${input.name}`);
     });
     (block as unknown as { skArgNames: string[] }).skArgNames = inputs.map((i) => i.name);
-    block.setTooltip(signature ? `Ruft den eigenen Block "${signature.name}" auf.` : "Eigener Block nicht gefunden.");
+    block.setTooltip(
+        signature
+            ? en
+                ? `Calls the custom block "${signature.name}".`
+                : `Ruft den eigenen Block "${signature.name}" auf.`
+            : en
+              ? "Custom block not found."
+              : "Eigener Block nicht gefunden.",
+    );
 
     const hasOutput = signature?.hasOutput ?? false;
     if (hasOutput && !block.outputConnection) {
@@ -372,7 +431,12 @@ export function registerCustomBlockAccessors(signature: CustomBlockSignature): s
     }
     return signature.outputFields.map((field) => {
         const blockType = `accessor_${signature.id}_${field}`;
-        registerDynamicAccessorBlock(blockType, `${field} aus ${signature.name}`, `Gibt das Feld "${field}" aus "${signature.name}" zurück.`);
+        const en = getCurrentLocale() === "en";
+        registerDynamicAccessorBlock(
+            blockType,
+            en ? `${field} from ${signature.name}` : `${field} aus ${signature.name}`,
+            en ? `Returns the field "${field}" from "${signature.name}".` : `Gibt das Feld "${field}" aus "${signature.name}" zurück.`,
+        );
         return blockType;
     });
 }

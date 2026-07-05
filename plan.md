@@ -166,17 +166,20 @@ This is mundane, and it is exactly the kind of thing that otherwise eats the fir
 
 ## 4. Language strategy
 
-The child-facing experience is German.
+The child-facing experience was originally German-only; Milestone 12 added
+real runtime-switchable English support (a second, English-speaking child
+needed it) — see `docs/decisions.md` for that milestone's design. A single
+process-wide setting (not per-user — there's no user/profile concept in this
+app) picks German or English for everything a player sees.
 
 | Area                   | Language |
 | ----------------------- | -------- |
-| UI labels               | German   |
-| Blockly built-in text   | German   |
-| Custom block labels     | German   |
-| Tooltips                | German   |
-| Mission text            | German   |
-| Activity logs           | German   |
-| Error messages          | German   |
+| UI labels               | German or English (switchable) |
+| Blockly built-in text   | German or English (switchable) |
+| Custom block labels     | German or English (switchable) |
+| Tooltips                | German or English (switchable) |
+| Activity logs           | German or English (switchable) |
+| Error messages          | German or English (switchable) — except `Compiler.fs`'s own compile-time errors, still German-only (a known follow-up gap, see `docs/05-agent-handoff.md`) |
 | Code                    | English  |
 | F# types                | English  |
 | API client              | English  |
@@ -195,7 +198,7 @@ Internal instruction:
 navigate(shipId: "SHIP-A", destination: "X1-DF55-A1")
 ```
 
-Configure Blockly's German locale before creating any workspace. Note that the locale only covers Blockly's built-in UI text; every custom block ships its own German label and tooltip (§7).
+Configure Blockly's locale before creating any workspace. Note that the locale only covers Blockly's built-in UI text; every custom block ships its own per-locale label and tooltip (§7). (This section's original Milestone 0 example configured German only — Milestone 12 made the locale itself switchable at runtime; see `docs/decisions.md`.)
 
 ```ts
 import * as Blockly from "blockly";

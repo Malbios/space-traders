@@ -59,6 +59,8 @@ src/
     Persistence/ShipLockRepository.fs   Ship-lock acquire/refresh/release/sweep (Milestone 7)
     Persistence/JobStateJson.fs         FSharp.SystemTextJson (de)serialization for
                                           JobState/CompiledProgram (Milestone 7)
+    Persistence/SettingsRepository.fs   The single `app_settings` row — getLocale/
+                                          setLocale (Milestone 12)
     WorkspaceRemoting.fs       Bolero remote service backing the spike page's save/load,
                                now via Persistence/WorkspaceRepository.fs
     AgentRemoting.fs           Bolero remote service for the SpaceTraders dashboard —
@@ -71,14 +73,21 @@ src/
     ProgramRemoting.fs         Bolero remote service backing the "Programme" library —
                                list/create/loadDefinition (folds in the §9 structural-
                                mismatch check)/rename/delete (Milestone 11)
+    SettingsRemoting.fs        Bolero remote service backing the language switcher —
+                               getLocale/setLocale (Milestone 12)
   SpaceKids.Core/           Domain, DSL, validation, scheduling (framework-free, per §14)
     Dsl/
-      Types.fs                   The DSL itself (§10) — Expr, Instruction, CompiledProgram
+      Types.fs                   The DSL itself (§10) — Expr, Instruction, CompiledProgram;
+                                     also `Locale` (De/En, Milestone 12)
       Value.fs                     Runtime value type (Milestone 6) for evaluating Expr
       Eval.fs                       Pure expression evaluator, used by Scheduler/Step.fs
       BlocklyJson.fs               Parses Blockly's serialized workspace JSON
-      Compiler.fs                   Blockly workspace -> DSL, expression linearization
-      Validator.fs                  Static checks (§11) + the §9 signature-mismatch check
+      Compiler.fs                   Blockly workspace -> DSL, expression linearization —
+                                     its own compile-time error messages are still
+                                     German-only (Milestone 12 didn't reach these, see
+                                     docs/05-agent-handoff.md)
+      Validator.fs                  Static checks (§11) + the §9 signature-mismatch check;
+                                     every message locale-aware since Milestone 12
     Scheduler/
       Types.fs                     JobState/Frame/PathEntry/Effect/SchedulerEvent/
                                      ApiResult (§14, Milestone 6/7) — Paused/Cancelled
@@ -242,3 +251,24 @@ structure. See `plan.md` §19 for what each milestone covers.
   `docs/decisions.md` for two real bugs found during live verification (a
   stale-lock-state gap when switching between two open programs, and a
   leftover local dev `ship_locks` row crashing the server on startup).
+- **Milestone 12 (bilingual support): done.** A second, English-speaking
+  child needed real German/English switching, not just a dev convenience. A
+  new `app_settings` row (`SettingsRepository`/`SettingsRemoting.fs`/
+  `SettingsService`) holds the single process-wide locale. Part A: locale
+  storage + a switcher in the UI. Part B: decoupled the DSL's `VRecord`
+  contract from display language — `Compiler.fs`'s `ACCESSOR_BLOCKS` map and
+  `JobRunner.fs`'s record builders now use canonical English keys instead of
+  the German words they used to double as. Part C: `blocks-catalog.ts`/
+  `blocks.ts`/`toolbox-de.ts` read a shared `locale-state.ts` flag live in
+  each block's own `init()`; `blockly-host.ts`'s new `setLocale` entry point
+  re-renders every open workspace (block *types* are stable identifiers, so a
+  saved program is never invalidated by a language switch). Part D:
+  `Main.fs`'s ~45 UI strings became a `Strings` record (`de`/`en` values,
+  compile-time-checked, not a stringly-typed lookup). Part E: server-side
+  error messages (`Validator.fs`, a couple of `JobRunner.fs` literals,
+  `ProgramRepository.delete`'s refusal message) translated by the stored
+  locale — `Compiler.fs`'s own compile-time errors are a deliberate,
+  documented exception (see `docs/05-agent-handoff.md`'s "Known
+  limitations"). See `docs/decisions.md` for a real bug found during live
+  verification (the persisted locale never actually reached the Blockly JS
+  side on page load).

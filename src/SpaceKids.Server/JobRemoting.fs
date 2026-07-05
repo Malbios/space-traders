@@ -44,6 +44,15 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
             return stored |> Option.map snd
         }
 
+    /// Milestone 12 (bilingual support): every message this handler can return to the
+    /// client is translated by the stored locale setting — a cheap local SQLite read
+    /// per call, same pattern as `currentToken`.
+    let currentLocale () : Async<SpaceKids.Core.Dsl.Locale> =
+        async {
+            let! raw = Persistence.SettingsRepository.getLocale dbPath
+            return SpaceKids.Core.Dsl.Locale.ofString raw
+        }
+
     /// The `lookup: string -> CustomBlockDefinition option` `Compiler.compileWorkspace`
     /// expects is synchronous by design (Milestone 4 built it that way deliberately, so
     /// `SpaceKids.Core` never depends on persistence or async plumbing) — bridging to
@@ -65,9 +74,16 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                 fun (_clientSuppliedToken, programId, shipSymbol, workspaceJson) ->
                     async {
                         let! tokenOpt = currentToken ()
+                        let! locale = currentLocale ()
 
                         match tokenOpt with
-                        | None -> return Error "Bitte zuerst ein SpaceTraders-Token anmelden."
+                        | None ->
+                            let message =
+                                match locale with
+                                | SpaceKids.Core.Dsl.De -> "Bitte zuerst ein SpaceTraders-Token anmelden."
+                                | SpaceKids.Core.Dsl.En -> "Please log in with a SpaceTraders token first."
+
+                            return Error message
                         | Some token ->
                             let! ship =
                                 RequestQueue.enqueue dbPath 1 $"getShip:{shipSymbol}" (fun () ->
@@ -90,7 +106,7 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                             let compiled =
                                 SpaceKids.Core.Dsl.Compiler.compileWorkspace customBlockLookup workspaceJson
                                 |> Result.bind (fun program ->
-                                    match SpaceKids.Core.Dsl.Validator.validate program with
+                                    match SpaceKids.Core.Dsl.Validator.validate locale program with
                                     | [] -> Ok program
                                     | errors -> Error errors)
 

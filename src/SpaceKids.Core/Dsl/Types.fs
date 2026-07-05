@@ -90,6 +90,18 @@ type CompiledProgram =
       customBlocks: Map<string, CompiledCustomBlock>
       instructions: Instruction list }
 
-/// A compile-time or validation-time problem, always with a German message (this
-/// project's convention: English identifiers, German user-facing text).
+/// A compile-time or validation-time problem — user-facing text in whichever
+/// `Locale` the caller asked for (Milestone 12, bilingual support).
 type DslError = { blockId: string option; message: string }
+
+/// Milestone 12 (bilingual support): `Validator.fs`'s messages are the only DSL-level
+/// text this covers so far — `Compiler.fs`'s own compile-time errors are still
+/// German-only (a known, documented follow-up gap, not part of this milestone's scope).
+type Locale =
+    | De
+    | En
+
+module Locale =
+    /// `"de"`/`"en"` (anything else falls back to German) — matches the stored
+    /// server-side setting's raw string representation (`SettingsRepository`).
+    let ofString (s: string) : Locale = if s = "en" then En else De

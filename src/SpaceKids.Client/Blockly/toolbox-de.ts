@@ -1,4 +1,30 @@
 import { catalogActionBlockTypes, catalogInfoBlockTypes, catalogAccessorBlockTypes } from "./blocks-catalog";
+import { getCurrentLocale } from "./locale-state";
+
+/** Milestone 12 (bilingual support): only the 7 category names vary by locale — the
+ * block-type-list structure itself stays single-sourced below, read live so switching
+ * locale and rebuilding the toolbox (via `updateToolbox`/a workspace reinit) picks up
+ * the new names without duplicating this whole function into a second file. */
+const CATEGORY_NAMES = {
+    de: {
+        actions: "Aktionen",
+        info: "Informationen",
+        accessors: "Zugriffe",
+        programming: "Programmierung",
+        variables: "Variablen",
+        customBlock: "Eigener Block",
+        customBlocks: "Eigene Blöcke",
+    },
+    en: {
+        actions: "Actions",
+        info: "Information",
+        accessors: "Accessors",
+        programming: "Programming",
+        variables: "Variables",
+        customBlock: "Custom block",
+        customBlocks: "Custom blocks",
+    },
+};
 
 /** One "Eigene Blöcke" toolbox entry (§9b) — the generic `callCustomBlock` block type
  * carrying its target's `customBlockId` as `extraState`, so the flyout places a fresh
@@ -19,24 +45,26 @@ function callerToolboxEntry(customBlockId: string): object {
  * 9/Part C), appended alongside the fixed §8 accessors in "Zugriffe".
  */
 export function buildCatalogToolbox(customBlockIds: string[], dynamicAccessorTypes: string[]): object {
+    const names = CATEGORY_NAMES[getCurrentLocale()];
+
     return {
         kind: "categoryToolbox",
         contents: [
             {
                 kind: "category",
-                name: "Aktionen",
+                name: names.actions,
                 colour: "160",
                 contents: catalogActionBlockTypes.map((type) => ({ kind: "block", type })),
             },
             {
                 kind: "category",
-                name: "Informationen",
+                name: names.info,
                 colour: "230",
                 contents: catalogInfoBlockTypes.map((type) => ({ kind: "block", type })),
             },
             {
                 kind: "category",
-                name: "Zugriffe",
+                name: names.accessors,
                 colour: "65",
                 contents: catalogAccessorBlockTypes
                     .map((type) => ({ kind: "block", type }))
@@ -44,7 +72,7 @@ export function buildCatalogToolbox(customBlockIds: string[], dynamicAccessorTyp
             },
             {
                 kind: "category",
-                name: "Programmierung",
+                name: names.programming,
                 colour: "210",
                 contents: [
                     { kind: "block", type: "controls_if" },
@@ -65,13 +93,13 @@ export function buildCatalogToolbox(customBlockIds: string[], dynamicAccessorTyp
             },
             {
                 kind: "category",
-                name: "Variablen",
+                name: names.variables,
                 colour: "330",
                 custom: "VARIABLE",
             },
             {
                 kind: "category",
-                name: "Eigener Block",
+                name: names.customBlock,
                 colour: "290",
                 contents: [
                     { kind: "block", type: "sk_custom_block_def" },
@@ -81,7 +109,7 @@ export function buildCatalogToolbox(customBlockIds: string[], dynamicAccessorTyp
             },
             {
                 kind: "category",
-                name: "Eigene Blöcke",
+                name: names.customBlocks,
                 colour: "65",
                 contents: customBlockIds.map(callerToolboxEntry),
             },
