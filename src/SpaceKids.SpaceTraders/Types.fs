@@ -109,12 +109,33 @@ type Contract =
       fulfilled: bool
       expiration: string }
 
+/// A waypoint's trait signals what's actually there (a market, a shipyard, a
+/// mineable deposit, ...) — the inspector (visual-map feature) uses `symbol` to
+/// gate its "load market"/"load shipyard" buttons, and shows `name`/`description`
+/// for the player. Already present on the real API's `ListWaypoints` response; we
+/// just weren't deserializing it before now.
+type WaypointTrait =
+    { symbol: string
+      name: string
+      description: string }
+
 type Waypoint =
     { symbol: string
       ``type``: string
       systemSymbol: string
       x: int
-      y: int }
+      y: int
+      traits: WaypointTrait list }
+
+module Waypoint =
+    /// SpaceTraders' own waypoint-symbol convention: `SYSTEM-WAYPOINT` (e.g.
+    /// `X1-TEST-A1` is waypoint `A1` in system `X1-TEST`) — shared by every call
+    /// site that only has a waypoint symbol on hand but needs a system symbol too
+    /// (`getMarket`/`getShipyard` info blocks, the dashboard's on-demand
+    /// market/shipyard fetch), so this logic exists exactly once.
+    let systemSymbolOf (waypointSymbol: string) : string =
+        let parts = waypointSymbol.Split('-')
+        if parts.Length >= 2 then System.String.Join("-", parts.[0], parts.[1]) else waypointSymbol
 
 type TradeGood = { symbol: string; name: string }
 

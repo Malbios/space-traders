@@ -114,12 +114,29 @@ let private waypoints =
         ``type`` = "PLANET"
         systemSymbol = systemSymbol
         x = 0
-        y = 0 }
+        y = 0
+        traits =
+          [ { symbol = "MARKETPLACE"; name = "Marktplatz"; description = "Ein Ort zum Handeln." }
+            { symbol = "SHIPYARD"; name = "Werft"; description = "Hier können Schiffe gekauft werden." } ] }
       { symbol = "X1-TEST-B2"
         ``type`` = "ASTEROID_FIELD"
         systemSymbol = systemSymbol
         x = 5
-        y = 8 } ]
+        y = 8
+        traits =
+          [ { symbol = "COMMON_METAL_DEPOSITS"
+              name = "Häufige Metallvorkommen"
+              description = "Hier lassen sich häufige Metalle abbauen." } ] } ]
+
+/// Mirrors the real API: a waypoint without the matching trait 404s rather than
+/// answering with fixture data regardless — needed so the entity inspector's
+/// (visual-map feature) "no market/shipyard here" path is actually exercised
+/// against something, not just always-present fixtures.
+let private hasTrait (waypointSymbol: string) (traitSymbol: string) : bool =
+    waypoints
+    |> List.tryFind (fun w -> w.symbol = waypointSymbol)
+    |> Option.map (fun w -> w.traits |> List.exists (fun t -> t.symbol = traitSymbol))
+    |> Option.defaultValue false
 
 let private market =
     { symbol = headquarters
@@ -250,7 +267,17 @@ let configureApp (app: WebApplication) =
             applyFault
                 ctx
                 (fun () ->
-                    withAuth ctx (fun () -> task { return ok {| shipyard = shipyardFixture (routeWaypointSymbol ctx) |} })))
+                    withAuth
+                        ctx
+                        (fun () ->
+                            task {
+                                let waypointSymbol = routeWaypointSymbol ctx
+
+                                if hasTrait waypointSymbol "SHIPYARD" then
+                                    return ok {| shipyard = shipyardFixture waypointSymbol |}
+                                else
+                                    return Results.NotFound()
+                            })))
     )
     |> ignore
 
@@ -263,7 +290,21 @@ let configureApp (app: WebApplication) =
 
     app.MapGet(
         "/systems/{systemSymbol}/waypoints/{waypointSymbol}/market",
-        Func<HttpContext, Task<IResult>>(fun ctx -> applyFault ctx (fun () -> withAuth ctx (fun () -> task { return ok market })))
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault
+                ctx
+                (fun () ->
+                    withAuth
+                        ctx
+                        (fun () ->
+                            task {
+                                let waypointSymbol = routeWaypointSymbol ctx
+
+                                if hasTrait waypointSymbol "MARKETPLACE" then
+                                    return ok market
+                                else
+                                    return Results.NotFound()
+                            })))
     )
     |> ignore
 

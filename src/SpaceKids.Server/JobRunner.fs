@@ -90,14 +90,6 @@ let private contractRecord (c: Contract) : Value =
 let private waypointRecord (w: Waypoint) : Value =
     VRecord(Map.ofList [ "Symbol", VString w.symbol; "Typ", VString w.``type`` ])
 
-/// SpaceTraders' own waypoint-symbol convention: `SYSTEM-WAYPOINT` (e.g.
-/// `X1-TEST-A1` is waypoint `A1` in system `X1-TEST`) — used so `getMarket`/
-/// `getShipyard` info blocks only need a waypoint symbol argument, matching the
-/// existing block catalog (§7), rather than also asking for the system symbol.
-let private systemSymbolOfWaypoint (waypointSymbol: string) : string =
-    let parts = waypointSymbol.Split('-')
-    if parts.Length >= 2 then String.Join("-", parts.[0], parts.[1]) else waypointSymbol
-
 /// `RequestQueue.enqueue`'s `AmbiguousFailure` can arrive wrapped in an
 /// `AggregateException` depending on the Async<->Task interop path it crosses (the
 /// same nesting the Milestone 5 tests already had to account for) — unwrap before
@@ -276,7 +268,7 @@ let private runInfoRead
                 })
         | "getMarket" ->
             let waypointSymbol = requireArg "waypointSymbol"
-            let systemSymbol = systemSymbolOfWaypoint waypointSymbol
+            let systemSymbol = Waypoint.systemSymbolOf waypointSymbol
 
             $"getMarket:{waypointSymbol}",
             (fun () ->
@@ -309,7 +301,7 @@ let private runInfoRead
                 })
         | "getShipyard" ->
             let waypointSymbol = requireArg "waypointSymbol"
-            let systemSymbol = systemSymbolOfWaypoint waypointSymbol
+            let systemSymbol = Waypoint.systemSymbolOf waypointSymbol
 
             $"getShipyard:{waypointSymbol}",
             (fun () ->

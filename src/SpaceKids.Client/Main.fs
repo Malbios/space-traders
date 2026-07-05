@@ -38,6 +38,11 @@ type AgentService =
     {
         submitToken: string -> Async<Result<DashboardState, string>>
         loadDashboard: unit -> Async<DashboardState option>
+        /// Entity inspector (visual-map feature): loaded lazily (a button, not
+        /// automatic) when the player opens a waypoint that has the matching
+        /// trait — `None` if the waypoint turns out not to have one after all.
+        getWaypointMarket: string -> Async<Market option>
+        getWaypointShipyard: string -> Async<Shipyard option>
     }
 
     interface IRemoteService with
@@ -143,6 +148,15 @@ type CustomBlockService =
     interface IRemoteService with
         member this.BasePath = "/customblock"
 
+/// Entity inspector (visual-map feature): which entity's detail panel is open, if
+/// any — a ship's own detail view links to its current waypoint, and a
+/// waypoint's detail view links to every ship currently there, so this is a
+/// simple selection, not a navigation stack (opening a new entity always
+/// replaces whichever was open).
+type InspectedEntity =
+    | InspectedShip of shipSymbol: string
+    | InspectedWaypoint of waypointSymbol: string
+
 type Model =
     {
         containerId: string
@@ -176,6 +190,19 @@ type Model =
         /// read-only/edit locking for *any* active pilot.
         watchedJobId: string option
         watchedFrames: (string * string option) list
+        /// Entity inspector (visual-map feature): the currently open detail
+        /// panel, if any, and any lazily-loaded market/shipyard data for
+        /// whichever waypoint is open (cleared whenever a *different* entity is
+        /// opened, so stale data never bleeds into a new panel).
+        inspecting: InspectedEntity option
+        waypointMarket: Market option
+        waypointShipyard: Shipyard option
+        /// Visual system map: bumped every second by a self-rescheduling
+        /// `MapTick` (matching `WatchTick`'s own pattern) purely to force a
+        /// re-render, so an in-transit ship's interpolated position stays
+        /// current against `DateTimeOffset.UtcNow` without needing to store
+        /// "now" itself. Every 5th tick also reloads the dashboard.
+        mapTickCount: int
     }
 
 let private terminalPilotStatuses = [ "Completed"; "Failed"; "Cancelled" ]
@@ -205,6 +232,10 @@ let initModel =
         workshopStatus = ""
         watchedJobId = None
         watchedFrames = []
+        inspecting = None
+        waypointMarket = None
+        waypointShipyard = None
+        mapTickCount = 0
     }
 
 type Message =
@@ -258,6 +289,14 @@ type Message =
     | StopWatching
     | WatchTick
     | WatchStatusLoaded of JobStatusDto option
+    | InspectShip of string
+    | InspectWaypoint of string
+    | CloseInspector
+    | LoadWaypointMarket of string
+    | WaypointMarketLoaded of Market option
+    | LoadWaypointShipyard of string
+    | WaypointShipyardLoaded of Shipyard option
+    | MapTick
 
 let private callVoid (js: IJSRuntime) (identifier: string) (args: obj[]) : Async<unit> =
     js.InvokeVoidAsync(identifier, args).AsTask() |> Async.AwaitTask
@@ -530,6 +569,39 @@ let update
 
             { model with watchedFrames = frames }, Cmd.batch [ programHighlightCmd; workshopHighlightCmd; nextTickCmd ]
 
+    | InspectShip shipSymbol ->
+        { model with
+            inspecting = Some(InspectedShip shipSymbol)
+            waypointMarket = None
+            waypointShipyard = None },
+        Cmd.none
+    | InspectWaypoint waypointSymbol ->
+        { model with
+            inspecting = Some(InspectedWaypoint waypointSymbol)
+            waypointMarket = None
+            waypointShipyard = None },
+        Cmd.none
+    | CloseInspector ->
+        { model with inspecting = None; waypointMarket = None; waypointShipyard = None }, Cmd.none
+    | LoadWaypointMarket waypointSymbol ->
+        model, Cmd.OfAsync.perform (fun () -> agentRemote.getWaypointMarket waypointSymbol) () WaypointMarketLoaded
+    | WaypointMarketLoaded market ->
+        { model with waypointMarket = market }, Cmd.none
+    | LoadWaypointShipyard waypointSymbol ->
+        model, Cmd.OfAsync.perform (fun () -> agentRemote.getWaypointShipyard waypointSymbol) () WaypointShipyardLoaded
+    | WaypointShipyardLoaded shipyard ->
+        { model with waypointShipyard = shipyard }, Cmd.none
+
+    | MapTick ->
+        let count = model.mapTickCount + 1
+
+        let reloadCmd = if count % 5 = 0 then Cmd.ofMsg LoadDashboard else Cmd.none
+
+        let nextTickCmd =
+            Cmd.OfAsync.perform (fun () -> async { do! Async.Sleep 1000 }) () (fun () -> MapTick)
+
+        { model with mapTickCount = count }, Cmd.batch [ reloadCmd; nextTickCmd ]
+
 let private viewDashboard model dispatch =
     div {
         h2 { "Echte SpaceTraders-Daten (Milestone 2)" }
@@ -557,7 +629,11 @@ let private viewDashboard model dispatch =
                 h3 { "Schiffe" }
                 ul {
                     for ship in state.ships do
-                        li { $"{ship.symbol} — {ship.registration.role} — {ship.nav.status} bei {ship.nav.waypointSymbol}" }
+                        li {
+                            attr.style "cursor: pointer; text-decoration: underline"
+                            on.click (fun _ -> dispatch (InspectShip ship.symbol))
+                            $"{ship.symbol} — {ship.registration.role} — {ship.nav.status} bei {ship.nav.waypointSymbol}"
+                        }
                 }
                 h3 { "Aufträge" }
                 ul {
@@ -567,7 +643,11 @@ let private viewDashboard model dispatch =
                 h3 { "Wegpunkte" }
                 ul {
                     for waypoint in state.waypoints do
-                        li { $"{waypoint.symbol} ({waypoint.``type``})" }
+                        li {
+                            attr.style "cursor: pointer; text-decoration: underline"
+                            on.click (fun _ -> dispatch (InspectWaypoint waypoint.symbol))
+                            $"{waypoint.symbol} ({waypoint.``type``})"
+                        }
                 }
                 h3 { "Markt" }
                 for market in state.markets do
@@ -579,6 +659,240 @@ let private viewDashboard model dispatch =
                         }
                     }
             }
+    }
+
+/// Entity inspector (visual-map feature): every field already on `Ship` — no
+/// data gap here, unlike waypoints (see `viewWaypointInspector`).
+let private viewShipInspector (ship: Ship) dispatch =
+    div {
+        attr.style "border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem; margin: 0.5rem 0"
+        h3 { $"Schiff: {ship.symbol}" }
+        button { on.click (fun _ -> dispatch CloseInspector); "Schließen" }
+        p { $"Rolle: {ship.registration.role}" }
+        p {
+            "Wegpunkt: "
+            a {
+                attr.style "cursor: pointer; text-decoration: underline"
+                on.click (fun _ -> dispatch (InspectWaypoint ship.nav.waypointSymbol))
+                ship.nav.waypointSymbol
+            }
+        }
+        p { $"Status: {ship.nav.status} ({ship.nav.flightMode})" }
+        if ship.nav.status = "IN_TRANSIT" then
+            p {
+                $"Unterwegs von {ship.nav.route.origin.symbol} nach {ship.nav.route.destination.symbol}, Ankunft: {ship.nav.route.arrival}"
+            }
+        p { $"Treibstoff: {ship.fuel.current} / {ship.fuel.capacity}" }
+        p { $"Fracht: {ship.cargo.units} / {ship.cargo.capacity}" }
+        if ship.cargo.inventory.IsEmpty then
+            p { "Keine Fracht an Bord." }
+        else
+            ul {
+                for item in ship.cargo.inventory do
+                    li { $"{item.name}: {item.units}" }
+            }
+        if ship.cooldown.remainingSeconds > 0 then
+            p { $"Abklingzeit: noch {ship.cooldown.remainingSeconds}s" }
+    }
+
+/// Entity inspector (visual-map feature): unlike `Ship`, `Waypoint` is thin on
+/// its own (§'s "waypoint traits" addition) — traits, ships currently here (from
+/// `state.ships`, not the waypoint itself), and lazily-loaded market/shipyard
+/// data (gated on the matching trait) fill in "all the details."
+let private viewWaypointInspector (waypoint: Waypoint) (state: DashboardState) model dispatch =
+    let shipsHere = state.ships |> List.filter (fun s -> s.nav.waypointSymbol = waypoint.symbol)
+    let hasTrait symbol = waypoint.traits |> List.exists (fun t -> t.symbol = symbol)
+
+    div {
+        attr.style "border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem; margin: 0.5rem 0"
+        h3 { $"Wegpunkt: {waypoint.symbol}" }
+        button { on.click (fun _ -> dispatch CloseInspector); "Schließen" }
+        p { $"Typ: {waypoint.``type``} — Position: ({waypoint.x}, {waypoint.y})" }
+
+        h4 { "Eigenschaften" }
+        if waypoint.traits.IsEmpty then
+            p { "Keine bekannten Eigenschaften." }
+        else
+            ul {
+                for t in waypoint.traits do
+                    li { $"{t.name}: {t.description}" }
+            }
+
+        h4 { "Schiffe hier" }
+        if shipsHere.IsEmpty then
+            p { "Keine Schiffe an diesem Wegpunkt." }
+        else
+            ul {
+                for ship in shipsHere do
+                    li {
+                        attr.style "cursor: pointer; text-decoration: underline"
+                        on.click (fun _ -> dispatch (InspectShip ship.symbol))
+                        ship.symbol
+                    }
+            }
+
+        if hasTrait "MARKETPLACE" then
+            h4 { "Markt" }
+            match model.waypointMarket with
+            | None -> button { on.click (fun _ -> dispatch (LoadWaypointMarket waypoint.symbol)); "Markt laden" }
+            | Some market ->
+                ul {
+                    for good in market.tradeGoods do
+                        li { $"{good.symbol}: Kaufpreis {good.purchasePrice}, Verkaufspreis {good.sellPrice}" }
+                }
+
+        if hasTrait "SHIPYARD" then
+            h4 { "Werft" }
+            match model.waypointShipyard with
+            | None -> button { on.click (fun _ -> dispatch (LoadWaypointShipyard waypoint.symbol)); "Werft laden" }
+            | Some shipyard ->
+                ul {
+                    for entry in shipyard.ships do
+                        li { $"{entry.``type``}: {entry.purchasePrice} Credits" }
+                }
+    }
+
+let private viewInspector (state: DashboardState) model dispatch =
+    match model.inspecting with
+    | None -> Node.Empty()
+    | Some(InspectedShip shipSymbol) ->
+        match state.ships |> List.tryFind (fun s -> s.symbol = shipSymbol) with
+        | Some ship -> viewShipInspector ship dispatch
+        | None -> div { $"Schiff {shipSymbol} nicht gefunden." }
+    | Some(InspectedWaypoint waypointSymbol) ->
+        match state.waypoints |> List.tryFind (fun w -> w.symbol = waypointSymbol) with
+        | Some waypoint -> viewWaypointInspector waypoint state model dispatch
+        | None -> div { $"Wegpunkt {waypointSymbol} nicht gefunden." }
+
+// --- Visual system map (§9's "later idea," Milestone 10-adjacent) ------------------
+// Pure F#/Bolero.Html — `svg` is a predefined element builder, and `circle`/
+// `polygon`/`title`/`text` go through the generic `elt "tagName"`/`"attr" => value`
+// escape hatches this file already relies on elsewhere for non-curated HTML. No
+// JS/TS interop: unlike Blockly, nothing here owns its own mutable object graph —
+// it's just static SVG nodes Bolero already knows how to diff.
+
+let private mapViewSize = 400.0
+let private mapPadding = 30.0
+
+/// Guards against a degenerate single-point (or empty) range, which would
+/// otherwise divide by zero when scaling.
+let private computeMapBounds (waypoints: Waypoint list) : float * float * float * float =
+    match waypoints with
+    | [] -> (0.0, 1.0, 0.0, 1.0)
+    | _ ->
+        let xs = waypoints |> List.map (fun w -> float w.x)
+        let ys = waypoints |> List.map (fun w -> float w.y)
+        let minX, maxX = List.min xs, List.max xs
+        let minY, maxY = List.min ys, List.max ys
+        let minX, maxX = if minX = maxX then minX - 1.0, maxX + 1.0 else minX, maxX
+        let minY, maxY = if minY = maxY then minY - 1.0, maxY + 1.0 else minY, maxY
+        (minX, maxX, minY, maxY)
+
+/// Y is flipped (SVG is Y-down) so the schematic reads with north up.
+let private scaleMapPoint (minX, maxX, minY, maxY) (x: float) (y: float) : float * float =
+    let scale = min ((mapViewSize - 2.0 * mapPadding) / (maxX - minX)) ((mapViewSize - 2.0 * mapPadding) / (maxY - minY))
+    let sx = mapPadding + (x - minX) * scale
+    let sy = mapViewSize - (mapPadding + (y - minY) * scale)
+    (sx, sy)
+
+let private waypointColor (waypointType: string) : string =
+    match waypointType with
+    | "PLANET" -> "#4a90d9"
+    | "GAS_GIANT" -> "#d9a44a"
+    | "ASTEROID_FIELD" -> "#8a8a8a"
+    | "MOON" -> "#b0b0c0"
+    | "ORBITAL_STATION" -> "#6ad98a"
+    | "JUMP_GATE" -> "#c04ad9"
+    | "FUEL_STATION" -> "#d94a4a"
+    | _ -> "#999999"
+
+/// `None` if the ship's position can't be determined at all — either an
+/// in-transit ship whose route timestamps don't parse, or a docked/orbiting ship
+/// at a waypoint outside the loaded system (the known "dashboard only loads the
+/// headquarters system" simplification, same class documented elsewhere).
+let private interpolatedShipPosition (waypoints: Waypoint list) (ship: Ship) : (float * float) option =
+    if ship.nav.status = "IN_TRANSIT" then
+        try
+            let departure = System.DateTimeOffset.Parse ship.nav.route.departureTime
+            let arrival = System.DateTimeOffset.Parse ship.nav.route.arrival
+            let totalSeconds = (arrival - departure).TotalSeconds
+
+            let fraction =
+                if totalSeconds <= 0.0 then
+                    1.0
+                else
+                    max 0.0 (min 1.0 ((System.DateTimeOffset.UtcNow - departure).TotalSeconds / totalSeconds))
+
+            let ox, oy = float ship.nav.route.origin.x, float ship.nav.route.origin.y
+            let dx, dy = float ship.nav.route.destination.x, float ship.nav.route.destination.y
+            Some(ox + (dx - ox) * fraction, oy + (dy - oy) * fraction)
+        with _ ->
+            None
+    else
+        waypoints
+        |> List.tryFind (fun w -> w.symbol = ship.nav.waypointSymbol)
+        |> Option.map (fun w -> float w.x, float w.y)
+
+let private viewSystemMap (state: DashboardState) dispatch =
+    let bounds = computeMapBounds state.waypoints
+
+    div {
+        h2 { "Systemkarte" }
+        svg {
+            "viewBox" => $"0 0 {mapViewSize} {mapViewSize}"
+            attr.style "width: 100%; max-width: 400px; height: 400px; border: 1px solid #ccc"
+
+            for waypoint in state.waypoints do
+                let sx, sy = scaleMapPoint bounds (float waypoint.x) (float waypoint.y)
+
+                elt "g" {
+                    attr.style "cursor: pointer"
+                    on.click (fun _ -> dispatch (InspectWaypoint waypoint.symbol))
+
+                    elt "circle" {
+                        "cx" => string sx
+                        "cy" => string sy
+                        "r" => "6"
+                        "fill" => waypointColor waypoint.``type``
+                    }
+
+                    elt "title" { $"{waypoint.symbol} ({waypoint.``type``})" }
+
+                    elt "text" {
+                        "x" => string sx
+                        "y" => string (sy + 16.0)
+                        "font-size" => "8"
+                        "text-anchor" => "middle"
+                        waypoint.symbol
+                    }
+                }
+
+            for ship in state.ships do
+                match interpolatedShipPosition state.waypoints ship with
+                | None -> ()
+                | Some(x, y) ->
+                    let sx, sy = scaleMapPoint bounds x y
+
+                    elt "g" {
+                        attr.style "cursor: pointer"
+                        on.click (fun _ -> dispatch (InspectShip ship.symbol))
+
+                        elt "polygon" {
+                            "points" => $"{sx},{sy - 6.0} {sx - 5.0},{sy + 5.0} {sx + 5.0},{sy + 5.0}"
+                            "fill" => "#e04040"
+                        }
+
+                        elt "title" { $"{ship.symbol} — {ship.nav.status}" }
+
+                        elt "text" {
+                            "x" => string sx
+                            "y" => string (sy - 8.0)
+                            "font-size" => "8"
+                            "text-anchor" => "middle"
+                            ship.symbol
+                        }
+                    }
+        }
     }
 
 let private viewQueueStatus model dispatch =
@@ -785,6 +1099,11 @@ let view model dispatch =
             attr.style "height: 360px; width: 100%; border: 1px solid #ccc; margin-top: 0.5rem"
         }
         viewDashboard model dispatch
+        match model.dashboard with
+        | Some state ->
+            viewSystemMap state dispatch
+            viewInspector state model dispatch
+        | None -> Node.Empty()
         viewQueueStatus model dispatch
         viewJobRunner model dispatch
     }
@@ -802,6 +1121,13 @@ type MyApp() =
         Program.mkProgram
             (fun _ ->
                 initModel,
-                Cmd.batch [ Cmd.ofMsg Init; Cmd.ofMsg LoadDashboard; Cmd.ofMsg LoadQueueStatus; Cmd.ofMsg LoadPilots; Cmd.ofMsg LoadCustomBlocks ])
+                Cmd.batch [
+                    Cmd.ofMsg Init
+                    Cmd.ofMsg LoadDashboard
+                    Cmd.ofMsg LoadQueueStatus
+                    Cmd.ofMsg LoadPilots
+                    Cmd.ofMsg LoadCustomBlocks
+                    Cmd.ofMsg MapTick
+                ])
             (update js remote agentRemote queueRemote jobRemote customBlockRemote)
             view

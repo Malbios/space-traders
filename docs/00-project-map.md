@@ -200,3 +200,24 @@ structure. See `plan.md` §19 for what each milestone covers.
   ("insufficient-credits" friendly error) was dropped after checking the real
   SpaceTraders OpenAPI spec: credits can go negative in the real game, and no such
   error exists to translate — see `docs/decisions.md`.
+- **Entity inspector + visual system map: done.** plan.md's "later idea" from
+  Milestone 9 grew into a real drill-down inspector once the user redirected
+  mid-planning: click a ship to see all its details, click through to the
+  waypoint it's at, see traits and every other ship there, load market/shipyard
+  data on demand. Part A: `Waypoint` gained `traits: WaypointTrait list` — the
+  real API already returns this on the same `ListWaypoints` call, just wasn't
+  being deserialized; the fake's fixture gained plausible trait data (HQ:
+  MARKETPLACE + SHIPYARD; the asteroid field: a mining trait only). Part B:
+  `AgentService` gained `getWaypointMarket`/`getWaypointShipyard` (lazy,
+  button-triggered, not automatic), reusing `SpaceTradersClient` directly like
+  the rest of the dashboard; the fake's market/shipyard endpoints now 404 for a
+  waypoint without the matching trait (previously unconditional) so the "no
+  market here" path is actually exercised. Part C: the inspector UI itself —
+  `InspectedEntity` selection state, a ship panel (every `Ship` field) and a
+  waypoint panel (traits, ships present, gated market/shipyard buttons), full
+  cross-navigation between them. Part D: an SVG system map (`viewSystemMap`,
+  pure F#/Bolero.Html — no JS interop needed, unlike Blockly) with waypoints as
+  colored circles and ships as triangles (interpolated between waypoints for an
+  in-transit ship, using real elapsed time against the API's own timestamps),
+  both clickable into the same inspector, refreshed automatically via a
+  self-rescheduling tick reusing the `WatchTick` pattern.

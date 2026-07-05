@@ -300,6 +300,20 @@ history.
   go negative (`"can be negative if funds have been overdrawn"`, per the OpenAPI
   spec). Don't build "insufficient funds" error handling on the assumption that
   it rejects; it doesn't, confirmed by checking the spec directly (Milestone 10).
+- `Waypoint` now carries `traits: WaypointTrait list` (entity inspector feature)
+  — the real `ListWaypoints` response already includes this, no new API call
+  needed to read it. `SpaceKids.SpaceTraders/Types.fs`'s `Waypoint.systemSymbolOf`
+  is the one shared place for deriving a system symbol from a waypoint symbol —
+  reuse it rather than re-deriving the same `SYSTEM-WAYPOINT` split logic a
+  fourth time.
+- The fake's market/shipyard endpoints now 404 for a waypoint without the
+  matching trait (previously answered unconditionally for any waypoint) — if a
+  test needs market/shipyard data for a *new* fixture waypoint, give it the
+  right trait first or it'll 404 exactly like the real API would.
+- `AgentService`'s `getWaypointMarket`/`getWaypointShipyard` are lazy
+  (button-triggered from the inspector), not fetched automatically — this was a
+  deliberate choice, not an oversight; don't "fix" it to eager-load without
+  checking with the user first.
 
 ## Next tasks
 
@@ -308,8 +322,13 @@ history.
    persistence, typed inputs/structured outputs, the Blockwerkstatt UI, and
    cross-view highlighting. Milestone 10: queue priority differentiation
    (background vs. interactive), a fleet-level Logbuch, and a test proving
-   concurrent-pilot reconciliation doesn't cross-contaminate. Milestone 8 ("first
-   missions") remains deliberately skipped (not the user's current priority).
+   concurrent-pilot reconciliation doesn't cross-contaminate. The entity
+   inspector + visual system map (plan.md's own "later idea," grown into a real
+   drill-down feature per the user's own redirect) is also done: waypoint
+   traits, on-demand market/shipyard, a ship/waypoint inspector with full
+   cross-navigation, and an SVG map with clickable, auto-refreshing markers.
+   Milestone 8 ("first missions") remains deliberately skipped (not the user's
+   current priority).
 
 ## Commands
 

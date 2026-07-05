@@ -55,6 +55,19 @@ let ``ListWaypoints returns the seeded waypoints`` () =
     Assert.Equal(2, waypoints.Length)
 
 [<Fact>]
+let ``ListWaypoints round-trips each waypoint's traits`` () =
+    use fixture = new FakeSpaceTradersFixture()
+    let waypoints = fixture.Client.ListWaypoints(App.seededToken, "X1-TEST") |> Async.RunSynchronously
+
+    let headquarters = waypoints |> List.find (fun w -> w.symbol = "X1-TEST-A1")
+    Assert.Contains(headquarters.traits, fun t -> t.symbol = "MARKETPLACE")
+    Assert.Contains(headquarters.traits, fun t -> t.symbol = "SHIPYARD")
+
+    let asteroidField = waypoints |> List.find (fun w -> w.symbol = "X1-TEST-B2")
+    Assert.DoesNotContain(asteroidField.traits, fun t -> t.symbol = "MARKETPLACE")
+    Assert.NotEmpty(asteroidField.traits)
+
+[<Fact>]
 let ``GetMarket returns the seeded market`` () =
     use fixture = new FakeSpaceTradersFixture()
     let market = fixture.Client.GetMarket(App.seededToken, "X1-TEST", "X1-TEST-A1") |> Async.RunSynchronously

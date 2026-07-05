@@ -1004,3 +1004,96 @@ green. `npm run typecheck` clean after Part B's client change. Live Playwright
 check after Part B (the only part with a UI surface): two pilots active on two
 ships both show up in the Logbuch with their ship symbol and current activity,
 and both drop out once their jobs complete — zero console errors.
+
+## Entity inspector + visual system map
+
+Originally scoped as just a static SVG map (plan.md's own "later idea" note from
+Milestone 9's block-catalog work). Mid-planning, the user redirected: they
+wanted a real drill-down inspector, not just a picture — click a ship, see all
+its details (cargo, location, fuel, cooldown), open the waypoint it's at, see
+traits and every other ship there, load market/shipyard data on demand. The map
+became the visual *entry point* into this, not the whole feature. Four parts.
+
+**Part A — waypoint traits.** `Waypoint` only ever had
+`symbol`/`type`/`systemSymbol`/`x`/`y`. The real API's `ListWaypoints` (already
+called once per system) also returns `traits: WaypointTrait[]`
+(`symbol`/`name`/`description`, verified against the real OpenAPI spec) — this
+was free to add, no new API call, and it's exactly what signals whether a
+waypoint has a market/shipyard at all. The fake's fixture gained plausible
+trait data: headquarters gets `MARKETPLACE` + `SHIPYARD`, the asteroid field
+gets a mining-flavored trait only (`COMMON_METAL_DEPOSITS`) — a real asteroid
+field with no dock, matching how the actual game distributes these.
+
+**Part B — on-demand market/shipyard remoting.** `AgentService` gained
+`getWaypointMarket`/`getWaypointShipyard`, lazy (button-triggered) per the
+user's own preference, not automatic — reusing `SpaceTradersClient` directly,
+the same pattern the dashboard's own headquarters-market fetch already used.
+Also promoted the `SYSTEM-WAYPOINT` symbol-splitting helper (previously
+duplicated privately in both `JobRunner.fs` and inlined via
+`Substring`/`LastIndexOf` in `AgentRemoting.fs`) to a single shared
+`Waypoint.systemSymbolOf` in `SpaceKids.SpaceTraders/Types.fs` — a third
+near-identical copy wasn't worth it once a second on-demand fetch needed the
+same logic.
+
+**Part C — the inspector UI.** `InspectedEntity` selection state
+(`InspectedShip`/`InspectedWaypoint`), a ship panel (every existing `Ship`
+field — no data gap there) and a waypoint panel (traits from Part A, ships
+present filtered client-side from the dashboard's own `ships` list, gated
+market/shipyard buttons wired to Part B). Full cross-navigation: a ship's panel
+links to its waypoint, a waypoint's panel links to every ship listed there.
+`DashboardState`'s existing "reuse raw `SpaceKids.SpaceTraders` types directly"
+convention (not the DSL/German-record path `JobRunner.fs`'s `runInfoRead` uses
+— a different consumer, purpose-built for Blockly program output) carried
+straight through to the inspector, no new conversion layer.
+
+**Part D — the visual map.** `viewSystemMap`, pure F#/Bolero.Html: `svg` is a
+predefined element builder, but `circle`/`polygon`/`title`/`text` aren't — they
+go through the `elt "tagName"`/`"attr" => value` escape hatches this file
+already relied on elsewhere. No JS/TS interop needed at all — unlike Blockly (an
+external library owning its own mutable object graph, hence the "TS seam,
+Elmish sees JSON only" rule), this is static SVG Bolero already diffs on its
+own. Waypoints are colored circles (by `type`); ships are triangles, positioned
+by real elapsed-time interpolation between `nav.route.origin`/`destination`
+for an `IN_TRANSIT` ship, or its current waypoint's own coordinates otherwise.
+Both are clickable into the same Part C inspector. A `MapTick` message reuses
+the exact self-rescheduling pattern Milestone 9/Part E's `WatchTick` already
+established — it bumps a trivial `mapTickCount` (forcing a re-render, which
+recomputes in-transit interpolation against a fresh wall-clock time with no
+new API call) and, every 5th tick, also reloads the dashboard — automatic
+movement without polling the server every second.
+
+### Two real bugs found during Part B's own test-writing
+
+1. The fake's market/shipyard endpoints answered unconditionally for *any*
+   waypoint symbol, regardless of whether that waypoint actually had the
+   matching trait — meaning the "no market here" path the whole feature is
+   built to handle couldn't be exercised against the fake at all. Fixed by
+   gating both endpoints on the waypoint's own `traits` (a small `hasTrait`
+   helper), 404ing otherwise — matching how the real API actually behaves, and
+   making Part B's own "returns `None`" test meaningful rather than vacuous.
+2. That same "returns `None`" test then hung indefinitely rather than failing
+   cleanly, from a cause already documented once elsewhere in this project but
+   not yet accounted for in the new code: `RequestQueue.enqueue`'s exceptions
+   can arrive wrapped in a single-inner `AggregateException` depending on the
+   Async<->Task interop path crossed (the exact reason `JobRunner.fs`'s
+   `classifyException` already unwraps before pattern-matching). The new
+   `fetchWaypointMarket`/`fetchWaypointShipyard` only matched
+   `SpaceTradersApiException(404, _)` directly, missing the wrapped case —
+   fixed by adding the same recursive unwrap (`isNotFound`) rather than
+   duplicating `classifyException` itself, since the two functions want
+   different outcomes (`ApiResult` vs. a plain `bool`) from the same check.
+
+### Verification
+
+`dotnet build`/`dotnet test --blame-hang-timeout 60s` after each part, 107
+tests total, all green (4 new: 1 for waypoint traits round-tripping, 3 for the
+new market/shipyard remoting). `npm run typecheck` clean after Parts C/D. Live
+Playwright checks after Parts C and D against a locally-run
+`SpaceKids.FakeSpaceTraders` with the real `SpaceKids.Server` pointed at it
+(same established pattern — the fake serves routes at its bare root, not
+`/v2`): Part C proved the full ship → waypoint → market-load → another-ship →
+close drill-down chain, and that the asteroid field correctly hides both
+buttons (no matching traits); Part D proved correct circle/triangle counts, that
+clicking either opens the right inspector, that the map is absent before login,
+and that a navigating ship's triangle visibly moves between two polls with no
+manual refresh. Zero console errors throughout.

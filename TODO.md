@@ -160,6 +160,41 @@ stop") were already satisfied by Milestone 7 — no new work needed there.
       an unverified assumption; corrected there too.
 - [x] 103 tests total, all green; live Playwright verification after Part B.
 
+## Entity inspector + visual system map — done
+
+plan.md's "later idea" from Milestone 9 (a static system map), redirected by the
+user mid-planning into a real drill-down inspector: click a ship, see all its
+details, open the waypoint it's at, see traits and every ship there, load
+market/shipyard on demand.
+
+- [x] Part A — `Waypoint` gained `traits: WaypointTrait list` (free — the real
+      `ListWaypoints` call already returns this); the fake's fixture gained
+      plausible trait data (HQ: MARKETPLACE + SHIPYARD; asteroid field: a
+      mining trait only).
+- [x] Part B — `AgentService` gained lazy `getWaypointMarket`/
+      `getWaypointShipyard`; promoted the duplicated `SYSTEM-WAYPOINT` symbol
+      helper to a single shared `Waypoint.systemSymbolOf`; the fake's
+      market/shipyard endpoints now 404 for a waypoint without the matching
+      trait instead of answering unconditionally.
+- [x] Part C — the inspector UI: `InspectedEntity` selection state, a ship
+      panel (every `Ship` field) and a waypoint panel (traits, ships present,
+      gated market/shipyard buttons), full cross-navigation between them.
+- [x] Part D — `viewSystemMap`: pure F#/Bolero.Html SVG (no JS interop needed),
+      waypoints as colored circles, ships as triangles (real elapsed-time
+      interpolation for an in-transit ship), both clickable into the same
+      inspector, auto-refreshing via a `MapTick` reusing the `WatchTick`
+      pattern.
+- [x] Found and fixed two real bugs while writing Part B's own tests: the
+      fake's market/shipyard endpoints didn't 404 for the wrong waypoint at
+      all (so the "no market here" path was unexercisable); and the new
+      404-detection missed the case where `RequestQueue.enqueue`'s exception
+      arrives wrapped in a single-inner `AggregateException` (the same
+      Async<->Task interop quirk `JobRunner.fs`'s `classifyException` already
+      has to account for).
+- [x] 107 tests total, all green; TypeScript typecheck clean; live Playwright
+      verification of the full drill-down chain and the map's click/auto-move
+      behavior.
+
 ## Later milestones
 
 Milestone 8 ("first missions") deliberately skipped — explicit user feedback that
