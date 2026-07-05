@@ -1737,7 +1737,8 @@ German message rather than a silent break.
 * Add pause, resume, stop, and inspect controls.
 * Improve queue fairness.
 * Add fleet-level logs.
-* Verify reconciliation stays correct with concurrent pilots (credits deltas now genuinely race — §13); make insufficient-credits contention a friendly German runtime error (§11).
+* Verify reconciliation stays correct with concurrent pilots (credits deltas now genuinely race — §13).
+* ~~Make insufficient-credits contention a friendly German runtime error.~~ Dropped during Milestone 10: the real SpaceTraders API has no such error — credits are documented as able to go negative if overdrawn, and no error code for an unaffordable purchase exists anywhere in the OpenAPI spec. This bullet was written on an unverified assumption; see `docs/decisions.md`.
 
 Done when:
 

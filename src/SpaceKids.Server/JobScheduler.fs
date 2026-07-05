@@ -59,7 +59,7 @@ let tickOnce (client: SpaceTradersClient) (dbPath: string) : Async<unit> =
         | Some token ->
             for job in JobRunner.listJobs () do
                 if not (isTerminal job.status) then
-                    do! JobRunner.stepOnce client dbPath token job.jobId
+                    do! JobRunner.stepOnce client dbPath JobRunner.backgroundPriority token job.jobId
                     do! Persistence.ShipLockRepository.refreshLease dbPath job.shipSymbol job.jobId JobRunner.leaseSeconds
     }
 

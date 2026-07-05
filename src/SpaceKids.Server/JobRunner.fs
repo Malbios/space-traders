@@ -13,9 +13,12 @@ open SpaceKids.SpaceTraders
 /// copy current too, so a live job doesn't pay a DB round-trip just to read its own
 /// state back.
 
-/// Interactive foreground program = priority 1, §13's top tier ("player pressing
-/// step/run").
-let private interactivePriority = 1
+/// §13's priority levels: 1 = interactive (player pressing step/run), 3 =
+/// background job action. Milestone 10/Part A — every queue call below now takes
+/// this as a parameter instead of a single hardcoded tier, so a fully automatic
+/// background pilot (driven by `JobScheduler.tickOnce`) no longer looks identical
+/// to a live button press to the request queue's own aging/ordering logic.
+let backgroundPriority = 3
 
 /// Longer than the ~1s tick loop and the ~60s sweep interval combined, so a
 /// genuinely live job's lease never looks expired between two ticks, but short
@@ -112,6 +115,7 @@ let private runAction
     (client: SpaceTradersClient)
     (dbPath: string)
     (token: string)
+    (priority: int)
     (shipSymbol: string)
     (action: QueuedAction)
     : Async<ApiResult> =
@@ -223,7 +227,7 @@ let private runAction
 
     async {
         try
-            return! RequestQueue.enqueue dbPath interactivePriority endpoint call
+            return! RequestQueue.enqueue dbPath priority endpoint call
         with ex ->
             return classifyException ex
     }
@@ -235,6 +239,7 @@ let private runInfoRead
     (client: SpaceTradersClient)
     (dbPath: string)
     (token: string)
+    (priority: int)
     (shipSymbol: string)
     (infoType: string)
     (args: Map<string, string>)
@@ -367,7 +372,7 @@ let private runInfoRead
 
     async {
         try
-            return! RequestQueue.enqueue dbPath interactivePriority endpoint call
+            return! RequestQueue.enqueue dbPath priority endpoint call
         with ex ->
             return classifyException ex
     }
@@ -432,6 +437,7 @@ let rec private applyEffects
     (client: SpaceTradersClient)
     (dbPath: string)
     (token: string)
+    (priority: int)
     (effects: Effect list)
     : Async<unit> =
     async {
@@ -471,14 +477,14 @@ let rec private applyEffects
                 // description ("reads jobs due to wake, calls step...").
                 ()
             | QueueApiCall(jobId, shipSymbol, action, attemptNumber) ->
-                let! result = runAction client dbPath token shipSymbol action
-                do! tick client dbPath token jobId (ApiResponseReceived(jobId, attemptNumber, result))
+                let! result = runAction client dbPath token priority shipSymbol action
+                do! tick client dbPath token priority jobId (ApiResponseReceived(jobId, attemptNumber, result))
             | ReconcileShipState(jobId, shipSymbol, attemptNumber) ->
                 let! result =
                     async {
                         try
                             let! ship =
-                                RequestQueue.enqueue dbPath interactivePriority $"getShip:{shipSymbol}" (fun () ->
+                                RequestQueue.enqueue dbPath priority $"getShip:{shipSymbol}" (fun () ->
                                     client.GetShip(token, shipSymbol))
 
                             return ReconciliationShip(toSnapshot ship)
@@ -486,13 +492,13 @@ let rec private applyEffects
                             return classifyException ex
                     }
 
-                do! tick client dbPath token jobId (ApiResponseReceived(jobId, attemptNumber, result))
+                do! tick client dbPath token priority jobId (ApiResponseReceived(jobId, attemptNumber, result))
             | ReconcileContractState(jobId, contractId, attemptNumber) ->
                 let! result =
                     async {
                         try
                             let! r =
-                                RequestQueue.enqueue dbPath interactivePriority $"getContract:{contractId}" (fun () ->
+                                RequestQueue.enqueue dbPath priority $"getContract:{contractId}" (fun () ->
                                     client.GetContract(token, contractId))
 
                             return ReconciliationContract r.contract.accepted
@@ -500,23 +506,23 @@ let rec private applyEffects
                             return classifyException ex
                     }
 
-                do! tick client dbPath token jobId (ApiResponseReceived(jobId, attemptNumber, result))
+                do! tick client dbPath token priority jobId (ApiResponseReceived(jobId, attemptNumber, result))
             | ReconcileFleetState(jobId, attemptNumber) ->
                 let! result =
                     async {
                         try
                             let! ships =
-                                RequestQueue.enqueue dbPath interactivePriority "listShips" (fun () -> client.ListShips(token))
+                                RequestQueue.enqueue dbPath priority "listShips" (fun () -> client.ListShips(token))
 
                             return ReconciliationFleet(List.length ships)
                         with ex ->
                             return classifyException ex
                     }
 
-                do! tick client dbPath token jobId (ApiResponseReceived(jobId, attemptNumber, result))
+                do! tick client dbPath token priority jobId (ApiResponseReceived(jobId, attemptNumber, result))
             | QueueInfoRead(jobId, shipSymbol, infoType, args, attemptNumber, _resultTarget) ->
-                let! result = runInfoRead client dbPath token shipSymbol infoType args
-                do! tick client dbPath token jobId (ApiResponseReceived(jobId, attemptNumber, result))
+                let! result = runInfoRead client dbPath token priority shipSymbol infoType args
+                do! tick client dbPath token priority jobId (ApiResponseReceived(jobId, attemptNumber, result))
     }
 
 /// One scheduler tick: pulls the job, calls the pure core, persists the result,
@@ -526,6 +532,7 @@ and private tick
     (client: SpaceTradersClient)
     (dbPath: string)
     (token: string)
+    (priority: int)
     (jobId: JobId)
     (event: SchedulerEvent)
     : Async<unit> =
@@ -547,7 +554,7 @@ and private tick
             }
 
         match computed with
-        | Some effects -> do! applyEffects client dbPath token effects
+        | Some effects -> do! applyEffects client dbPath token priority effects
         | None -> ()
     }
 
@@ -565,9 +572,16 @@ let recoverJob (client: SpaceTradersClient) (dbPath: string) (token: string) (jo
         | false, _ -> ()
         | true, job ->
             match job.status with
-            | Running -> do! tick client dbPath token jobId WakeTick
+            | Running -> do! tick client dbPath token backgroundPriority jobId WakeTick
             | AwaitingApiResponse(attempt, _, _) ->
-                do! tick client dbPath token jobId (ApiResponseReceived(jobId, attempt, ApiAmbiguous "Server wurde neu gestartet"))
+                do!
+                    tick
+                        client
+                        dbPath
+                        token
+                        backgroundPriority
+                        jobId
+                        (ApiResponseReceived(jobId, attempt, ApiAmbiguous "Server wurde neu gestartet"))
             | Reconciling(attempt, _, baseline) ->
                 let reconcileEffect =
                     match baseline with
@@ -575,11 +589,17 @@ let recoverJob (client: SpaceTradersClient) (dbPath: string) (token: string) (jo
                     | FleetBaseline _ -> ReconcileFleetState(jobId, attempt)
                     | _ -> ReconcileShipState(jobId, job.shipSymbol, attempt)
 
-                do! applyEffects client dbPath token [ reconcileEffect ]
+                do! applyEffects client dbPath token backgroundPriority [ reconcileEffect ]
             | AwaitingInfoResponse(attempt, infoType, infoArgs, resultTarget) ->
                 // A GET is always safe to retry (§8/§14) — no ambiguous-failure
                 // framing needed, just re-issue the same fetch directly.
-                do! applyEffects client dbPath token [ QueueInfoRead(jobId, job.shipSymbol, infoType, infoArgs, attempt, resultTarget) ]
+                do!
+                    applyEffects
+                        client
+                        dbPath
+                        token
+                        backgroundPriority
+                        [ QueueInfoRead(jobId, job.shipSymbol, infoType, infoArgs, attempt, resultTarget) ]
             | WaitingForArrival _
             | WaitingForCooldown _
             | Paused _
@@ -598,7 +618,7 @@ let pauseOrphan (client: SpaceTradersClient) (dbPath: string) (token: string) (j
     async {
         do! ensureLoaded dbPath jobId
         do! recoverJob client dbPath token jobId
-        do! tick client dbPath token jobId PauseRequested
+        do! tick client dbPath token backgroundPriority jobId PauseRequested
     }
 
 /// Starts a new job, persisting it (`programs` + `jobs` rows) and acquiring the
@@ -663,17 +683,22 @@ let startJob
     }
 
 /// Drives the job through exactly one scheduler tick (one `WakeTick`) — step mode.
-let stepOnce (client: SpaceTradersClient) (dbPath: string) (token: string) (jobId: JobId) : Async<unit> =
-    tick client dbPath token jobId WakeTick
+/// `priority` (Milestone 10/Part A, §13): callers pass 1 for a player-triggered
+/// step/run (`JobRemoting.fs`) or `backgroundPriority` (3) for `JobScheduler`'s
+/// fully automatic tick loop — the request queue's aging/ordering only means
+/// anything once background traffic is actually distinguishable from a live
+/// button press.
+let stepOnce (client: SpaceTradersClient) (dbPath: string) (priority: int) (token: string) (jobId: JobId) : Async<unit> =
+    tick client dbPath token priority jobId WakeTick
 
 /// Drives the job to completion (or failure) — run mode. A genuine polling loop
 /// (§14: "reads jobs due to wake, calls step..."): each `WakeTick` either makes free
 /// progress, dispatches the next action, or (while waiting on an arrival/cooldown
 /// that isn't due yet) is a no-op — so this polls at a short fixed interval rather
 /// than trying to compute exactly when the next wake is due.
-let rec runToCompletion (client: SpaceTradersClient) (dbPath: string) (token: string) (jobId: JobId) : Async<unit> =
+let rec runToCompletion (client: SpaceTradersClient) (dbPath: string) (priority: int) (token: string) (jobId: JobId) : Async<unit> =
     async {
-        do! stepOnce client dbPath token jobId
+        do! stepOnce client dbPath priority token jobId
 
         match jobs.TryGetValue jobId with
         | true, { status = Completed }
@@ -681,19 +706,20 @@ let rec runToCompletion (client: SpaceTradersClient) (dbPath: string) (token: st
         | true, { status = Cancelled } -> ()
         | true, _ ->
             do! Async.Sleep 50
-            return! runToCompletion client dbPath token jobId
+            return! runToCompletion client dbPath priority token jobId
         | false, _ -> ()
     }
 
-/// Milestone 7 (§15): pilot-card controls.
+/// Milestone 7 (§15): pilot-card controls — always player-triggered, so always
+/// priority 1.
 let pause (client: SpaceTradersClient) (dbPath: string) (token: string) (jobId: JobId) : Async<unit> =
-    tick client dbPath token jobId PauseRequested
+    tick client dbPath token 1 jobId PauseRequested
 
 let resume (client: SpaceTradersClient) (dbPath: string) (token: string) (jobId: JobId) : Async<unit> =
-    tick client dbPath token jobId ResumeRequested
+    tick client dbPath token 1 jobId ResumeRequested
 
 let cancel (client: SpaceTradersClient) (dbPath: string) (token: string) (jobId: JobId) : Async<unit> =
-    tick client dbPath token jobId CancelRequested
+    tick client dbPath token 1 jobId CancelRequested
 
 let getStatus (jobId: JobId) : JobState option =
     match jobs.TryGetValue jobId with

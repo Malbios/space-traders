@@ -139,6 +139,27 @@ for the naming note.)
       exactly that case.
 - [x] 101 tests total, all green; live Playwright verification after Parts C, D, E.
 
+## Milestone 10: Fleet mode (§13/§14/§15) — done
+
+Most of §19's bullets ("run several jobs," "show several pilots," "pause, resume,
+stop") were already satisfied by Milestone 7 — no new work needed there.
+
+- [x] Part A — queue priority differentiation: `JobRunner.fs`'s queue calls thread
+      a real `priority: int` instead of a single hardcoded tier;
+      `JobScheduler.tickOnce`'s background sweep now uses `backgroundPriority` (3),
+      distinct from a player's own interactive step/run (1).
+- [x] Part B — a fleet-level "Logbuch" panel in `Main.fs` aggregating every active
+      pilot's last activity line (reuses existing `JobSummaryDto.lastLogLine`, no
+      schema/remoting change).
+- [x] Part C — an integration test proving two ships trading concurrently, one
+      mid-`Reconciling` from an ambiguous failure while the other completes a real
+      credits-changing trade, don't cross-contaminate each other's outcome.
+- [x] Dropped "insufficient-credits friendly error": checked the real SpaceTraders
+      OpenAPI spec before writing any code — credits can go negative in the real
+      game, no such error exists to translate. plan.md's own bullet was written on
+      an unverified assumption; corrected there too.
+- [x] 103 tests total, all green; live Playwright verification after Part B.
+
 ## Later milestones
 
 Milestone 8 ("first missions") deliberately skipped — explicit user feedback that

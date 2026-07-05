@@ -940,3 +940,67 @@ main program's toolbox → rename updates the library, end to end through real H
 Part E proved a call into a custom block whose body waits shows "innen aktiv" +
 "Block öffnen" while suspended, and both clear once the job completes. Zero console
 errors throughout.
+
+## Milestone 10: fleet mode (§13/§14/§15)
+
+Most of §19's Milestone 10 bullets ("run several jobs," "show several pilots,"
+"pause, resume, stop") were already satisfied by Milestone 7's pilot dashboard —
+no new work needed there. Checking the remaining bullets against the actual code
+turned up two real gaps and one bullet that turned out not to apply at all.
+
+**Part A — queue priority differentiation.** `RequestQueue.fs` has correctly
+implemented §13's priority+aging design since Milestone 5, but every call
+`JobRunner.fs` made — a player's own foreground step/run *or*
+`JobScheduler.tickOnce`'s fully-automatic per-second background tick of a pilot
+nobody is watching — went through the same hardcoded `interactivePriority = 1`.
+The tiered-priority design (1 = interactive, 3 = background job action) had never
+actually been wired up; background pilots have been indistinguishable from a live
+button press since Milestone 6. Fixed by threading a real `priority: int`
+parameter through `runAction`/`runInfoRead`/the three reconciliation fetches/
+`stepOnce`/`runToCompletion` — `JobRemoting.fs`'s player-triggered `step`/`run`
+pass `1`; `JobScheduler.tickOnce` and the background recovery paths
+(`recoverJob`/`pauseOrphan`) pass `JobRunner.backgroundPriority` (3).
+
+**Part B — fleet-level Logbuch.** §15's own dashboard mock-up has a "Logbuch —
+Recent German activity messages" section distinct from each pilot card's own
+last-log-entry; nothing like it existed. Added as a client-only panel in
+`Main.fs` listing every non-terminal pilot's ship symbol + last activity line
+together, reusing `JobSummaryDto.lastLogLine` already returned by `listJobs` — no
+schema change or new remoting endpoint needed.
+
+**Part C — concurrent-pilot reconciliation, verified not designed.**
+Structurally this already held: credits are agent-global and never the
+reconciliation signal (only cargo/ship-state deltas are — documented earlier in
+this file), and the request queue only ever runs one physical HTTP call at a
+time, so two ships' actions can't literally race at the transport layer either.
+What was missing was a test actually proving it: two jobs on two different
+ships, one deliberately driven into `Reconciling` via an ambiguous failure
+(short client timeout racing the fake's artificial processing delay, the same
+mechanism the Milestone 6 reconciliation tests already use) while the *other*
+ship completes a real, credits-changing trade at the same time — proving the
+first ship's reconciliation still resolves correctly (exactly one sell, not a
+double-sell) with no bearing from the concurrent credits change on the other
+ship.
+
+### A bullet that didn't survive contact with the real API
+
+plan.md's Milestone 10 text included "make insufficient-credits contention a
+friendly German runtime error," written on an unverified assumption that the
+real SpaceTraders API rejects unaffordable purchases the way many APIs do.
+Checked the real OpenAPI spec before writing any code (the same discipline the
+plan already applies to server-reset cadence): the `credits` field is documented
+as `"can be negative if funds have been overdrawn"`, and there is no error code
+anywhere in the spec for an unaffordable purchase. The real game does not reject
+these — it just lets the balance go negative. There was nothing to translate;
+the fake's existing unconditional-deduction behavior (confirmed via
+`App.fs`'s buy/sell/purchase-ship handlers) is already faithful to the real
+game, not a gap. Confirmed with the user to drop this bullet from plan.md rather
+than invent a fictional error path — see the strikethrough note there.
+
+### Verification
+
+`dotnet test --blame-hang-timeout 60s` after each part, 103 tests total, all
+green. `npm run typecheck` clean after Part B's client change. Live Playwright
+check after Part B (the only part with a UI surface): two pilots active on two
+ships both show up in the Logbuch with their ship symbol and current activity,
+and both drop out once their jobs complete — zero console errors.

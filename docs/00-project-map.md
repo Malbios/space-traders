@@ -185,3 +185,18 @@ structure. See `plan.md` §19 for what each milestone covers.
   verification (a frame whose position had already advanced past its own last
   instruction was silently dropped, making "innen aktiv" undetectable in exactly
   that case).
+- **Milestone 10 (fleet mode, §13/§14/§15): done.** Most of §19's bullets were
+  already satisfied by Milestone 7 (several concurrent pilots, pause/resume/stop);
+  three real gaps closed. Part A: every `JobRunner.fs` queue call now threads a
+  real `priority: int` instead of a single hardcoded tier — `JobScheduler.tickOnce`
+  (fully automatic background driving) now genuinely uses §13's "background job
+  action" tier (3), distinct from a player's own interactive step/run (1), for the
+  first time since Milestone 6. Part B: a "Logbuch" panel in `Main.fs` aggregating
+  every active pilot's last activity line in one place (no schema/remoting
+  change — reuses `JobSummaryDto.lastLogLine`). Part C: an integration test proving
+  two ships trading concurrently — one deliberately mid-`Reconciling` from an
+  ambiguous failure while the other completes a real, credits-changing trade —
+  don't cross-contaminate each other's outcome. A fourth planned item
+  ("insufficient-credits" friendly error) was dropped after checking the real
+  SpaceTraders OpenAPI spec: credits can go negative in the real game, and no such
+  error exists to translate — see `docs/decisions.md`.

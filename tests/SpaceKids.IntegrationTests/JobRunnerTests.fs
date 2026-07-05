@@ -105,6 +105,27 @@ let private program (instructions: Instruction list) : CompiledProgram =
       customBlocks = Map.empty
       instructions = instructions }
 
+/// Milestone 10/Part A: reads back the priority `RequestQueue.enqueue` logged for
+/// the most recent request matching `endpointPrefix` — proves *which* tier a given
+/// call site actually used, since `request_queue_events.priority` is the only
+/// externally observable record of it.
+let private latestPriorityFor (dbPath: string) (endpointPrefix: string) : int =
+    use conn = Database.openConnection dbPath
+    use cmd = conn.CreateCommand()
+
+    cmd.CommandText <-
+        """
+        SELECT priority FROM request_queue_events
+        WHERE endpoint LIKE $prefix || '%'
+        ORDER BY id DESC LIMIT 1;
+        """
+
+    cmd.Parameters.AddWithValue("$prefix", endpointPrefix) |> ignore
+
+    match cmd.ExecuteScalar() with
+    | null -> failwith $"no request_queue_events row for endpoint prefix \"{endpointPrefix}\""
+    | v -> Convert.ToInt32(v)
+
 /// Milestone 7: `JobRunner.startJob` now persists (`programs`/`jobs` rows) and
 /// acquires the ship's lock, so it needs `client`/`dbPath`/`token` and returns a
 /// `Result` (rejected if the ship is already locked). Tests always expect success
@@ -151,7 +172,7 @@ let ``happy path runs orbit, navigate, dock, extract, and sell to completion`` (
         let jobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" (program instructions) initialShip
 
         withPumpedQueue 20.0 (fun () ->
-            JobRunner.runToCompletion fixture.Client dbPath App.seededToken jobId
+            JobRunner.runToCompletion fixture.Client dbPath 1 App.seededToken jobId
             |> Async.RunSynchronously)
 
         match JobRunner.getStatus jobId with
@@ -180,7 +201,7 @@ let ``navigate reconciles after an ambiguous failure without a duplicate navigat
         setFaultMode fixture.RawClient "drop-after-processing"
 
         withPumpedQueue 20.0 (fun () ->
-            let stepTask = JobRunner.stepOnce client dbPath App.seededToken jobId |> Async.StartAsTask
+            let stepTask = JobRunner.stepOnce client dbPath 1 App.seededToken jobId |> Async.StartAsTask
             Thread.Sleep(1500) // past dropAfterProcessingDelayMs so the navigate mutation has landed
             setFaultMode fixture.RawClient "normal"
             stepTask.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
@@ -188,7 +209,7 @@ let ``navigate reconciles after an ambiguous failure without a duplicate navigat
             // (or straight to Completed, if the arrival time had already passed) — a
             // single `stepOnce` is a true single step, so drive any remaining wait
             // through to completion the same way the "run" button would.
-            JobRunner.runToCompletion client dbPath App.seededToken jobId
+            JobRunner.runToCompletion client dbPath 1 App.seededToken jobId
             |> Async.RunSynchronously)
 
         match JobRunner.getStatus jobId with
@@ -217,12 +238,12 @@ let ``extract reconciles after an ambiguous failure without a duplicate extracti
         setFaultMode fixture.RawClient "drop-after-processing"
 
         withPumpedQueue 20.0 (fun () ->
-            let stepTask = JobRunner.stepOnce client dbPath App.seededToken jobId |> Async.StartAsTask
+            let stepTask = JobRunner.stepOnce client dbPath 1 App.seededToken jobId |> Async.StartAsTask
             Thread.Sleep(1500)
             setFaultMode fixture.RawClient "normal"
             stepTask.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
             // settles WaitingForCooldown (or Completed directly) through to Completed.
-            JobRunner.runToCompletion client dbPath App.seededToken jobId
+            JobRunner.runToCompletion client dbPath 1 App.seededToken jobId
             |> Async.RunSynchronously)
 
         match JobRunner.getStatus jobId with
@@ -262,7 +283,7 @@ let ``sellGood reconciles after an ambiguous failure without a duplicate sell`` 
         setFaultMode fixture.RawClient "drop-after-processing"
 
         withPumpedQueue 20.0 (fun () ->
-            let stepTask = JobRunner.stepOnce client dbPath App.seededToken jobId |> Async.StartAsTask
+            let stepTask = JobRunner.stepOnce client dbPath 1 App.seededToken jobId |> Async.StartAsTask
             Thread.Sleep(1500)
             setFaultMode fixture.RawClient "normal"
             stepTask.Wait(TimeSpan.FromSeconds(10.0)) |> ignore)
@@ -327,10 +348,10 @@ let ``jobs on two different ships proceed concurrently, each keeping its own loc
         let jobId2 = startJobSync fixture.Client dbPath "FAKE-AGENT-2" (program [ ApiAction("b1", "orbit", Map.empty) ]) ship2
 
         withPumpedQueue 20.0 (fun () ->
-            JobRunner.runToCompletion fixture.Client dbPath App.seededToken jobId1
+            JobRunner.runToCompletion fixture.Client dbPath 1 App.seededToken jobId1
             |> Async.RunSynchronously
 
-            JobRunner.runToCompletion fixture.Client dbPath App.seededToken jobId2
+            JobRunner.runToCompletion fixture.Client dbPath 1 App.seededToken jobId2
             |> Async.RunSynchronously)
 
         match JobRunner.getStatus jobId1, JobRunner.getStatus jobId2 with
@@ -356,7 +377,7 @@ let ``a job persisted mid-wait resumes correctly after a simulated restart`` () 
         // navigate/extract or the HTTP queue at all.
         let jobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" (program [ Wait("b1", Literal(NumberLit 0.3)) ]) initialShip
 
-        JobRunner.stepOnce fixture.Client dbPath App.seededToken jobId |> Async.RunSynchronously
+        JobRunner.stepOnce fixture.Client dbPath 1 App.seededToken jobId |> Async.RunSynchronously
 
         match JobRunner.getStatus jobId with
         | Some { status = WaitingForArrival _ } -> ()
@@ -374,7 +395,7 @@ let ``a job persisted mid-wait resumes correctly after a simulated restart`` () 
         | other -> Assert.Fail($"expected the job to resume waiting, got {other}")
 
         Thread.Sleep(500)
-        JobRunner.stepOnce fixture.Client dbPath App.seededToken jobId |> Async.RunSynchronously
+        JobRunner.stepOnce fixture.Client dbPath 1 App.seededToken jobId |> Async.RunSynchronously
 
         match JobRunner.getStatus jobId with
         | Some job -> Assert.Equal(Completed, job.status)
@@ -390,7 +411,7 @@ let ``the sweep pauses a job whose lease expired without a competing acquirer, f
 
         let initialShip = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
         let jobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" (program [ Wait("b1", Literal(NumberLit 30.0)) ]) initialShip
-        JobRunner.stepOnce fixture.Client dbPath App.seededToken jobId |> Async.RunSynchronously
+        JobRunner.stepOnce fixture.Client dbPath 1 App.seededToken jobId |> Async.RunSynchronously
 
         match JobRunner.getStatus jobId with
         | Some { status = WaitingForArrival _ } -> ()
@@ -445,7 +466,7 @@ let ``pausing mid-AwaitingApiResponse never abandons the in-flight action, settl
         setFaultMode fixture.RawClient "drop-after-processing"
 
         withPumpedQueue 20.0 (fun () ->
-            let stepTask = JobRunner.stepOnce client dbPath App.seededToken jobId |> Async.StartAsTask
+            let stepTask = JobRunner.stepOnce client dbPath 1 App.seededToken jobId |> Async.StartAsTask
             Thread.Sleep(50) // give it time to enter AwaitingApiResponse first
             JobRunner.pause fixture.Client dbPath App.seededToken jobId |> Async.RunSynchronously
             Thread.Sleep(1500)
@@ -483,11 +504,11 @@ let ``survey reconciles after an ambiguous failure without a duplicate survey`` 
         setFaultMode fixture.RawClient "drop-after-processing"
 
         withPumpedQueue 20.0 (fun () ->
-            let stepTask = JobRunner.stepOnce client dbPath App.seededToken jobId |> Async.StartAsTask
+            let stepTask = JobRunner.stepOnce client dbPath 1 App.seededToken jobId |> Async.StartAsTask
             Thread.Sleep(1500)
             setFaultMode fixture.RawClient "normal"
             stepTask.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
-            JobRunner.runToCompletion client dbPath App.seededToken jobId
+            JobRunner.runToCompletion client dbPath 1 App.seededToken jobId
             |> Async.RunSynchronously)
 
         match JobRunner.getStatus jobId with
@@ -525,7 +546,7 @@ let ``deliverContract reconciles after an ambiguous failure without a duplicate 
         setFaultMode fixture.RawClient "drop-after-processing"
 
         withPumpedQueue 20.0 (fun () ->
-            let stepTask = JobRunner.stepOnce client dbPath App.seededToken jobId |> Async.StartAsTask
+            let stepTask = JobRunner.stepOnce client dbPath 1 App.seededToken jobId |> Async.StartAsTask
             Thread.Sleep(1500)
             setFaultMode fixture.RawClient "normal"
             stepTask.Wait(TimeSpan.FromSeconds(10.0)) |> ignore)
@@ -558,7 +579,7 @@ let ``acceptContract reconciles after an ambiguous failure without a duplicate a
         setFaultMode fixture.RawClient "drop-after-processing"
 
         withPumpedQueue 20.0 (fun () ->
-            let stepTask = JobRunner.stepOnce client dbPath App.seededToken jobId |> Async.StartAsTask
+            let stepTask = JobRunner.stepOnce client dbPath 1 App.seededToken jobId |> Async.StartAsTask
             Thread.Sleep(1500)
             setFaultMode fixture.RawClient "normal"
             stepTask.Wait(TimeSpan.FromSeconds(10.0)) |> ignore)
@@ -593,7 +614,7 @@ let ``purchaseShip reconciles after an ambiguous failure without a duplicate pur
         setFaultMode fixture.RawClient "drop-after-processing"
 
         withPumpedQueue 20.0 (fun () ->
-            let stepTask = JobRunner.stepOnce client dbPath App.seededToken jobId |> Async.StartAsTask
+            let stepTask = JobRunner.stepOnce client dbPath 1 App.seededToken jobId |> Async.StartAsTask
             Thread.Sleep(1500)
             setFaultMode fixture.RawClient "normal"
             stepTask.Wait(TimeSpan.FromSeconds(10.0)) |> ignore)
@@ -626,7 +647,7 @@ let ``refuel reconciles after an ambiguous failure without a duplicate refuel`` 
         setFaultMode fixture.RawClient "drop-after-processing"
 
         withPumpedQueue 20.0 (fun () ->
-            let stepTask = JobRunner.stepOnce client dbPath App.seededToken jobId |> Async.StartAsTask
+            let stepTask = JobRunner.stepOnce client dbPath 1 App.seededToken jobId |> Async.StartAsTask
             Thread.Sleep(1500)
             setFaultMode fixture.RawClient "normal"
             stepTask.Wait(TimeSpan.FromSeconds(10.0)) |> ignore)
@@ -692,7 +713,7 @@ let ``a program calling a custom block loaded from the repository compiles and r
         let jobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" compiled initialShip
 
         withPumpedQueue 20.0 (fun () ->
-            JobRunner.runToCompletion fixture.Client dbPath App.seededToken jobId
+            JobRunner.runToCompletion fixture.Client dbPath 1 App.seededToken jobId
             |> Async.RunSynchronously)
 
         match JobRunner.getStatus jobId with
@@ -715,7 +736,7 @@ let ``an info-read plus accessor chain resolves against the real fake over HTTP`
         let jobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" (program instructions) initialShip
 
         withPumpedQueue 20.0 (fun () ->
-            JobRunner.runToCompletion fixture.Client dbPath App.seededToken jobId
+            JobRunner.runToCompletion fixture.Client dbPath 1 App.seededToken jobId
             |> Async.RunSynchronously)
 
         match JobRunner.getStatus jobId with
@@ -726,3 +747,112 @@ let ``an info-read plus accessor chain resolves against the real fake over HTTP`
             | top :: _ -> Assert.Equal(VNumber(float initialShip.fuel.current), top.locals.["treibstoff"])
             | [] -> Assert.Fail("expected a stack frame")
         | None -> Assert.Fail("job not found"))
+
+[<Fact>]
+let ``a background scheduler tick dispatches at priority 3 while a player-triggered step stays at priority 1`` () =
+    use fixture = new JobFixture()
+
+    withJobTest fixture.RawClient (fun dbPath ->
+        // `JobScheduler.tickOnce` looks up the stored token via `AgentRepository`
+        // (matching the real remoting path), same as the restart-recovery test above.
+        Persistence.AgentRepository.saveAgent dbPath "FAKE-AGENT" App.seededToken
+        |> Async.RunSynchronously
+
+        let ship1 = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+        let backgroundJobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" (program [ ApiAction("b1", "orbit", Map.empty) ]) ship1
+
+        withPumpedQueue 20.0 (fun () ->
+            // The fully-automatic per-second tick loop nobody is watching —
+            // Milestone 10/Part A's fix: this must log priority 3, not 1.
+            // `tickOnce` sweeps *every* non-terminal job, so the interactive job
+            // below is deliberately not started yet — it would otherwise get
+            // background-ticked here too before its own priority-1 step runs.
+            JobScheduler.tickOnce fixture.Client dbPath |> Async.RunSynchronously
+
+            JobRunner.runToCompletion fixture.Client dbPath JobRunner.backgroundPriority App.seededToken backgroundJobId
+            |> Async.RunSynchronously)
+
+        let ship2 = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-2") |> Async.RunSynchronously
+        let interactiveJobId = startJobSync fixture.Client dbPath "FAKE-AGENT-2" (program [ ApiAction("b1", "orbit", Map.empty) ]) ship2
+
+        withPumpedQueue 20.0 (fun () ->
+            // A player pressing "step" on their own program — always priority 1.
+            JobRunner.runToCompletion fixture.Client dbPath 1 App.seededToken interactiveJobId
+            |> Async.RunSynchronously)
+
+        Assert.Equal(3, latestPriorityFor dbPath "orbit:FAKE-AGENT-1")
+        Assert.Equal(1, latestPriorityFor dbPath "orbit:FAKE-AGENT-2"))
+
+[<Fact>]
+let ``a concurrent trade on another ship doesn't corrupt an in-flight ambiguous-failure reconciliation`` () =
+    use fixture = new JobFixture()
+
+    withJobTest fixture.RawClient (fun dbPath ->
+        // Ship 1: give it cargo to sell, then a sellGood that will ambiguously fail
+        // (short client timeout vs. the fake's artificial processing delay) and
+        // need reconciliation.
+        fixture.Client.Extract(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously |> ignore
+        let beforeSell = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+        Assert.True(beforeSell.cargo.units >= 5)
+
+        App.dropAfterProcessingDelayMs <- 200
+        let shortTimeoutClient = fixture.Factory.CreateClient()
+        shortTimeoutClient.Timeout <- TimeSpan.FromMilliseconds(100.0)
+        let ambiguousClient = SpaceTradersClient(shortTimeoutClient)
+
+        let sellInstructions =
+            [ ApiAction("b1", "sellGood", Map [ "tradeSymbol", Literal(StringLit "IRON"); "units", Literal(NumberLit 5.0) ]) ]
+
+        let job1 = startJobSync fixture.Client dbPath "FAKE-AGENT-1" (program sellInstructions) beforeSell
+
+        // Ship 2: a normal buy, driven with the fixture's own default-timeout
+        // client — tolerates the fake's 200ms artificial delay just fine, so it
+        // completes as an ordinary successful trade, genuinely concurrent with
+        // ship 1 sitting in `Reconciling` below (both fully real `JobState`s,
+        // both non-terminal at the same time).
+        let ship2 = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-2") |> Async.RunSynchronously
+
+        let buyInstructions =
+            [ ApiAction("b1", "buyGood", Map [ "tradeSymbol", Literal(StringLit "FOOD"); "units", Literal(NumberLit 3.0) ]) ]
+
+        let job2 = startJobSync fixture.Client dbPath "FAKE-AGENT-2" (program buyInstructions) ship2
+
+        setFaultMode fixture.RawClient "drop-after-processing"
+
+        withPumpedQueue 20.0 (fun () ->
+            // Ship 1's sell ambiguously fails almost immediately (100ms timeout <
+            // 200ms fake-side delay) and settles into `Reconciling`.
+            let sellStepTask = JobRunner.stepOnce ambiguousClient dbPath 1 App.seededToken job1 |> Async.StartAsTask
+
+            // While ship 1 sits in `Reconciling`, ship 2 trades for real — a
+            // genuine concurrent agent-credits change happening mid-reconciliation.
+            // Its own client tolerates the 200ms delay (default timeout), so this
+            // completes as an ordinary successful buy, not another ambiguous case.
+            JobRunner.runToCompletion fixture.Client dbPath 1 App.seededToken job2
+            |> Async.RunSynchronously
+
+            Thread.Sleep(1500) // past dropAfterProcessingDelayMs so ship 1's sell mutation has landed
+            setFaultMode fixture.RawClient "normal"
+            sellStepTask.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
+
+            JobRunner.runToCompletion ambiguousClient dbPath 1 App.seededToken job1
+            |> Async.RunSynchronously)
+
+        match JobRunner.getStatus job1, JobRunner.getStatus job2 with
+        | Some j1, Some j2 ->
+            Assert.Equal(Completed, j1.status)
+            Assert.Equal(Completed, j2.status)
+        | _ -> Assert.Fail("one of the jobs was not found")
+
+        let afterShip1 = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+        let afterShip2 = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-2") |> Async.RunSynchronously
+
+        // Ship 1 sold exactly 5 units once — not double-sold despite reconciling
+        // while ship 2's own credits-changing trade ran concurrently. Ship 1's
+        // reconciliation never inspects credits (§13: cargo/ship-state deltas
+        // only), so ship 2's trade — which did change the shared agent balance —
+        // must have no bearing on this outcome.
+        Assert.Equal(beforeSell.cargo.units - 5, afterShip1.cargo.units)
+        // Ship 2 bought exactly 3 units once — its own trade wasn't corrupted by
+        // running concurrently with ship 1's reconciliation dance either.
+        Assert.Equal(3, afterShip2.cargo.units))

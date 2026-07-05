@@ -127,7 +127,7 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                         match tokenOpt with
                         | None -> return JobRunner.getStatus jobId |> toDto
                         | Some token ->
-                            do! JobRunner.stepOnce client dbPath token jobId
+                            do! JobRunner.stepOnce client dbPath 1 token jobId
                             return JobRunner.getStatus jobId |> toDto
                     }
             run =
@@ -138,7 +138,7 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                         match tokenOpt with
                         | None -> return JobRunner.getStatus jobId |> toDto
                         | Some token ->
-                            do! JobRunner.runToCompletion client dbPath token jobId
+                            do! JobRunner.runToCompletion client dbPath 1 token jobId
                             return JobRunner.getStatus jobId |> toDto
                     }
             getStatus = fun jobId -> async { return JobRunner.getStatus jobId |> toDto }

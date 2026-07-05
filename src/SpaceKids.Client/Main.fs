@@ -693,6 +693,21 @@ let private viewJobRunner model dispatch =
                             }
                         | _ -> ()
                 }
+
+        h3 { "Logbuch" }
+        let activePilots = model.pilots |> List.filter (fun p -> not (List.contains p.status terminalPilotStatuses))
+
+        if activePilots.IsEmpty then
+            p { "Keine Piloten aktiv." }
+        else
+            ul {
+                for pilot in activePilots do
+                    li {
+                        match pilot.lastLogLine with
+                        | Some line -> $"🤖 {pilot.shipSymbol}: {line}"
+                        | None -> $"🤖 {pilot.shipSymbol}: {germanPilotStatus pilot.status}"
+                    }
+            }
     }
 
 let private viewCustomBlockLibrary model dispatch =

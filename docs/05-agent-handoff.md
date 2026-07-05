@@ -290,11 +290,25 @@ history.
 - `lists_getIndex`/`lists_setIndex` only support the common "get/append at a plain index"
   shape — other WHERE modes (FROM_END/FIRST/LAST/RANDOM) aren't compiled yet.
 
+- Every `JobRunner.fs` queue call now threads a real `priority: int` (Milestone
+  10/Part A) instead of a single hardcoded tier — `JobScheduler.tickOnce`'s
+  background sweep uses `JobRunner.backgroundPriority` (3), distinct from a
+  player's own interactive step/run (1). Any *new* call site added to
+  `JobRunner.fs` should pick the correct tier deliberately, not default back to
+  a hardcoded `1`.
+- The real SpaceTraders API does not reject unaffordable purchases — credits can
+  go negative (`"can be negative if funds have been overdrawn"`, per the OpenAPI
+  spec). Don't build "insufficient funds" error handling on the assumption that
+  it rejects; it doesn't, confirmed by checking the spec directly (Milestone 10).
+
 ## Next tasks
 
-1. Milestone 8/10 onward — see `plan.md` §19. Milestone 9 (custom reusable blocks,
-   §9) is done: real call-stack execution, persistence, typed inputs/structured
-   outputs, the Blockwerkstatt UI, and cross-view highlighting. Milestone 8 ("first
+1. Milestone 8 onward — see `plan.md` §19. Milestones 9 (custom reusable blocks,
+   §9) and 10 (fleet mode) are both done. Milestone 9: real call-stack execution,
+   persistence, typed inputs/structured outputs, the Blockwerkstatt UI, and
+   cross-view highlighting. Milestone 10: queue priority differentiation
+   (background vs. interactive), a fleet-level Logbuch, and a test proving
+   concurrent-pilot reconciliation doesn't cross-contaminate. Milestone 8 ("first
    missions") remains deliberately skipped (not the user's current priority).
 
 ## Commands
