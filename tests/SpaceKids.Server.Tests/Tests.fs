@@ -176,6 +176,36 @@ let ``findUsages lists a program that references the custom block`` () =
         let id = CustomBlockRepository.insert dbPath "Baue Erz ab" None |> Async.RunSynchronously
         CustomBlockRepository.saveVersion dbPath id "{}" (aCompiledBlock [] None) |> Async.RunSynchronously |> ignore
 
+        let programId = ProgramRepository.create dbPath "Mein Programm" |> Async.RunSynchronously
+
+        let program: CompiledProgram =
+            { version = 1
+              customBlocks = Map [ id, aCompiledBlock [] None ]
+              instructions = [] }
+
+        ProgramRepository.insert dbPath programId (JobStateJson.serializeProgram program)
+        |> Async.RunSynchronously
+        |> ignore
+
+        let usages = CustomBlockRepository.findUsages dbPath id |> Async.RunSynchronously
+        Assert.Contains(usages, fun u -> u.Contains("Programm") && u.Contains("Mein Programm"))
+    finally
+        deleteDbFiles dbPath
+
+[<Fact>]
+let ``findUsages ignores a compiled snapshot whose program no longer exists (legacy blockly-spike case)`` () =
+    let dbPath = tempDbPath ()
+    try
+        MigrationRunner.run dbPath
+        let id = CustomBlockRepository.insert dbPath "Baue Erz ab" None |> Async.RunSynchronously
+        CustomBlockRepository.saveVersion dbPath id "{}" (aCompiledBlock [] None) |> Async.RunSynchronously |> ignore
+
+        // Simulates a pre-Milestone-11 job snapshot: a `programs` row whose
+        // `workspace_id` has no corresponding `program_definitions` entry (the
+        // literal "blockly-spike" case reported by a real user) -- this must not
+        // block deletion of a custom block it happens to reference. `workspaces`
+        // still needs a row for the FK (`programs.workspace_id REFERENCES
+        // workspaces(id)`) -- `program_definitions` is the one deliberately missing.
         WorkspaceRepository.save dbPath "blockly-spike" "{}" |> Async.RunSynchronously
 
         let program: CompiledProgram =
@@ -188,7 +218,7 @@ let ``findUsages lists a program that references the custom block`` () =
         |> ignore
 
         let usages = CustomBlockRepository.findUsages dbPath id |> Async.RunSynchronously
-        Assert.Contains(usages, fun u -> u.Contains("Programm"))
+        Assert.Empty(usages)
     finally
         deleteDbFiles dbPath
 

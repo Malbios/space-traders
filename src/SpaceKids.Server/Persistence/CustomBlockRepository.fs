@@ -182,7 +182,24 @@ let findUsages (dbPath: string) (customBlockId: string) : Async<string list> =
         let usedByPrograms =
             async {
                 use cmd = conn.CreateCommand()
-                cmd.CommandText <- "SELECT name, compiled_dsl_json FROM programs;"
+
+                // Joined against `program_definitions` deliberately: `programs` is an
+                // append-only table of immutable compiled-job snapshots going back to
+                // before Milestone 11's named-program library existed (every job used to
+                // compile against one hardcoded shared workspace, literally named
+                // "blockly-spike") -- a plain `SELECT ... FROM programs` would treat any
+                // such orphaned pre-Milestone-11 snapshot (or a since-deleted program's
+                // old snapshots) as permanent, invisible, undeletable "usage." This join
+                // also fixes a second bug for free: `programs.name` is always the raw
+                // workspace id/GUID (see `ProgramRepository.insert`), not the program's
+                // real display name -- `program_definitions.name` is.
+                cmd.CommandText <-
+                    """
+                    SELECT pd.name, p.compiled_dsl_json
+                    FROM programs p
+                    JOIN program_definitions pd ON pd.id = p.workspace_id;
+                    """
+
                 use reader = cmd.ExecuteReader()
                 let names = ResizeArray<string>()
 
@@ -192,7 +209,9 @@ let findUsages (dbPath: string) (customBlockId: string) : Async<string list> =
                         if program.customBlocks.ContainsKey customBlockId then
                             names.Add $"Programm \"{reader.GetString(0)}\""
 
-                return List.ofSeq names
+                // A program run multiple times while referencing the block would
+                // otherwise list its own name once per historical snapshot row.
+                return names |> Seq.distinct |> List.ofSeq
             }
 
         let usedByOtherBlocks =

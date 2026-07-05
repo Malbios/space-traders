@@ -87,7 +87,16 @@ type AgentRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                 fun token ->
                     async {
                         try
-                            let! agent = RequestQueue.enqueue dbPath 1 "GET /my/agent" (fun () -> client.GetAgent(token))
+                            // Deliberately bypasses `RequestQueue.enqueue` for this one
+                            // verification call: the Worker pauses *all* dispatching while
+                            // `serverResetFlag` is set (§13), and that flag can only be
+                            // cleared below, after a fresh token is confirmed valid — routing
+                            // this call through the same paused queue would mean nothing could
+                            // ever clear it (the exact deadlock a real user hit). A one-off
+                            // interactive token check doesn't need the queue's
+                            // retry/backoff/priority-aging machinery anyway. Every other call
+                            // in `loadRestOfState` below still goes through the queue normally.
+                            let! agent = client.GetAgent(token)
                             do! Persistence.AgentRepository.saveAgent dbPath agent.symbol token
                             // a fresh, accepted token means any prior server-reset is resolved (§13).
                             RequestQueue.clearServerReset ()
@@ -106,9 +115,17 @@ type AgentRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                         match stored with
                         | None -> return None
                         | Some(_, token) ->
-                            let! agent = RequestQueue.enqueue dbPath 1 "GET /my/agent" (fun () -> client.GetAgent(token))
-                            let! state = loadRestOfState client dbPath agent token
-                            return Some state
+                            try
+                                let! agent = RequestQueue.enqueue dbPath 1 "GET /my/agent" (fun () -> client.GetAgent(token))
+                                let! state = loadRestOfState client dbPath agent token
+                                return Some state
+                            with _ ->
+                                // The stored token can be dead (post server-reset) independently
+                                // of anything the player just did -- this fires automatically at
+                                // page load and every few `MapTick`s (`Main.fs`), so it must
+                                // degrade to "not logged in" rather than crash the request; the
+                                // token/login form is already what renders when this is `None`.
+                                return None
                     }
             getWaypointMarket =
                 fun waypointSymbol ->
