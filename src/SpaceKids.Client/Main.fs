@@ -959,9 +959,13 @@ let update
     | TokenSubmitted(Error message) ->
         { model with dashboardLoading = false; dashboardError = Some message }, Cmd.none
     | LoadDashboard ->
-        { model with dashboardLoading = true }, Cmd.OfAsync.perform (fun () -> agentRemote.loadDashboard ()) () DashboardLoaded
+        // Fires automatically at page load and every few `MapTick`s (a silent
+        // background refresh) -- unlike `SubmitToken`, a real user action, this
+        // shouldn't flash a loading indicator for something the player never asked
+        // for, so `dashboardLoading` is left untouched here.
+        model, Cmd.OfAsync.perform (fun () -> agentRemote.loadDashboard ()) () DashboardLoaded
     | DashboardLoaded stateOpt ->
-        { model with dashboard = stateOpt; dashboardLoading = false }, Cmd.none
+        { model with dashboard = stateOpt }, Cmd.none
     | LoadQueueStatus ->
         model, Cmd.OfAsync.perform (fun () -> queueRemote.getStatus ()) () QueueStatusLoaded
     | QueueStatusLoaded status ->

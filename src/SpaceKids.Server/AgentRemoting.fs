@@ -120,12 +120,32 @@ type AgentRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                                 let! state = loadRestOfState client dbPath agent token
                                 return Some state
                             with _ ->
-                                // The stored token can be dead (post server-reset) independently
-                                // of anything the player just did -- this fires automatically at
-                                // page load and every few `MapTick`s (`Main.fs`), so it must
-                                // degrade to "not logged in" rather than crash the request; the
-                                // token/login form is already what renders when this is `None`.
-                                return None
+                                // The token used above can go stale mid-flight: this call is
+                                // queued behind `RequestQueue`'s Worker, which pauses entirely
+                                // once a reset is detected, so a login that completes *while
+                                // this request is still queued* leaves it holding the old
+                                // token by the time it's finally dispatched. Check whether a
+                                // fresher token was saved since, and retry once with it
+                                // directly (same queue-bypass reasoning as `submitToken`)
+                                // before concluding this is a genuine, unrecovered reset.
+                                let! current = Persistence.AgentRepository.loadStoredAgent dbPath
+
+                                match current with
+                                | Some(_, freshToken) when freshToken <> token ->
+                                    try
+                                        let! agent = client.GetAgent(freshToken)
+                                        let! state = loadRestOfState client dbPath agent freshToken
+                                        return Some state
+                                    with _ -> return None
+                                | _ ->
+                                    // The stored token can be dead (post server-reset)
+                                    // independently of anything the player just did -- this
+                                    // fires automatically at page load and every few
+                                    // `MapTick`s (`Main.fs`), so it must degrade to "not
+                                    // logged in" rather than crash the request; the
+                                    // token/login form is already what renders when this is
+                                    // `None`.
+                                    return None
                     }
             getWaypointMarket =
                 fun waypointSymbol ->
