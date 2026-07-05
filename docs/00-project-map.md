@@ -52,7 +52,9 @@ src/
     JobScheduler.fs            BackgroundService (Milestone 7, §14): resumes every
                                non-terminal job on startup, polls due jobs + refreshes
                                ship-lock leases every tick, low-frequency lease sweep
-    Persistence/ProgramRepository.fs   First real write to `programs` (Milestone 7)
+    Persistence/ProgramRepository.fs   First real write to `programs` (Milestone 7);
+                                          `program_definitions` create/rename/list/delete
+                                          added in Milestone 11
     Persistence/JobRepository.fs        Job row insert/update/load (Milestone 7)
     Persistence/ShipLockRepository.fs   Ship-lock acquire/refresh/release/sweep (Milestone 7)
     Persistence/JobStateJson.fs         FSharp.SystemTextJson (de)serialization for
@@ -66,6 +68,9 @@ src/
                                compiles/validates the workspace JSON server-side,
                                drives JobRunner; startJob/step/run/getStatus/pause/
                                resume/cancel/listJobs (Milestone 6/7)
+    ProgramRemoting.fs         Bolero remote service backing the "Programme" library —
+                               list/create/loadDefinition (folds in the §9 structural-
+                               mismatch check)/rename/delete (Milestone 11)
   SpaceKids.Core/           Domain, DSL, validation, scheduling (framework-free, per §14)
     Dsl/
       Types.fs                   The DSL itself (§10) — Expr, Instruction, CompiledProgram
@@ -221,3 +226,19 @@ structure. See `plan.md` §19 for what each milestone covers.
   in-transit ship, using real elapsed time against the API's own timestamps),
   both clickable into the same inspector, refreshed automatically via a
   self-rescheduling tick reusing the `WatchTick` pattern.
+- **Milestone 11 (saved/named multiple-program library): done.** Replaces the
+  one hardcoded shared Blockly workspace with a real program library, closing
+  two gaps this had been blocking: per-program watch mode, and a real call
+  site for `Validator.revalidateAgainstCurrentDefinitions` (built in Milestone
+  9, never called). Part A: `program_definitions` (new table, 1:1 with its own
+  `workspaces` row) + `ProgramRepository` create/rename/list/delete. Part B:
+  `JobState`/`JobSummaryDto` gained `programId`. Part C: the structural-
+  mismatch check's real call site, `ProgramRemoting.fs`'s `loadDefinition`.
+  Part D: `ProgramService`/`ProgramRemoting.fs` + a "Programme" library UI
+  (in-page view switch, no real routing yet) — `model.containerId` *is* the
+  open program's own database id, so the pre-existing Speichern/Laden
+  plumbing needed zero changes. Part E: per-program watch mode — a pilot
+  flying one program no longer locks a different open program. See
+  `docs/decisions.md` for two real bugs found during live verification (a
+  stale-lock-state gap when switching between two open programs, and a
+  leftover local dev `ship_locks` row crashing the server on startup).

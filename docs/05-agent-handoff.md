@@ -255,10 +255,9 @@ history.
   custom-block call fails the job with a German message rather than executing —
   `getShipInfo`/`getCargo`/`getFuel`/etc. reads have no runtime behavior yet even
   though the compiler happily compiles them.
-- Watch mode (Milestone 7) is global, not per-program: the shared workspace goes
-  read-only while *any* pilot is active, because there's still only the one
-  Milestone-0 spike workspace. Once saved/named multiple programs and routing exist,
-  this needs to become per-program.
+- ~~Watch mode (Milestone 7) is global, not per-program~~ — fixed by the saved/named
+  multiple-program library (Milestone 11/Part E): a pilot flying one program no
+  longer locks a *different* open program, only its own.
 - Pilot cards have no name/mission framing (§15's "Pilot Max" flavor) — keyed by ship
   symbol and job id only. Cosmetic, easy to add later.
 - `JobRunner.listJobs()` only returns what's currently loaded in memory: every
@@ -314,25 +313,38 @@ history.
   (button-triggered from the inspector), not fetched automatically — this was a
   deliberate choice, not an oversight; don't "fix" it to eager-load without
   checking with the user first.
+- Saved/named multiple-program library (Milestone 11): `program_definitions`
+  (new table, 1:1 with its own `workspaces` row by shared id) replaces the
+  hardcoded `"blockly-spike"` workspace. `model.containerId` *is* the open
+  program's own database id — no separate DOM-id-to-DB-key mapping exists, so
+  the pre-existing Speichern/Laden messages needed zero changes. In-page view
+  switch (list ↔ open editor), no real Bolero routing yet, matching the
+  custom-block library's own list/workshop toggle. `JobState`/`JobSummaryDto`
+  gained `programId` so per-program watch mode (Part E) can filter pilots by
+  the program they're actually flying, not "any pilot anywhere."
+  `Validator.revalidateAgainstCurrentDefinitions` (built in Milestone 9, never
+  called) now has its real call site: `ProgramRemoting.fs`'s `loadDefinition`
+  compares a reopened program's last compiled snapshot against live
+  custom-block definitions and surfaces mismatches as a dismissible banner.
 
 ## Next tasks
 
 1. plan.md's roadmap (§19) has nothing outstanding: Milestones 9 (custom
-   reusable blocks, §9) and 10 (fleet mode) are both done. Milestone 9: real
-   call-stack execution, persistence, typed inputs/structured outputs, the
-   Blockwerkstatt UI, and cross-view highlighting. Milestone 10: queue priority
-   differentiation (background vs. interactive), a fleet-level Logbuch, and a
-   test proving concurrent-pilot reconciliation doesn't cross-contaminate. The
-   entity inspector + visual system map (plan.md's own "later idea," grown into
-   a real drill-down feature per the user's own redirect) is also done:
-   waypoint traits, on-demand market/shipyard, a ship/waypoint inspector with
-   full cross-navigation, and an SVG map with clickable, auto-refreshing
-   markers. Milestone 8 ("first missions") was removed from the roadmap
-   entirely, not deferred — see `docs/decisions.md`. Any further work now comes
-   from known limitations logged elsewhere in this doc (e.g. no saved/named
-   multiple-program library yet — the single shared Blockly workspace is what's
-   currently blocking per-program watch mode and the real structural-mismatch
-   check's actual call site), not an existing roadmap item.
+   reusable blocks, §9), 10 (fleet mode), and 11 (saved/named multiple-program
+   library) are all done. Milestone 9: real call-stack execution, persistence,
+   typed inputs/structured outputs, the Blockwerkstatt UI, and cross-view
+   highlighting. Milestone 10: queue priority differentiation (background vs.
+   interactive), a fleet-level Logbuch, and a test proving concurrent-pilot
+   reconciliation doesn't cross-contaminate. Milestone 11: a real program
+   library (create/open/rename/delete), per-program watch mode, and the
+   structural-mismatch check's first real call site. The entity inspector +
+   visual system map (plan.md's own "later idea," grown into a real drill-down
+   feature per the user's own redirect) is also done: waypoint traits,
+   on-demand market/shipyard, a ship/waypoint inspector with full
+   cross-navigation, and an SVG map with clickable, auto-refreshing markers.
+   Milestone 8 ("first missions") was removed from the roadmap entirely, not
+   deferred — see `docs/decisions.md`. Any further work now comes from known
+   limitations logged elsewhere in this doc, not an existing roadmap item.
 
 ## Commands
 

@@ -691,7 +691,8 @@ spike workspace — no saved/named multiple programs or routing yet. So "a runni
 program can't be edited out from under its pilot" (§15) is implemented as: the shared
 workspace goes read-only whenever *any* pilot is non-terminal, unlocking once none
 are, reusing the `setReadOnly`/`readOnly` plumbing already built in Milestone 0. Full
-per-program watch mode needs the program-library UI that doesn't exist yet.
+per-program watch mode needs the program-library UI that doesn't exist yet. (Made
+per-program in Milestone 11 once that library exists — see below.)
 
 **Four real bugs found while wiring this up, all structural rather than logic slips:**
 
@@ -1124,3 +1125,106 @@ touched either way — "Milestone 9"/"Milestone 10" are load-bearing identifiers
 already used throughout this file, `TODO.md`, `00-project-map.md`, and git
 history for real, already-shipped work; renumbering them to close the gap
 would have been actively harmful, not tidying.
+
+## Milestone 11: saved/named multiple-program library
+
+Replaces the one hardcoded shared Blockly workspace (`workspaceId =
+"blockly-spike"`, called out at the time as deliberate Milestone-7 scope, not
+a real design) with a real, listable, renameable, deletable collection of
+programs. Closes two gaps this had been blocking, both already flagged
+elsewhere in this file and `05-agent-handoff.md`: per-program watch mode, and
+a real call site for `Validator.revalidateAgainstCurrentDefinitions` (built in
+Milestone 9, never wired up because "compile and run happen in the same
+request, always against live definitions" — nothing had a chance to drift
+until a *saved* program could be reopened later).
+
+**`program_definitions` mirrors the `custom_blocks`/`custom_block_versions`
+id-sharing pattern.** A new table, `id`-aligned 1:1 with its own `workspaces`
+row (`program_definitions.id = workspaces.id`) — the program's editable
+Blockly JSON keeps living in the pre-existing, already-generic `workspaces`
+table (overwrite-based, no version history needed there); the pre-existing
+`programs` table keeps its existing "one immutable compiled snapshot per job
+run" behavior, now tagged with the real program id instead of the literal
+constant `"blockly-spike"`.
+
+**`model.containerId` can just *be* the program's own database id.** This
+was the key scope-reducing realization: since `WorkspaceRepository.save`/
+`load` (and the pre-existing Speichern/Laden `Save`/`Load`/`LoadedFromDb`/
+`Loaded` messages built on top of them) already operate purely by whatever
+string id `model.containerId` holds, and that id is *already* exactly the
+`workspaces` table row key once `program_definitions.id = workspaces.id` — no
+DOM-id-to-DB-key translation layer was needed, and none of that pre-existing
+code required any changes. Opening a program just means: destroy the
+previously-mounted container (if any — the first real client-side use of
+`destroyWorkspace`, which existed since Milestone 0 but had never been called
+outside of initial startup), `initWorkspace` a fresh one keyed by the new
+program's own id, then load its workspace JSON.
+
+**`JobState.programId` is sourced from a parameter that already flowed in.**
+`JobRunner.startJob` already received a `workspaceId` parameter (previously
+always the literal `"blockly-spike"`); Part B just stores it on the job
+record instead of discarding it. No new parameter needed anywhere in the
+call chain.
+
+**The structural-mismatch check needs the *last compiled snapshot*, not a
+fresh recompile.** `ProgramRemoting.fs`'s `loadDefinition` calls
+`Validator.revalidateAgainstCurrentDefinitions` against
+`ProgramRepository.latestCompiledSnapshot` (the most recent `programs` row for
+that program id) — recompiling the live workspace would always trivially
+resolve against live definitions, defeating the point of the check. Surfaced
+as a dismissible German warning banner, not a load-blocking error — informational
+until the player re-saves or re-runs.
+
+**In-page view switch, not real Bolero routing** — user's explicit call,
+matching how the custom-block library already toggles between list/workshop
+views on the same page. Smaller change, consistent with existing patterns,
+doesn't foreclose adding real routing later if the app ever needs deep-linkable
+URLs.
+
+**Delete-refusal semantics: only a currently non-terminal job blocks it,
+not history.** `ProgramRepository.delete`'s refusal query joins
+`jobs.state NOT IN ('Completed','Failed','Cancelled')` through
+`jobs.program_id = programs.id AND programs.workspace_id = @programDefinitionId`
+— a pilot that already finished or was cancelled doesn't lock the program from
+deletion, only one actually still flying it does. Deliberate design choice,
+not an oversight: program history isn't precious the way "someone is mid-flight
+right now" is.
+
+**A real bug found during Part E's own live verification, not present in the
+original design.** `watchModeLocked` is only recomputed inside the
+`PilotsLoaded` handler — nothing re-triggers it just because a *different*
+program was opened. Verified this concretely: start a pilot on program X
+(locks X, correctly), then open program Y — Y incorrectly inherited X's
+locked state, because nothing had re-run the lock computation against Y's own
+pilots. Fixed by having `OpenProgram` dispatch `Cmd.ofMsg LoadPilots` itself,
+so switching programs always re-evaluates lock state against whichever
+program is now open.
+
+**A second, unrelated real bug found via live verification: old dev data
+without warning.** Starting the real server locally (pointed at
+`SpaceKids.FakeSpaceTraders`, per the established verification pattern)
+crashed immediately — `JobScheduler`'s background orphan sweep found a
+leftover `ship_locks` row from a previous dev session referencing a job whose
+persisted JSON predates Part B's new `JobState.programId` field, and
+`JsonSerializer.Deserialize` throws rather than tolerating a missing required
+field, taking down the whole hosted service. This is a real latent fragility
+(any future required-field addition to `JobState` will hit the same wall
+against old persisted rows), but the concrete fix here was pragmatic, not a
+schema-evolution redesign: the one stale `ship_locks` row was local, disposable
+dev-session cruft (an orphaned lock past its lease, referencing an
+already-completed job) — cleared with a one-off script rather than building
+tolerant deserialization for a single-user local-dev app that doesn't have a
+real upgrade/migration story yet.
+
+**Verification:** 116 tests total (62 Core, 18 Server, 36 Integration), all
+green; `npm run typecheck` clean. Live verification this time used a scripted
+`playwright` driver (`chromium.launch()` via the `playwright` npm package,
+installed ad hoc since no interactive browser-automation tool was available
+in this session) rather than an interactive tool, pointed at a locally-run
+`SpaceKids.Server` (against `SpaceKids.FakeSpaceTraders`) — covering
+create/open/edit(via a hand-built Blockly workspace JSON with a real `sk_wait`
+block, since dragging blocks via Playwright is exactly as laborious as prior
+sessions' notes describe)/save/reopen/rename/delete, and a second run
+covering per-program watch mode's isolation (start a pilot on one open
+program, confirm a second open program stays editable, confirm the first
+re-locks when reopened). Zero console/page errors throughout both runs.

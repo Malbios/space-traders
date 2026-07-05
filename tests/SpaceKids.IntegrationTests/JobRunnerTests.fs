@@ -856,3 +856,15 @@ let ``a concurrent trade on another ship doesn't corrupt an in-flight ambiguous-
         // Ship 2 bought exactly 3 units once — its own trade wasn't corrupted by
         // running concurrently with ship 1's reconciliation dance either.
         Assert.Equal(3, afterShip2.cargo.units))
+
+[<Fact>]
+let ``a started job's programId matches the program it was started against`` () =
+    use fixture = new JobFixture()
+
+    withJobTest fixture.RawClient (fun dbPath ->
+        let initialShip = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+        let jobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" (program []) initialShip
+
+        match JobRunner.getStatus jobId with
+        | Some job -> Assert.Equal("test-workspace", job.programId)
+        | None -> Assert.Fail("job not found"))

@@ -632,6 +632,7 @@ let startJob
 
         let job =
             { jobId = jobId
+              programId = workspaceId
               program = program
               shipSymbol = shipSymbol
               status = Running

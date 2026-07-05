@@ -26,6 +26,7 @@ let private mkJobWithCustomBlocks
     (lastKnownShip: ShipSnapshot option)
     : JobState =
     { jobId = "job1"
+      programId = "prog1"
       program = { version = 1; customBlocks = customBlocks; instructions = instructions }
       shipSymbol = "SHIP-1"
       status = Running
@@ -42,6 +43,7 @@ let private mkJobWithCustomBlocks
 
 let private mkJob (instructions: Instruction list) (lastKnownShip: ShipSnapshot option) : JobState =
     { jobId = "job1"
+      programId = "prog1"
       program = mkProgram instructions
       shipSymbol = "SHIP-1"
       status = Running

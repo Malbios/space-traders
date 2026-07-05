@@ -94,7 +94,8 @@ See `docs/05-agent-handoff.md` for full context on each of these.
       action/reconciliation is in flight, never abandoning it) and wired them into
       the pilot dashboard.
 - [x] Added watch mode: the shared workspace goes read-only while any pilot is
-      active (global, not per-program — no saved/named programs yet).
+      active (global, not per-program — no saved/named programs yet; made
+      per-program in Milestone 11).
 - [x] Added the pilot dashboard (multiple concurrent jobs, one per ship).
 
 ## Milestone 9: Finish the block catalog — done
@@ -194,6 +195,51 @@ market/shipyard on demand.
 - [x] 107 tests total, all green; TypeScript typecheck clean; live Playwright
       verification of the full drill-down chain and the map's click/auto-move
       behavior.
+
+## Milestone 11: Saved/named multiple-program library — done
+
+Replaces the one hardcoded shared Blockly workspace (`"blockly-spike"`) with a
+real, listable, renameable, deletable collection of programs — closing two
+gaps this had been blocking: per-program watch mode, and a real call site for
+`Validator.revalidateAgainstCurrentDefinitions` (built in Milestone 9, never
+called).
+
+- [x] Part A — `program_definitions` table (new migration, 1:1 with its own
+      `workspaces` row by shared id, mirroring `custom_blocks`/
+      `custom_block_versions`); `ProgramRepository` create/rename/list/delete
+      (delete refused only while a currently non-terminal job actually flies
+      the program — a completed/cancelled job's history doesn't block it).
+- [x] Part B — `JobState`/`JobSummaryDto` gained `programId`, sourced from the
+      existing `workspaceId` parameter `JobRunner.startJob` already received
+      (no new parameter needed).
+- [x] Part C — `Validator.revalidateAgainstCurrentDefinitions`'s real call
+      site: `ProgramRemoting.fs`'s `loadDefinition` compares a reopened
+      program's last compiled snapshot against live custom-block definitions,
+      surfaced as a dismissible warning banner (not blocking the load).
+- [x] Part D — `ProgramService`/`ProgramRemoting.fs` (mirrors
+      `CustomBlockService`'s shape); a "Programme" library UI (in-page view
+      switch, no real Bolero routing yet, matching the custom-block library's
+      own list/workshop toggle) with per-program container switching —
+      `model.containerId` *is* the open program's own database id, so the
+      pre-existing Speichern/Laden messages needed zero changes.
+- [x] Part E — per-program watch mode: `PilotsLoaded`'s lock computation now
+      filters pilots by the currently-open program's id, so a pilot flying a
+      *different* program no longer locks this one. Found and fixed a real
+      gap during live verification: opening a different program didn't
+      re-trigger the lock recomputation on its own, so it kept showing the
+      previously-open program's stale lock state until `OpenProgram` was
+      changed to dispatch `LoadPilots` itself.
+- [x] Found and fixed a real bug during live verification unrelated to this
+      milestone's own logic: a leftover `ship_locks` row from local dev
+      testing, referencing a job serialized before `programId` existed,
+      crashed the whole server on startup (`JobScheduler`'s orphan sweep threw
+      an unhandled `JsonException` deserializing it) — cleared the stale row,
+      not a code fix, since this is pre-existing dev-only data.
+- [x] 116 tests total, all green; TypeScript typecheck clean; live Playwright
+      verification via a scripted `playwright` driver (no interactive browser
+      tool was available this session) covering create/open/edit/save/
+      reopen/rename/delete, and two open programs proving per-program watch
+      mode's isolation.
 
 ## Later milestones
 

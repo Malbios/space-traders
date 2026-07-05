@@ -5,6 +5,7 @@ open System.IO
 open Microsoft.Data.Sqlite
 open Xunit
 open SpaceKids.Core.Dsl
+open SpaceKids.Server
 open SpaceKids.Server.Persistence
 
 let private tempDbPath () =
@@ -225,5 +226,149 @@ let ``delete removes the custom block and its versions`` () =
 
         let loaded = CustomBlockRepository.load dbPath id |> Async.RunSynchronously
         Assert.True(loaded.IsNone)
+    finally
+        deleteDbFiles dbPath
+
+// --- ProgramRepository (saved/named multiple-program library) -------------------------
+
+[<Fact>]
+let ``create makes a named program with a blank workspace ready to save into`` () =
+    let dbPath = tempDbPath ()
+    try
+        MigrationRunner.run dbPath
+        let id = ProgramRepository.create dbPath "Mein erstes Programm" |> Async.RunSynchronously
+
+        let workspaceJson = WorkspaceRepository.load dbPath id |> Async.RunSynchronously
+        Assert.True(workspaceJson.IsSome)
+
+        let programs = ProgramRepository.list dbPath |> Async.RunSynchronously
+        Assert.Contains(programs, fun p -> p.id = id && p.name = "Mein erstes Programm")
+    finally
+        deleteDbFiles dbPath
+
+[<Fact>]
+let ``rename updates the program's name in list`` () =
+    let dbPath = tempDbPath ()
+    try
+        MigrationRunner.run dbPath
+        let id = ProgramRepository.create dbPath "Altbezeichnung" |> Async.RunSynchronously
+        ProgramRepository.rename dbPath id "Neubezeichnung" |> Async.RunSynchronously
+
+        let programs = ProgramRepository.list dbPath |> Async.RunSynchronously
+        Assert.Contains(programs, fun p -> p.id = id && p.name = "Neubezeichnung")
+        Assert.DoesNotContain(programs, fun p -> p.name = "Altbezeichnung")
+    finally
+        deleteDbFiles dbPath
+
+[<Fact>]
+let ``delete succeeds for a program with no active job`` () =
+    let dbPath = tempDbPath ()
+    try
+        MigrationRunner.run dbPath
+        let id = ProgramRepository.create dbPath "Unbenutzt" |> Async.RunSynchronously
+
+        match ProgramRepository.delete dbPath id |> Async.RunSynchronously with
+        | Ok() -> ()
+        | Error message -> Assert.Fail($"expected deletion to succeed, got: {message}")
+
+        let programs = ProgramRepository.list dbPath |> Async.RunSynchronously
+        Assert.DoesNotContain(programs, fun p -> p.id = id)
+    finally
+        deleteDbFiles dbPath
+
+[<Fact>]
+let ``delete succeeds for a program whose only job history is terminal`` () =
+    let dbPath = tempDbPath ()
+    try
+        MigrationRunner.run dbPath
+        let id = ProgramRepository.create dbPath "Fertig geflogen" |> Async.RunSynchronously
+        let programSnapshotId = ProgramRepository.insert dbPath id "{}" |> Async.RunSynchronously
+
+        JobRepository.insert dbPath "job-1" programSnapshotId "FAKE-AGENT-1" "Completed" "{}" None
+        |> Async.RunSynchronously
+
+        match ProgramRepository.delete dbPath id |> Async.RunSynchronously with
+        | Ok() -> ()
+        | Error message -> Assert.Fail($"expected deletion to succeed despite terminal history, got: {message}")
+    finally
+        deleteDbFiles dbPath
+
+[<Fact>]
+let ``delete is refused while a non-terminal job is flying the program`` () =
+    let dbPath = tempDbPath ()
+    try
+        MigrationRunner.run dbPath
+        let id = ProgramRepository.create dbPath "Gerade aktiv" |> Async.RunSynchronously
+        let programSnapshotId = ProgramRepository.insert dbPath id "{}" |> Async.RunSynchronously
+
+        JobRepository.insert dbPath "job-2" programSnapshotId "FAKE-AGENT-1" "Running" "{}" None
+        |> Async.RunSynchronously
+
+        match ProgramRepository.delete dbPath id |> Async.RunSynchronously with
+        | Error message -> Assert.Contains("Pilot", message)
+        | Ok() -> Assert.Fail("expected deletion to be refused while a pilot is active")
+
+        let programs = ProgramRepository.list dbPath |> Async.RunSynchronously
+        Assert.Contains(programs, fun p -> p.id = id)
+    finally
+        deleteDbFiles dbPath
+
+// --- Structural-mismatch check, real call site (§9/§15) --------------------------------
+
+let private aProgramCallingCustomBlock (customBlockId: string) (compiledBlock: CompiledCustomBlock) : CompiledProgram =
+    { version = 1
+      customBlocks = Map [ customBlockId, compiledBlock ]
+      instructions = [] }
+
+[<Fact>]
+let ``staleWarnings is empty when nothing referenced has changed since the program was last run`` () =
+    let dbPath = tempDbPath ()
+    try
+        MigrationRunner.run dbPath
+        let blockId = CustomBlockRepository.insert dbPath "Verdopple" None |> Async.RunSynchronously
+        let compiledBlock = aCompiledBlock [ "Zahl" ] (Some "Zahl")
+        CustomBlockRepository.saveVersion dbPath blockId "{}" compiledBlock |> Async.RunSynchronously |> ignore
+
+        let programId = ProgramRepository.create dbPath "Nutzt Verdopple" |> Async.RunSynchronously
+        let snapshotJson = JobStateJson.serializeProgram (aProgramCallingCustomBlock blockId compiledBlock)
+        ProgramRepository.insert dbPath programId snapshotJson |> Async.RunSynchronously |> ignore
+
+        let warnings = ProgramRemoting.staleWarnings dbPath programId |> Async.RunSynchronously
+        Assert.Empty(warnings)
+    finally
+        deleteDbFiles dbPath
+
+[<Fact>]
+let ``staleWarnings flags a program whose custom block signature has since changed`` () =
+    let dbPath = tempDbPath ()
+    try
+        MigrationRunner.run dbPath
+        let blockId = CustomBlockRepository.insert dbPath "Verdopple" None |> Async.RunSynchronously
+        let originalBlock = aCompiledBlock [ "Zahl" ] (Some "Zahl")
+        CustomBlockRepository.saveVersion dbPath blockId "{}" originalBlock |> Async.RunSynchronously |> ignore
+
+        let programId = ProgramRepository.create dbPath "Nutzt Verdopple" |> Async.RunSynchronously
+        let snapshotJson = JobStateJson.serializeProgram (aProgramCallingCustomBlock blockId originalBlock)
+        ProgramRepository.insert dbPath programId snapshotJson |> Async.RunSynchronously |> ignore
+
+        // The block gains a second input after the program's snapshot was taken.
+        let changedBlock = aCompiledBlock [ "Zahl"; "Anzahl" ] (Some "Zahl")
+        CustomBlockRepository.saveVersion dbPath blockId "{}" changedBlock |> Async.RunSynchronously |> ignore
+
+        let warnings = ProgramRemoting.staleWarnings dbPath programId |> Async.RunSynchronously
+        Assert.Single(warnings) |> ignore
+        Assert.Contains(blockId, warnings.[0])
+    finally
+        deleteDbFiles dbPath
+
+[<Fact>]
+let ``staleWarnings is empty for a program that has never been run`` () =
+    let dbPath = tempDbPath ()
+    try
+        MigrationRunner.run dbPath
+        let programId = ProgramRepository.create dbPath "Noch nie geflogen" |> Async.RunSynchronously
+
+        let warnings = ProgramRemoting.staleWarnings dbPath programId |> Async.RunSynchronously
+        Assert.Empty(warnings)
     finally
         deleteDbFiles dbPath

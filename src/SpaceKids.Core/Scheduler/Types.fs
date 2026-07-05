@@ -126,6 +126,10 @@ type JobStatus =
 
 type JobState =
     { jobId: JobId
+      /// Saved/named multiple-program library: the program-definition id this job
+      /// is flying (not the per-run `programs` snapshot row id) — per-program watch
+      /// mode filters pilots by this, not by "any pilot anywhere."
+      programId: string
       program: CompiledProgram
       shipSymbol: string
       status: JobStatus

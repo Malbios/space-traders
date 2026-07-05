@@ -98,6 +98,9 @@ type JobStatusDto =
 type JobSummaryDto =
     {
         jobId: string
+        /// Saved/named multiple-program library: which program this pilot is
+        /// flying — per-program watch mode filters pilots by this.
+        programId: string
         shipSymbol: string
         status: string
         statusDetail: string option
@@ -106,9 +109,12 @@ type JobSummaryDto =
 
 type JobService =
     {
-        /// token, shipSymbol, current workspace JSON -> new job id, or a German
-        /// rejection message (e.g. the ship is already flown by another program).
-        startJob: string * string * string -> Async<Result<string, string>>
+        /// token, programId, shipSymbol, current workspace JSON -> new job id, or a
+        /// German rejection message (e.g. the ship is already flown by another
+        /// program). `programId` (saved/named multiple-program library) is what
+        /// `JobState.programId` gets tagged with — per-program watch mode filters
+        /// pilots by it.
+        startJob: string * string * string * string -> Async<Result<string, string>>
         step: string -> Async<JobStatusDto option>
         run: string -> Async<JobStatusDto option>
         getStatus: string -> Async<JobStatusDto option>
@@ -147,6 +153,31 @@ type CustomBlockService =
 
     interface IRemoteService with
         member this.BasePath = "/customblock"
+
+/// Saved/named multiple-program library (§15/§19): a program library mirroring
+/// the custom-block library's own shape (`CustomBlockService` above) closely —
+/// same kind of named, listable, renameable, deletable Blockly-workspace-backed
+/// entity.
+type ProgramSummaryDto = { id: string; name: string }
+
+type ProgramService =
+    {
+        list: unit -> Async<ProgramSummaryDto list>
+        /// name -> new program id.
+        create: string -> Async<string>
+        /// id -> the program's stored workspace JSON (always Some — `create`
+        /// seeds a blank one), and any German structural-mismatch warnings
+        /// (§9) comparing its last-run compiled snapshot against currently-live
+        /// custom-block definitions — empty if it's never been run, or nothing
+        /// referenced has changed.
+        loadDefinition: string -> Async<(string option * string list)>
+        rename: string * string -> Async<unit>
+        /// id -> Ok, or a German refusal message if a pilot is actively flying it.
+        delete: string -> Async<Result<unit, string>>
+    }
+
+    interface IRemoteService with
+        member this.BasePath = "/program"
 
 /// Entity inspector (visual-map feature): which entity's detail panel is open, if
 /// any — a ship's own detail view links to its current waypoint, and a
@@ -203,13 +234,25 @@ type Model =
         /// current against `DateTimeOffset.UtcNow` without needing to store
         /// "now" itself. Every 5th tick also reloads the dashboard.
         mapTickCount: int
+        /// Saved/named multiple-program library: every saved program, which one
+        /// (if any) is open in the editor — `containerId` is derived from this
+        /// directly (the program's own id, already a valid DOM element id and
+        /// already the exact `workspaces` row key `WorkspaceService`'s existing
+        /// save/load already uses, so no separate DOM-id-vs-DB-key mapping is
+        /// needed) — and any structural-mismatch warnings (§9) from opening it.
+        programs: ProgramSummaryDto list
+        currentProgramId: string option
+        newProgramName: string
+        renameProgramInput: string
+        programStatus: string
+        staleWarnings: string list
     }
 
 let private terminalPilotStatuses = [ "Completed"; "Failed"; "Cancelled" ]
 
 let initModel =
     {
-        containerId = "blockly-spike"
+        containerId = ""
         workshopContainerId = "blockly-workshop-spike"
         lastBlockId = None
         readOnly = false
@@ -236,6 +279,12 @@ let initModel =
         waypointMarket = None
         waypointShipyard = None
         mapTickCount = 0
+        programs = []
+        currentProgramId = None
+        newProgramName = ""
+        renameProgramInput = ""
+        programStatus = ""
+        staleWarnings = []
     }
 
 type Message =
@@ -297,6 +346,19 @@ type Message =
     | LoadWaypointShipyard of string
     | WaypointShipyardLoaded of Shipyard option
     | MapTick
+    | LoadPrograms
+    | ProgramsLoaded of ProgramSummaryDto list
+    | NewProgramNameChanged of string
+    | CreateProgram
+    | ProgramCreated of string
+    | OpenProgram of string
+    | ProgramDefinitionLoaded of string option * string list
+    | CloseProgram
+    | RenameProgramInputChanged of string
+    | RenameProgram of string
+    | ProgramRenamed
+    | DeleteProgram of string
+    | ProgramDeleteResult of string * Result<unit, string>
 
 let private callVoid (js: IJSRuntime) (identifier: string) (args: obj[]) : Async<unit> =
     js.InvokeVoidAsync(identifier, args).AsTask() |> Async.AwaitTask
@@ -311,16 +373,16 @@ let update
     (queueRemote: QueueService)
     (jobRemote: JobService)
     (customBlockRemote: CustomBlockService)
+    (programRemote: ProgramService)
     message
     model
     =
     match message with
     | Init ->
-        let initBoth = async {
-            do! callVoid js "spaceKids.initWorkspace" [| box model.containerId; box model.readOnly |]
-            do! callVoid js "spaceKids.initWorkspace" [| box model.workshopContainerId; box false |]
-        }
-        model, Cmd.OfAsync.perform (fun () -> initBoth) () (fun () -> Inited)
+        // The main program container isn't initialized here — no program is open
+        // yet at startup (saved/named multiple-program library); `OpenProgram`
+        // initializes it on demand, keyed by the program's own id.
+        model, Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.initWorkspace" [| box model.workshopContainerId; box false |]) () (fun () -> Inited)
     | Inited ->
         { model with status = "Werkstatt geladen." }, Cmd.none
 
@@ -398,15 +460,16 @@ let update
     | SelectShip symbol ->
         { model with selectedShipSymbol = Some symbol }, Cmd.none
     | StartProgram ->
-        match model.selectedShipSymbol with
-        | None -> { model with status = "Bitte zuerst ein Schiff auswählen." }, Cmd.none
-        | Some shipSymbol ->
+        match model.currentProgramId, model.selectedShipSymbol with
+        | None, _ -> { model with status = "Bitte zuerst ein Programm öffnen." }, Cmd.none
+        | Some _, None -> { model with status = "Bitte zuerst ein Schiff auswählen." }, Cmd.none
+        | Some programId, Some shipSymbol ->
             { model with startingJob = true; pilotError = None },
             Cmd.OfAsync.perform
                 (fun () ->
                     async {
                         let! workspaceJson = call<string> js "spaceKids.serializeWorkspace" [| box model.containerId |]
-                        return! jobRemote.startJob (model.tokenInput, shipSymbol, workspaceJson)
+                        return! jobRemote.startJob (model.tokenInput, programId, shipSymbol, workspaceJson)
                     })
                 ()
                 ProgramStartResult
@@ -417,8 +480,15 @@ let update
     | LoadPilots ->
         model, Cmd.OfAsync.perform (fun () -> jobRemote.listJobs ()) () PilotsLoaded
     | PilotsLoaded pilots ->
+        // Per-program watch mode (§9/§15/Milestone-11-Part-E): a pilot flying a
+        // *different* saved program no longer locks the one currently open here —
+        // only a pilot actually flying this program does.
         let anyActive =
-            pilots |> List.exists (fun p -> not (List.contains p.status terminalPilotStatuses))
+            match model.currentProgramId with
+            | None -> false
+            | Some programId ->
+                pilots
+                |> List.exists (fun p -> p.programId = programId && not (List.contains p.status terminalPilotStatuses))
 
         let readOnlyCmd =
             if anyActive <> model.watchModeLocked then
@@ -601,6 +671,93 @@ let update
             Cmd.OfAsync.perform (fun () -> async { do! Async.Sleep 1000 }) () (fun () -> MapTick)
 
         { model with mapTickCount = count }, Cmd.batch [ reloadCmd; nextTickCmd ]
+
+    | LoadPrograms ->
+        model, Cmd.OfAsync.perform (fun () -> programRemote.list ()) () ProgramsLoaded
+    | ProgramsLoaded programs ->
+        { model with programs = programs }, Cmd.none
+
+    | NewProgramNameChanged value ->
+        { model with newProgramName = value }, Cmd.none
+    | CreateProgram ->
+        if model.newProgramName.Trim() = "" then
+            model, Cmd.none
+        else
+            { model with programStatus = "Erstelle..." },
+            Cmd.OfAsync.perform (fun () -> programRemote.create model.newProgramName) () ProgramCreated
+    | ProgramCreated id ->
+        { model with newProgramName = ""; programStatus = "Programm erstellt." },
+        Cmd.batch [ Cmd.ofMsg LoadPrograms; Cmd.ofMsg (OpenProgram id) ]
+
+    | OpenProgram id ->
+        // Switching programs tears down the previously-mounted container first —
+        // its Blockly instance would otherwise keep referencing a DOM element this
+        // render is about to stop rendering (only one program's container is ever
+        // in the page at a time).
+        let closeOldCmd =
+            match model.currentProgramId with
+            | Some oldId when oldId <> id ->
+                Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.destroyWorkspace" [| box oldId |]) () (fun () -> Loaded)
+            | _ -> Cmd.none
+
+        let name =
+            model.programs |> List.tryFind (fun p -> p.id = id) |> Option.map (fun p -> p.name) |> Option.defaultValue ""
+
+        { model with
+            currentProgramId = Some id
+            containerId = id
+            renameProgramInput = name
+            staleWarnings = []
+            programStatus = "Lädt..." },
+        Cmd.batch [
+            closeOldCmd
+            Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.initWorkspace" [| box id; box false |]) () (fun () -> Inited)
+            Cmd.OfAsync.perform (fun () -> programRemote.loadDefinition id) () ProgramDefinitionLoaded
+            // Per-program watch mode: `watchModeLocked` is only recomputed on
+            // `PilotsLoaded`, which doesn't fire on its own just because a
+            // different program was opened — without this, the newly-opened
+            // program would keep showing whatever lock state the *previous*
+            // program last had.
+            Cmd.ofMsg LoadPilots
+        ]
+    | ProgramDefinitionLoaded(jsonOpt, warnings) ->
+        let loadCmd =
+            match jsonOpt with
+            | Some json ->
+                Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.loadWorkspace" [| box model.containerId; box json |]) () (fun () -> Loaded)
+            | None -> Cmd.none
+
+        { model with programStatus = "Programm geladen."; staleWarnings = warnings }, loadCmd
+
+    | CloseProgram ->
+        match model.currentProgramId with
+        | None -> model, Cmd.none
+        | Some id ->
+            { model with currentProgramId = None; containerId = ""; staleWarnings = [] },
+            Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.destroyWorkspace" [| box id |]) () (fun () -> Loaded)
+
+    | RenameProgramInputChanged value ->
+        { model with renameProgramInput = value }, Cmd.none
+    | RenameProgram id ->
+        model, Cmd.OfAsync.perform (fun () -> programRemote.rename (id, model.renameProgramInput)) () (fun () -> ProgramRenamed)
+    | ProgramRenamed ->
+        { model with programStatus = "Umbenannt." }, Cmd.ofMsg LoadPrograms
+
+    | DeleteProgram id ->
+        model,
+        Cmd.OfAsync.perform
+            (fun () ->
+                async {
+                    let! result = programRemote.delete id
+                    return (id, result)
+                })
+            ()
+            ProgramDeleteResult
+    | ProgramDeleteResult(id, Ok()) ->
+        let closeCmd = if model.currentProgramId = Some id then Cmd.ofMsg CloseProgram else Cmd.none
+        { model with programStatus = "Gelöscht." }, Cmd.batch [ closeCmd; Cmd.ofMsg LoadPrograms ]
+    | ProgramDeleteResult(_, Error message) ->
+        { model with programStatus = message }, Cmd.none
 
 let private viewDashboard model dispatch =
     div {
@@ -954,11 +1111,13 @@ let private viewJobRunner model dispatch =
                         option { attr.value ship.symbol; ship.symbol }
                 }
                 button {
-                    attr.disabled (model.selectedShipSymbol.IsNone || model.startingJob)
+                    attr.disabled (model.currentProgramId.IsNone || model.selectedShipSymbol.IsNone || model.startingJob)
                     on.click (fun _ -> dispatch StartProgram)
                     "Start"
                 }
             }
+            if model.currentProgramId.IsNone then
+                p { "Bitte zuerst ein Programm öffnen." }
         match model.pilotError with
         | Some message -> p { $"Fehler: {message}" }
         | None -> ()
@@ -1063,31 +1222,85 @@ let private viewCustomBlockLibrary model dispatch =
             p { model.workshopStatus }
     }
 
+let private viewProgramLibrary model dispatch =
+    div {
+        h2 { "Programme" }
+        div {
+            input {
+                attr.``type`` "text"
+                attr.placeholder "Name des neuen Programms"
+                attr.value model.newProgramName
+                on.change (fun e -> dispatch (NewProgramNameChanged(string e.Value)))
+            }
+            button { on.click (fun _ -> dispatch CreateProgram); "Neues Programm" }
+        }
+        if model.programs.IsEmpty then
+            p { "Noch kein Programm gespeichert." }
+        else
+            ul {
+                for p in model.programs do
+                    li {
+                        $"{p.name} "
+                        button { on.click (fun _ -> dispatch (OpenProgram p.id)); "Öffnen" }
+                        button { on.click (fun _ -> dispatch (DeleteProgram p.id)); "Löschen" }
+                    }
+            }
+        match model.currentProgramId with
+        | None -> ()
+        | Some id ->
+            div {
+                input {
+                    attr.``type`` "text"
+                    attr.value model.renameProgramInput
+                    on.change (fun e -> dispatch (RenameProgramInputChanged(string e.Value)))
+                }
+                button { on.click (fun _ -> dispatch (RenameProgram id)); "Umbenennen" }
+                button { on.click (fun _ -> dispatch CloseProgram); "Schließen" }
+            }
+        if model.programStatus <> "" then
+            p { model.programStatus }
+    }
+
 let view model dispatch =
     div {
         attr.style "font-family: sans-serif; padding: 1rem"
         h1 { "SpaceKids – Blockly-Spike (Milestone 0)" }
         p { model.status }
-        div {
-            button { on.click (fun _ -> dispatch Save); "Speichern" }
-            button { on.click (fun _ -> dispatch Load); "Laden" }
-            button { on.click (fun _ -> dispatch HighlightFirstBlock); "Ersten Block hervorheben" }
-            button {
-                attr.disabled model.watchModeLocked
-                on.click (fun _ -> dispatch ToggleReadOnly)
-                if model.readOnly then "Bearbeiten erlauben" else "Nur ansehen"
+        viewProgramLibrary model dispatch
+        match model.currentProgramId with
+        | None -> p { "Kein Programm geöffnet — wähle oder erstelle eines oben." }
+        | Some _ ->
+            div {
+                if not model.staleWarnings.IsEmpty then
+                    div {
+                        attr.style "border: 1px solid #cc8800; background: #fff8e6; padding: 0.5rem; margin-bottom: 0.5rem"
+                        p { "Einige eigene Blöcke in diesem Programm haben sich geändert — bitte vor dem Ausführen prüfen." }
+                        ul {
+                            for w in model.staleWarnings do
+                                li { w }
+                        }
+                    }
+                div {
+                    button { on.click (fun _ -> dispatch Save); "Speichern" }
+                    button { on.click (fun _ -> dispatch Load); "Laden" }
+                    button { on.click (fun _ -> dispatch HighlightFirstBlock); "Ersten Block hervorheben" }
+                    button {
+                        attr.disabled model.watchModeLocked
+                        on.click (fun _ -> dispatch ToggleReadOnly)
+                        if model.readOnly then "Bearbeiten erlauben" else "Nur ansehen"
+                    }
+                    button { on.click (fun _ -> dispatch SimulateRun); "Simuliere Ausführung" }
+                }
+                if model.watchModeLocked then
+                    p {
+                        "Ein Pilot fliegt gerade ein Programm. Zum Bearbeiten müssen alle Piloten angehalten werden."
+                    }
+                h2 { "Programm" }
+                div {
+                    attr.id model.containerId
+                    attr.style "height: 360px; width: 100%; border: 1px solid #ccc; margin-top: 0.5rem"
+                }
             }
-            button { on.click (fun _ -> dispatch SimulateRun); "Simuliere Ausführung" }
-        }
-        if model.watchModeLocked then
-            p {
-                "Ein Pilot fliegt gerade ein Programm. Zum Bearbeiten müssen alle Piloten angehalten werden."
-            }
-        h2 { "Programm" }
-        div {
-            attr.id model.containerId
-            attr.style "height: 360px; width: 100%; border: 1px solid #ccc; margin-top: 0.5rem"
-        }
         viewCustomBlockLibrary model dispatch
         h2 { "Blockwerkstatt (Eigener Block definieren)" }
         p {
@@ -1118,6 +1331,7 @@ type MyApp() =
         let queueRemote = this.Remote<QueueService>()
         let jobRemote = this.Remote<JobService>()
         let customBlockRemote = this.Remote<CustomBlockService>()
+        let programRemote = this.Remote<ProgramService>()
         Program.mkProgram
             (fun _ ->
                 initModel,
@@ -1127,7 +1341,8 @@ type MyApp() =
                     Cmd.ofMsg LoadQueueStatus
                     Cmd.ofMsg LoadPilots
                     Cmd.ofMsg LoadCustomBlocks
+                    Cmd.ofMsg LoadPrograms
                     Cmd.ofMsg MapTick
                 ])
-            (update js remote agentRemote queueRemote jobRemote customBlockRemote)
+            (update js remote agentRemote queueRemote jobRemote customBlockRemote programRemote)
             view

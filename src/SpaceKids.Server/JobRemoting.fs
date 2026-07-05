@@ -15,11 +15,6 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
 
     let dbPath = Persistence.Database.defaultDbPath
 
-    /// Milestone 7 scope (see `docs/decisions.md`): still only the single
-    /// Milestone-0 spike workspace — no saved/named multiple programs or routing
-    /// yet, so there's exactly one `workspaces` row to reference here.
-    let workspaceId = "blockly-spike"
-
     let statusDetail (status: JobStatus) : string option =
         match status with
         | WaitingForArrival until -> Some(until.ToString("o"))
@@ -37,6 +32,7 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
 
     let toSummaryDto (job: JobState) : JobSummaryDto =
         { jobId = job.jobId
+          programId = job.programId
           shipSymbol = job.shipSymbol
           status = JobRunner.statusName job.status
           statusDetail = statusDetail job.status
@@ -66,7 +62,7 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                 // `tokenInput` starts out empty again) must not silently send an
                 // empty token and misreport a real server reset (a 401 from an
                 // empty token classifies exactly like one).
-                fun (_clientSuppliedToken, shipSymbol, workspaceJson) ->
+                fun (_clientSuppliedToken, programId, shipSymbol, workspaceJson) ->
                     async {
                         let! tokenOpt = currentToken ()
 
@@ -88,7 +84,9 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                             // since compile and run happen in this same request
                             // against the same live definitions, nothing could have
                             // drifted yet, so calling it here would always be a no-op.
-                            // Its real call site arrives with a saved-program library.
+                            // Its real call site is `ProgramRemoting.fs`'s
+                            // `loadDefinition` — opening a *saved* program is where
+                            // staleness can actually be observed.
                             let compiled =
                                 SpaceKids.Core.Dsl.Compiler.compileWorkspace customBlockLookup workspaceJson
                                 |> Result.bind (fun program ->
@@ -105,14 +103,14 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                                 // — ensure that row exists regardless of whether the
                                 // player has clicked "Speichern" yet; the program
                                 // being run is exactly the workspace state to persist.
-                                do! Persistence.WorkspaceRepository.save dbPath workspaceId workspaceJson
+                                do! Persistence.WorkspaceRepository.save dbPath programId workspaceJson
                                 let compiledDslJson = Persistence.JobStateJson.serializeProgram program
                                 return!
                                     JobRunner.startJob
                                         client
                                         dbPath
                                         token
-                                        workspaceId
+                                        programId
                                         compiledDslJson
                                         program
                                         shipSymbol
