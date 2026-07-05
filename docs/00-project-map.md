@@ -21,8 +21,12 @@ src/
   SpaceKids.Client/        Bolero WASM client
     Blockly/                 The TS seam (§3a) — sole owner of every Blockly instance
       blocks.ts                 Milestone 0 spike blocks (sk_show_message, sk_wait) +
-                                 the custom-block mutator spike (§9 mini-spike)
-      blocks-catalog.ts          The real 20-block German catalog (§6/§7, Milestone 3)
+                                 the custom-block mutator spike (§9 mini-spike);
+                                 every socket carries a real Blockly `.setCheck`
+                                 type since Milestone 13/Part B
+      blocks-catalog.ts          The real 20-block German catalog (§6/§7, Milestone 3);
+                                 every input/output carries a `.setCheck` type
+                                 since Milestone 13/Part B
       toolbox-de.ts               buildCatalogToolbox — 6 categories, both workspaces
     Main.fs                  Elmish app — Milestone 0/2/3 work all on one non-routed
                                page (Blockly editor + mutator workshop + SpaceTraders
@@ -55,7 +59,10 @@ src/
     Persistence/ProgramRepository.fs   First real write to `programs` (Milestone 7);
                                           `program_definitions` create/rename/list/delete
                                           added in Milestone 11
-    Persistence/JobRepository.fs        Job row insert/update/load (Milestone 7)
+    Persistence/JobRepository.fs        Job row insert/update/load (Milestone 7);
+                                          listHistory (most-recent-50 terminal
+                                          jobs, joined to program names) added
+                                          in Milestone 13/Part C
     Persistence/ShipLockRepository.fs   Ship-lock acquire/refresh/release/sweep (Milestone 7)
     Persistence/JobStateJson.fs         FSharp.SystemTextJson (de)serialization for
                                           JobState/CompiledProgram (Milestone 7)
@@ -83,9 +90,8 @@ src/
       Eval.fs                       Pure expression evaluator, used by Scheduler/Step.fs
       BlocklyJson.fs               Parses Blockly's serialized workspace JSON
       Compiler.fs                   Blockly workspace -> DSL, expression linearization —
-                                     its own compile-time error messages are still
-                                     German-only (Milestone 12 didn't reach these, see
-                                     docs/05-agent-handoff.md)
+                                     its own compile-time error messages are
+                                     locale-aware too (Milestone 13/Part A)
       Validator.fs                  Static checks (§11) + the §9 signature-mismatch check;
                                      every message locale-aware since Milestone 12
     Scheduler/

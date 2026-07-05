@@ -703,7 +703,7 @@ let ``a program calling a custom block loaded from the repository compiles and r
         let lookup (id: string) = CustomBlockRepository.load dbPath id |> Async.RunSynchronously
 
         let compiled =
-            match Compiler.compileWorkspace lookup mainWorkspaceJson with
+            match Compiler.compileWorkspace De lookup mainWorkspaceJson with
             | Error errors -> failwith $"expected Ok, got errors: %A{errors}"
             | Ok program -> program
 

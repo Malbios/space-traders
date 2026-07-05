@@ -160,6 +160,42 @@
 
 ## Changed this session
 
+Milestone 13 work (four independent parts, each shipped/verified separately):
+Part A — `Compiler.fs`'s `CompileState` gained a `locale: Locale` field;
+`compileWorkspace`/`resolveCustomBlockCall`'s public signatures gained a
+`locale` parameter; all 7 of its own message sites (no-output/malformed-
+accessor/unknown-block-type ×2/missing-input/cycle/not-found) now translate
+like `Validator.fs`'s already did. `CustomBlockRemoting.fs` gained a
+`currentLocale()` helper (mirroring `JobRemoting.fs`'s own) and its `delete`
+refusal message is now bilingual too. ~16 test call sites updated to pass
+`De`; 2 new English-error tests. Part B — every `blocks-catalog.ts` catalog/
+accessor block input and output, plus `blocks.ts`'s primitive/custom-block-
+caller sockets, now carries a real Blockly `.setCheck(...)` type (`"Number"`/
+`"String"`/`"Boolean"`/`"List"`, or a synthetic record-shape check like
+`"ShipRecord"`/`"MarketRecord"` for accessor `TARGET` inputs and info-block
+outputs); `sk_param_get` recomputes its own check live via `onchange`
+(mirroring an existing dynamic-state pattern in the same file) since its
+meaning depends on which dropdown option is selected. A `TYPE_LABEL_TO_CHECK`
+map handles a persisted custom-block `typeLabel` in either German or English
+(Milestone 12 never retroactively translates it). Live-verified: loading a
+hand-built mismatched connection throws `"Connection checks failed"` (Blockly
+refuses it outright), a correctly-typed connection still loads and connects.
+Part C — `JobRepository.listHistory` (new) reads the most-recent-50 terminal
+jobs straight from the `jobs` table (joined through `programs.workspace_id`
+to `program_definitions.name` for a real program name), surviving a restart
+unlike `JobRunner.fs`'s in-memory dictionary; `JobService` gained a matching
+`listHistory`/`JobHistoryDto`; `Main.fs` gained a `LoadJobHistory`/
+`JobHistoryLoaded` message pair and a new "Verlauf"/"History" section below
+the logbook. Live-verified across an actual server restart. Part D — a pure
+`pilotName (shipSymbol)` function (a stable char-sum hash, not
+`String.GetHashCode`, which is per-process-randomized) picks a name from a
+small shared name pool; the pilot card's header line (`pilotShipLine` renamed
+to `pilotNameLine`) now reads e.g. "🤖 Pilot Finn steuert Schiff FAKE-AGENT-2".
+Live-verified the same ship shows the same name across a page reload. 1 new
+`SpaceKids.Server.Tests` case (`listHistory` ordering/filtering/name-join); no
+new test for Part D (cosmetic, live-verified instead per the plan). 122 tests
+total, all green.
+
 Milestone 9 work: `SpaceKids.Core/Scheduler/{Types.fs,Step.fs}` gained the 5 new
 action cases, 2 new reconciliation-fetch effect/result pairs, `AwaitingInfoResponse`/
 `QueueInfoRead`/`InfoOk`, and `JobState.lastKnownFleetShipCount`; `SpaceKids.Core/Dsl/
@@ -258,12 +294,18 @@ history.
 - ~~Watch mode (Milestone 7) is global, not per-program~~ — fixed by the saved/named
   multiple-program library (Milestone 11/Part E): a pilot flying one program no
   longer locks a *different* open program, only its own.
-- Pilot cards have no name/mission framing (§15's "Pilot Max" flavor) — keyed by ship
-  symbol and job id only. Cosmetic, easy to add later.
-- `JobRunner.listJobs()` only returns what's currently loaded in memory: every
-  non-terminal job (loaded at scheduler startup) plus anything that went terminal
-  during this process's lifetime. A job that completed in a *previous* process run
-  drops off the dashboard after a restart — there's no job-history browser yet.
+- ~~Pilot cards have no name/mission framing (§15's "Pilot Max" flavor)~~ — fixed
+  by Milestone 13/Part D: a pure `pilotName (shipSymbol)` function (a stable
+  char-sum hash into a small fixed name pool, `Main.fs`) picks a name that's
+  the same for a given ship across restarts and re-runs — no new persisted
+  state, no name field exists in the real SpaceTraders API data.
+- ~~`JobRunner.listJobs()` only returns what's currently loaded in memory ...
+  there's no job-history browser yet~~ — fixed by Milestone 13/Part C:
+  `JobRepository.listHistory`/`JobService.listHistory` reads the most-recent-50
+  terminal jobs straight from the persisted `jobs` table (which never deletes
+  rows), so a finished run still shows up in the dashboard's new "Verlauf"/
+  "History" section after a restart, even though `JobRunner.fs`'s in-memory
+  dictionary itself still forgets terminal jobs on restart exactly as before.
 - Ship-lock lease duration (90s) and the scheduler's tick/sweep intervals (1s/60s) are
   hardcoded constants in `JobRunner.fs`/`JobScheduler.fs`, not configurable.
 - `CallCustomBlock` executes as a real call (Milestone 9/Part A): `JobState.stack`
@@ -272,20 +314,30 @@ history.
 - The market fetched is always the agent's own headquarters waypoint, not discovered via
   waypoint traits — a documented simplifying assumption (see `docs/decisions.md`), fine
   for most starting waypoints but a real limitation otherwise.
-- Catalog block inputs are still plain value sockets (accept any block), not typed —
-  same for the 26 §8 accessor blocks. Custom-block *inputs* (Milestone 9/Part C) do
-  have a typed mutator (Schiff/Wegpunkt/Ware/Anzahl/Preisgrenze/Liste), but it's a
-  text label only, not real Blockly type-checking — nothing stops plugging the wrong
-  kind of block into either sort of socket other than a German runtime error message
-  once it actually runs.
+- ~~Catalog block inputs are still plain value sockets (accept any block), not
+  typed ... nothing stops plugging the wrong kind of block into either sort of
+  socket other than a German runtime error message once it actually runs~~ —
+  fixed by Milestone 13/Part B: every catalog/primitive/accessor block input and
+  output now carries a real Blockly `.setCheck(...)` type (`"Number"`,
+  `"String"`, `"Boolean"`, `"List"`, or a synthetic record-shape check like
+  `"ShipRecord"`/`"MarketRecord"`), so Blockly itself refuses a mismatched
+  connection at edit time (confirmed live: loading a hand-built mismatched
+  connection throws `"Connection checks failed"` rather than silently
+  accepting it). `Validator.fs`'s `literalTypeMismatch` server-side backstop is
+  unchanged — the two checks are complementary, not a replacement.
 - `docs/06-localization.md` and the other docs listed in `plan.md` §17 don't exist yet —
   they're created as their milestones start.
 - The `callCustomBlock`/`customBlockId` convention Milestone 4 invented for its own
   testing needs turned out to be exactly the real mechanism — Milestone 9/Part C's
   client-side caller block was built to match it, not the other way around.
-- Custom-block argument type-checking is still a shallow literal-only heuristic
-  (`Expr` has no static type system) — Milestone 9/Part C's typed-input mutator is a
-  text label only, not enforcement (see the bullet above on plain value sockets).
+- `Validator.fs`'s server-side custom-block argument type-checking is still a
+  shallow literal-only heuristic (`Expr` has no static type system) — it only
+  catches a literal plugged directly into a typed argument. Milestone 13/Part B
+  now also gives each custom-block call's argument sockets a Blockly `.setCheck`
+  derived from the same `typeLabel` mutator data, which prevents most mismatches
+  at edit time, but a variable/temp/accessor reference of the wrong shape (not a
+  literal) can still slip past both checks — a real static type system remains
+  out of scope (see `docs/decisions.md`).
 - `lists_getIndex`/`lists_setIndex` only support the common "get/append at a plain index"
   shape — other WHERE modes (FROM_END/FIRST/LAST/RANDOM) aren't compiled yet.
 
@@ -331,9 +383,12 @@ history.
   player sees — Blockly's own chrome, every catalog/custom block label and
   tooltip, all `Main.fs` UI text (a `Strings` record with `de`/`en` values,
   not a stringly-typed lookup — a missing translation is a compile error),
-  and most server-side error messages. `Compiler.fs`'s own compile-time
-  errors (e.g. missing-input messages) are **not** covered — still German
-  only, a deliberate, documented gap (see below), not an oversight. The DSL's
+  and most server-side error messages. ~~`Compiler.fs`'s own compile-time
+  errors ... are not covered — still German only~~ — fixed by Milestone
+  13/Part A: `CompileState` gained a `locale` field, threaded through
+  `compileWorkspace`/`resolveCustomBlockCall`'s public signatures, and all 7
+  of `Compiler.fs`'s own message sites now translate like `Validator.fs`'s
+  already did. The DSL's
   `VRecord` field keys used to literally be the German display word
   (`"Frachtkapazität"`) — Milestone 12 made them canonical English keys
   (`"CargoCapacity"`) decoupled from whichever language the accessor block's
@@ -344,20 +399,17 @@ history.
 
 ## Known limitations
 
-- `Compiler.fs`'s own compile-time error messages (missing input, unknown
-  block type, etc.) are still German-only — Milestone 12's translation effort
-  stopped at `Validator.fs`/`JobRunner.fs`'s few literals/
-  `ProgramRepository.delete`'s refusal message, deliberately, because
-  `Compiler.compileWorkspace`'s public signature has ~26 existing call sites
-  (mostly tests) that would all need updating to add a `Locale` parameter —
-  a much larger blast radius than `Validator.validate`'s own ~9. Translating
-  these fully is a legitimate follow-up, not done here.
+(The four limitations Milestone 13 closed — `Compiler.fs`'s German-only
+compile errors, untyped Blockly sockets, the vanishing-after-restart job
+dashboard, and nameless pilot cards — are no longer listed here; see the
+struck-through bullets in "Known issues" above for what replaced each one.)
 
 ## Next tasks
 
 1. plan.md's roadmap (§19) has nothing outstanding: Milestones 9 (custom
    reusable blocks, §9), 10 (fleet mode), 11 (saved/named multiple-program
-   library), and 12 (bilingual support) are all done. Milestone 9: real
+   library), 12 (bilingual support), and 13 (compiler translation, block
+   type-checking, job history, pilot flavor) are all done. Milestone 9: real
    call-stack execution, persistence, typed inputs/structured outputs, the
    Blockwerkstatt UI, and cross-view highlighting. Milestone 10: queue
    priority differentiation (background vs. interactive), a fleet-level

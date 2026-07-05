@@ -314,6 +314,40 @@ let ``delete is refused while a non-terminal job is flying the program`` () =
         deleteDbFiles dbPath
 
 [<Fact>]
+let ``listHistory returns only terminal jobs, newest first, with resolved program names`` () =
+    let dbPath = tempDbPath ()
+    try
+        MigrationRunner.run dbPath
+        let firstId = ProgramRepository.create dbPath "Zuerst geflogen" |> Async.RunSynchronously
+        let firstSnapshotId = ProgramRepository.insert dbPath firstId "{}" |> Async.RunSynchronously
+        JobRepository.insert dbPath "job-old" firstSnapshotId "FAKE-AGENT-1" "Completed" "{}" None
+        |> Async.RunSynchronously
+
+        System.Threading.Thread.Sleep(50)
+
+        let secondId = ProgramRepository.create dbPath "Zuletzt geflogen" |> Async.RunSynchronously
+        let secondSnapshotId = ProgramRepository.insert dbPath secondId "{}" |> Async.RunSynchronously
+        JobRepository.insert dbPath "job-new" secondSnapshotId "FAKE-AGENT-2" "Failed" "{}" None
+        |> Async.RunSynchronously
+
+        let thirdId = ProgramRepository.create dbPath "Fliegt noch" |> Async.RunSynchronously
+        let thirdSnapshotId = ProgramRepository.insert dbPath thirdId "{}" |> Async.RunSynchronously
+        JobRepository.insert dbPath "job-active" thirdSnapshotId "FAKE-AGENT-3" "Running" "{}" None
+        |> Async.RunSynchronously
+
+        let history = JobRepository.listHistory dbPath |> Async.RunSynchronously
+
+        Assert.Equal(2, history.Length)
+        Assert.Equal("job-new", history.[0].jobId)
+        Assert.Equal("Zuletzt geflogen", history.[0].programName)
+        Assert.Equal("FAKE-AGENT-2", history.[0].shipSymbol)
+        Assert.Equal("Failed", history.[0].state)
+        Assert.Equal("job-old", history.[1].jobId)
+        Assert.Equal("Zuerst geflogen", history.[1].programName)
+    finally
+        deleteDbFiles dbPath
+
+[<Fact>]
 let ``delete refusal message is English when the locale is English (Milestone 12)`` () =
     let dbPath = tempDbPath ()
     try

@@ -22,7 +22,7 @@ let ``compiles a simple action-only program`` () =
         ] } }
         """
 
-    match Compiler.compileWorkspace noCustomBlocks json with
+    match Compiler.compileWorkspace De noCustomBlocks json with
     | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
     | Ok program ->
         Assert.Equal<Instruction list>(
@@ -43,7 +43,7 @@ let ``an information block used inside an expression compiles to a hoisted temp 
         ] } }
         """
 
-    match Compiler.compileWorkspace noCustomBlocks json with
+    match Compiler.compileWorkspace De noCustomBlocks json with
     | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
     | Ok program ->
         Assert.Equal<Instruction list>(
@@ -66,7 +66,7 @@ let ``compiles nested controls_if, controls_repeat_ext, and controls_forEach`` (
         ] } }
         """
 
-    match Compiler.compileWorkspace noCustomBlocks json with
+    match Compiler.compileWorkspace De noCustomBlocks json with
     | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
     | Ok program ->
         Assert.Equal<Instruction list>(
@@ -78,15 +78,31 @@ let ``compiles nested controls_if, controls_repeat_ext, and controls_forEach`` (
 let ``rejects an unknown block type`` () =
     let json = """{ "blocks": { "languageVersion": 0, "blocks": [ { "type": "totally_unknown", "id": "b1" } ] } }"""
 
-    match Compiler.compileWorkspace noCustomBlocks json with
+    match Compiler.compileWorkspace De noCustomBlocks json with
     | Ok program -> Assert.Fail($"expected Error, got: %A{program}")
     | Error errors -> Assert.Contains(errors, fun e -> e.message.Contains("Unbekannter Blocktyp"))
+
+[<Fact>]
+let ``unknown-block-type compile error is English when the locale is English (Milestone 13)`` () =
+    let json = """{ "blocks": { "languageVersion": 0, "blocks": [ { "type": "totally_unknown", "id": "b1" } ] } }"""
+
+    match Compiler.compileWorkspace En noCustomBlocks json with
+    | Ok program -> Assert.Fail($"expected Error, got: %A{program}")
+    | Error errors -> Assert.Contains(errors, fun e -> e.message.Contains("Unknown block type"))
+
+[<Fact>]
+let ``missing-input compile error is English when the locale is English (Milestone 13)`` () =
+    let json = """{ "blocks": { "languageVersion": 0, "blocks": [ { "type": "navigate", "id": "b1" } ] } }"""
+
+    match Compiler.compileWorkspace En noCustomBlocks json with
+    | Ok program -> Assert.Fail($"expected Error, got: %A{program}")
+    | Error errors -> Assert.Contains(errors, fun e -> e.message.Contains("is missing"))
 
 [<Fact>]
 let ``validate rejects a program with no start block`` () =
     let json = """{ "blocks": { "languageVersion": 0, "blocks": [] } }"""
 
-    match Compiler.compileWorkspace noCustomBlocks json with
+    match Compiler.compileWorkspace De noCustomBlocks json with
     | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
     | Ok program ->
         let errors = Validator.validate De program
@@ -96,7 +112,7 @@ let ``validate rejects a program with no start block`` () =
 let ``validate's no-start-block message is English when the locale is English (Milestone 12)`` () =
     let json = """{ "blocks": { "languageVersion": 0, "blocks": [] } }"""
 
-    match Compiler.compileWorkspace noCustomBlocks json with
+    match Compiler.compileWorkspace De noCustomBlocks json with
     | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
     | Ok program ->
         let errors = Validator.validate En program
@@ -113,7 +129,7 @@ let ``validate rejects a variable reference out of scope`` () =
         ] } }
         """
 
-    match Compiler.compileWorkspace noCustomBlocks json with
+    match Compiler.compileWorkspace De noCustomBlocks json with
     | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
     | Ok program ->
         let errors = Validator.validate De program
@@ -148,7 +164,7 @@ let ``resolveCustomBlockCall compiles the full transitive closure`` () =
         | "block-b" -> Some blockB
         | _ -> None
 
-    match Compiler.resolveCustomBlockCall lookup "block-a" with
+    match Compiler.resolveCustomBlockCall De lookup "block-a" with
     | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
     | Ok customBlocks ->
         Assert.True(customBlocks.ContainsKey "block-a")
@@ -176,7 +192,7 @@ let ``resolveCustomBlockCall rejects a cycle`` () =
         | "block-y" -> Some blockY
         | _ -> None
 
-    match Compiler.resolveCustomBlockCall lookup "block-x" with
+    match Compiler.resolveCustomBlockCall De lookup "block-x" with
     | Ok customBlocks -> Assert.Fail($"expected Error (cycle), got: %A{customBlocks}")
     | Error errors -> Assert.Contains(errors, fun e -> e.message.Contains("ruft sich selbst auf"))
 
@@ -195,7 +211,7 @@ let ``validate rejects a custom-block call with mismatched arguments`` () =
     // The call site omits the required "Anzahl" input entirely.
     let json = """{ "blocks": { "languageVersion": 0, "blocks": [ """ + customBlockCallJson "call1" "needs-input" "" + """ ] } }"""
 
-    match Compiler.compileWorkspace lookup json with
+    match Compiler.compileWorkspace De lookup json with
     | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
     | Ok program ->
         let errors = Validator.validate De program
@@ -213,7 +229,7 @@ let ``revalidateAgainstCurrentDefinitions catches a signature that changed after
         | "block-a" -> Some blockDef
         | _ -> None
 
-    match Compiler.compileWorkspace compileLookup json with
+    match Compiler.compileWorkspace De compileLookup json with
     | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
     | Ok program ->
         // No drift yet — same lookup used to compile and to revalidate.
@@ -246,7 +262,7 @@ let ``an accessor block compiles to Accessor over its TARGET input`` () =
         ] } }
         """
 
-    match Compiler.compileWorkspace noCustomBlocks json with
+    match Compiler.compileWorkspace De noCustomBlocks json with
     | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
     | Ok program ->
         Assert.Equal<Instruction list>(
@@ -294,7 +310,7 @@ let ``sk_build_record compiles to a RecordLiteral with fields in declaration ord
         ] } }
         """
 
-    match Compiler.compileWorkspace noCustomBlocks json with
+    match Compiler.compileWorkspace De noCustomBlocks json with
     | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
     | Ok program ->
         Assert.Equal<Instruction list>(
@@ -326,7 +342,7 @@ let ``a dynamic accessor_<id>_<field> block compiles to an Accessor for that fie
         ] } }
         """
 
-    match Compiler.compileWorkspace noCustomBlocks json with
+    match Compiler.compileWorkspace De noCustomBlocks json with
     | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
     | Ok program ->
         Assert.Equal<Instruction list>(
@@ -366,7 +382,7 @@ let ``a custom block whose workshop JSON is a real def-shell block compiles its 
         | "marktinfo-block" -> Some definition
         | _ -> None
 
-    match Compiler.resolveCustomBlockCall lookup "marktinfo-block" with
+    match Compiler.resolveCustomBlockCall De lookup "marktinfo-block" with
     | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
     | Ok customBlocks ->
         let compiled = customBlocks.["marktinfo-block"]

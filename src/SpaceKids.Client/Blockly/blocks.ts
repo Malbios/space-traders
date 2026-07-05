@@ -67,6 +67,30 @@ export function inputTypeLabels(): readonly string[] {
     return getCurrentLocale() === "en" ? INPUT_TYPE_LABELS_EN : INPUT_TYPE_LABELS_DE;
 }
 
+/** Milestone 13: a stored `typeLabel` may be either German or English text
+ * (whichever locale was active when the input was created — switching locale
+ * afterward doesn't retroactively re-translate an already-saved input, per the
+ * doc comment on `CustomBlockInputSpec` above), so this maps both variants to
+ * the same Blockly check type rather than assuming one locale. */
+const TYPE_LABEL_TO_CHECK: Record<string, string> = {
+    Schiff: "String",
+    Ship: "String",
+    Wegpunkt: "String",
+    Waypoint: "String",
+    Ware: "String",
+    Good: "String",
+    Anzahl: "Number",
+    Number: "Number",
+    Preisgrenze: "Number",
+    "Price limit": "Number",
+    Liste: "List",
+    List: "List",
+};
+
+function checkForTypeLabel(typeLabel: string): string | null {
+    return TYPE_LABEL_TO_CHECK[typeLabel] ?? null;
+}
+
 export interface CustomBlockSignature {
     id: string;
     name: string;
@@ -209,6 +233,17 @@ function registerParamGetBlock(): void {
                     ? "Reads the value of one of the custom block's inputs."
                     : "Liest den Wert einer Eingabe des eigenen Blocks.",
             );
+        },
+        // Milestone 13: the output's check type depends on *which* parameter is
+        // currently selected, so it's recomputed on every change rather than set
+        // once in `init()` — reads the same `skInputs` the dropdown's own options
+        // come from.
+        onchange: function (this: Blockly.Block) {
+            const defBlock = this.workspace.getBlocksByType("sk_custom_block_def", false)[0];
+            const inputs = defBlock ? ((defBlock as unknown as { skInputs: CustomBlockInputSpec[] }).skInputs ?? []) : [];
+            const selected = this.getFieldValue("PARAM_NAME");
+            const match = inputs.find((i) => i.name === selected);
+            this.setOutput(true, match ? checkForTypeLabel(match.typeLabel) : null);
         },
     };
 }
@@ -396,7 +431,7 @@ function rebuildCallerShape(block: Blockly.Block, customBlockId: string): void {
 
     const inputs = signature?.inputs ?? [];
     inputs.forEach((input) => {
-        block.appendValueInput(input.name).appendField(`${input.typeLabel} ${input.name}`);
+        block.appendValueInput(input.name).setCheck(checkForTypeLabel(input.typeLabel)).appendField(`${input.typeLabel} ${input.name}`);
     });
     (block as unknown as { skArgNames: string[] }).skArgNames = inputs.map((i) => i.name);
     block.setTooltip(
@@ -410,10 +445,18 @@ function rebuildCallerShape(block: Blockly.Block, customBlockId: string): void {
     );
 
     const hasOutput = signature?.hasOutput ?? false;
+    // Milestone 13: a structured-output custom block (§9 Outputs) gets a synthetic
+    // check tying its own output to its matching dynamic accessors' TARGET check
+    // (`registerCustomBlockAccessors` below) — a plain-value output's static type
+    // isn't known (whatever expression the author plugged into "Ergebnis"), so it
+    // stays unchecked, same as before.
+    const outputCheck = signature && signature.outputFields ? `CustomRecord_${signature.id}` : null;
     if (hasOutput && !block.outputConnection) {
         block.setPreviousStatement(false);
         block.setNextStatement(false);
-        block.setOutput(true, null);
+        block.setOutput(true, outputCheck);
+    } else if (hasOutput && block.outputConnection) {
+        block.setOutput(true, outputCheck);
     } else if (!hasOutput && block.outputConnection) {
         block.setOutput(false);
         block.setPreviousStatement(true, null);
@@ -436,6 +479,7 @@ export function registerCustomBlockAccessors(signature: CustomBlockSignature): s
             blockType,
             en ? `${field} from ${signature.name}` : `${field} aus ${signature.name}`,
             en ? `Returns the field "${field}" from "${signature.name}".` : `Gibt das Feld "${field}" aus "${signature.name}" zurück.`,
+            `CustomRecord_${signature.id}`,
         );
         return blockType;
     });

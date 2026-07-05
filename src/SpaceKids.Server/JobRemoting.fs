@@ -104,7 +104,7 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                             // `loadDefinition` — opening a *saved* program is where
                             // staleness can actually be observed.
                             let compiled =
-                                SpaceKids.Core.Dsl.Compiler.compileWorkspace customBlockLookup workspaceJson
+                                SpaceKids.Core.Dsl.Compiler.compileWorkspace locale customBlockLookup workspaceJson
                                 |> Result.bind (fun program ->
                                     match SpaceKids.Core.Dsl.Validator.validate locale program with
                                     | [] -> Ok program
@@ -181,4 +181,18 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                         | None -> ()
                     }
             listJobs = fun () -> async { return JobRunner.listJobs () |> List.map toSummaryDto }
+            listHistory =
+                fun () ->
+                    async {
+                        let! rows = Persistence.JobRepository.listHistory dbPath
+
+                        return
+                            rows
+                            |> List.map (fun row ->
+                                { jobId = row.jobId
+                                  programName = row.programName
+                                  shipSymbol = row.shipSymbol
+                                  status = row.state
+                                  finishedAt = row.updatedAt })
+                    }
         }

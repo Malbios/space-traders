@@ -382,6 +382,19 @@ type-check a variable/temp/accessor reference. A real type system is out of scop
 this milestone; revisit if this proves too weak once Milestone 9's real typed inputs
 (Schiff/Wegpunkt/Ware/...) are in play.
 
+**Follow-up (Milestone 13/Part B): this heuristic is unchanged, but it now has
+a complementary edit-time check.** Rather than building a real DSL-level
+static type system (still out of scope), Milestone 13 gave Blockly's own
+built-in `.setCheck` connection mechanism real types across every socket —
+catalog/accessor/primitive block inputs and outputs, and custom-block call
+argument sockets (derived from the same `typeLabel` mutator data this
+heuristic already reads). This catches most mismatches physically, at the
+moment a child tries to connect the wrong block, rather than only at
+compile/run time — but it's a separate, additive layer: `Validator.fs`'s own
+literal-only heuristic above is untouched, still the server-side backstop for
+whatever a hand-crafted or otherwise-untyped workspace JSON slips past
+Blockly's own check.
+
 **Scope check is existence-based, not ordering-based.** §11 says "variables exist in the
 scope where they are used" — `Validator.checkScope` collects every declared name across
 a whole instruction list first, then checks references against that full set, rather
@@ -1307,6 +1320,17 @@ read the stored setting synchronously (`Async.RunSynchronously`) — the same
 bridging pattern `JobRemoting.fs`'s own `customBlockLookup` already uses for
 exactly this reason.
 
+**Follow-up (Milestone 13/Part A): the `Compiler.fs` gap above was closed
+after all.** The blast radius turned out smaller in practice than the
+Milestone 12 estimate above suggested — `CompileState` already threads
+almost everything through internal helpers via `state`, so only the two
+*public* entry points (`compileWorkspace`/`resolveCustomBlockCall`) needed a
+new `locale` parameter; every other helper's signature was untouched. The
+~26 call sites were mechanically updated (mostly tests passing `De` to match
+existing German-text assertions), the same scale of change Milestone 12
+already made to `Validator.validate`'s own call sites. All 7 of `Compiler.fs`'s
+message sites now translate exactly like `Validator.fs`'s already did.
+
 **Verification:** 119 tests total (63 Core, 20 Server, 36 Integration), all
 green — 3 new tests added for Part E's German/English message parity, the
 rest fixed-in-place or unchanged. `npm run typecheck` clean. Live-verified via
@@ -1323,3 +1347,66 @@ at startup but never actually applied to the Blockly JS side, so a freshly
 loaded page kept rendering new blocks in German regardless of the saved
 setting — fixed by having `LocaleLoaded` call `spaceKids.setLocale` itself,
 not just update the model.
+
+## Milestone 13: compiler translation, block type-checking, job history, pilot flavor
+
+Four independent, previously-flagged known limitations, bundled into one
+milestone since each was small-to-medium on its own; parts shipped/verified
+one at a time, same discipline as Milestone 12. Part A (`Compiler.fs`
+translation) is covered above, inline with the Milestone 12 gap it closes.
+
+**Part B: Blockly's own `.setCheck` mechanism, not a new DSL-level type
+system.** The user confirmed this scope explicitly when asked: reuses a
+feature Blockly already ships (barely used before this milestone — only
+`sk_wait`'s `SECONDS` input had a check), gives immediate in-editor feedback
+(a mismatched block physically refuses to connect), and is much smaller than
+building real static types into `Expr`. Record-shape checks (`"ShipRecord"`,
+`"MarketRecord"`, etc.) are synthetic Blockly-only strings, deliberately kept
+separate from the DSL's actual `VRecord` field keys (already canonicalized to
+English in Milestone 12) — these are two different concerns (structural
+connection typing vs. runtime data representation) that don't need to share a
+vocabulary. `Validator.fs`'s existing `literalTypeMismatch` is unchanged and
+still the server-side backstop; see the follow-up note on it above.
+
+**Part C: `listHistory` reads `jobs` directly instead of teaching
+`JobRunner.fs`'s in-memory dictionary to remember terminal jobs across a
+restart.** The `jobs` table already never deletes rows — nothing needed to
+change there. Making the in-memory `ConcurrentDictionary` itself durable
+would mean either persisting/rehydrating it wholesale or growing
+`loadNonTerminal` into something it isn't (its whole point, per its own doc
+comment, is loading only what the scheduler still needs to act on). A
+separate read path that queries the table straight through is simpler and
+doesn't risk that dictionary's existing invariants. `programName` is resolved
+server-side via the same `programs.workspace_id` → `program_definitions.name`
+join `ProgramRepository.delete`'s refusal check already uses, so the client
+never needs a raw program/workspace id.
+
+**Part D: a ship's pilot name is a deterministic hash, not persisted state.**
+No name field exists anywhere in the real SpaceTraders API data (`Ship`/
+`ShipRegistration` only have `symbol`/`role`) — a "Pilot Max" name has to be
+invented, not read from anything. Hashing `shipSymbol` into a small shared
+name pool needs no new database column and no migration, and is stable by
+construction: the same ship always produces the same hash, so the same name
+persists across restarts and re-runs without anything to keep in sync.
+Deliberately *not* `System.String.GetHashCode` — that's randomized per
+process in modern .NET (hash-flooding mitigation), which would have silently
+broken the "same ship, same name" requirement the very first time the server
+restarted; a plain char-sum is used instead.
+
+**Verification:** 122 tests total (65 Core, 21 Server, 36 Integration), all
+green — 1 new Server test (`listHistory` ordering/filtering/program-name
+join) plus the 2 English-error tests from Part A; Part B and Part D needed no
+new automated tests (a Blockly-level structural check and a cosmetic display
+string respectively — verified live instead, per the plan). `npm run
+typecheck` clean. Live-verified via a scripted `playwright` driver: Part B —
+loading a hand-built workspace JSON that connects a `getMarket` block's
+output (`MarketRecord`) into a `shipFuel` accessor's `TARGET` input (expects
+`ShipRecord`) throws `"Connection checks failed"` from inside
+`Blockly.serialization.workspaces.load()` itself (a hard JS exception, not a
+silent rejection — Blockly refuses the connection outright), while a
+correctly-shaped `getShipInfo` → `shipFuel` connection loads and reserializes
+normally; Part C — ran a program to completion, refreshed the new "Verlauf"
+section and saw the finished run, restarted the real `SpaceKids.Server`
+process entirely, reloaded the page, and confirmed the same finished run was
+still listed; Part D — started a pilot, read its displayed name, reloaded the
+page, and confirmed the same ship showed the identical name.

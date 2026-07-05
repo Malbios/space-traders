@@ -266,8 +266,8 @@ deliberate design (`plan.md` §4).
 - [x] Part E — server-side error messages (`Validator.fs`, a couple of
       `JobRunner.fs` literals, `ProgramRepository.delete`'s refusal message)
       translated by the stored locale. `Compiler.fs`'s own compile-time
-      errors are a deliberate, documented exception — not covered (see
-      `docs/05-agent-handoff.md`'s "Known limitations").
+      errors were a deliberate, documented exception at the time — closed in
+      Milestone 13/Part A.
 - [x] Found and fixed a real bug during Part A's own live verification: the
       persisted locale setting loaded into the model at startup but was
       never applied to the Blockly JS side, so a freshly loaded page kept
@@ -280,6 +280,42 @@ deliberate design (`plan.md` §4).
       category names switch language with its serialized block types
       provably unchanged, and representative UI text throughout the page
       switches with zero console/page errors.
+
+## Milestone 13: compiler translation, block type-checking, job history, pilot flavor — done
+
+Four independent, previously-flagged known limitations, bundled into one
+milestone since each was small-to-medium alone; parts shipped/verified one at
+a time.
+
+- [x] Part A — `Compiler.fs`'s own compile-time errors (missing input,
+      unknown block type, cycle/not-found, etc.) are now locale-aware too,
+      closing the one deliberate exception Milestone 12/Part E left open.
+- [x] Part B — every catalog/primitive/accessor block input and output now
+      carries a real Blockly `.setCheck` type (`"Number"`/`"String"`/
+      `"Boolean"`/`"List"`, or a synthetic record-shape check like
+      `"ShipRecord"`/`"MarketRecord"`), so Blockly itself refuses a
+      mismatched connection at edit time. `Validator.fs`'s existing
+      literal-only server-side check is unchanged — a complementary backstop,
+      not replaced.
+- [x] Part C — a new "Verlauf"/"History" section reads the most-recent-50
+      terminal jobs straight from the persisted `jobs` table
+      (`JobRepository.listHistory`), so a finished run stays visible even
+      after the server process restarts (unlike `JobRunner.fs`'s in-memory
+      dashboard, which still forgets terminal jobs on restart exactly as
+      before).
+- [x] Part D — pilot cards show a stable, deterministic name per ship (a
+      char-sum hash into a small shared name pool, not `GetHashCode`, which
+      is per-process-randomized) — no name field exists in the real
+      SpaceTraders API data, so this is invented, not read from anywhere.
+- [x] 122 tests total, all green (1 new Server test for `listHistory`); Parts
+      B and D needed no new automated tests (verified live instead, per the
+      plan). `npm run typecheck` clean. Live Playwright verification: Part B
+      — a hand-built mismatched connection (`getMarket` → `shipFuel`)
+      throws `"Connection checks failed"` from inside Blockly's own
+      deserialization (a hard refusal, not a silent drop), a correctly-typed
+      connection still loads normally; Part C — a finished run survived an
+      actual `SpaceKids.Server` process restart; Part D — the same ship
+      showed the same name across a page reload.
 
 ## Later milestones
 

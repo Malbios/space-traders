@@ -118,6 +118,21 @@ type JobSummaryDto =
         lastLogLine: string option
     }
 
+/// Milestone 13/Part C: one row of the job history browser — unlike `JobSummaryDto`
+/// above (only what's still in `JobRunner.fs`'s in-memory dictionary, so it forgets
+/// terminal jobs after a restart), this reads straight from the `jobs` table, which
+/// never deletes rows. `programName` is already resolved server-side (joined
+/// through `programs.workspace_id` to `program_definitions.name`) so the client
+/// never needs a raw program/workspace id.
+type JobHistoryDto =
+    {
+        jobId: string
+        programName: string
+        shipSymbol: string
+        status: string
+        finishedAt: System.DateTime
+    }
+
 type JobService =
     {
         /// token, programId, shipSymbol, current workspace JSON -> new job id, or a
@@ -133,6 +148,10 @@ type JobService =
         resume: string -> Async<unit>
         cancel: string -> Async<unit>
         listJobs: unit -> Async<JobSummaryDto list>
+        /// Milestone 13/Part C: most-recent-50 terminal jobs, newest first —
+        /// survives a server restart since it reads the persisted `jobs` table
+        /// directly instead of `JobRunner.fs`'s in-memory dictionary.
+        listHistory: unit -> Async<JobHistoryDto list>
     }
 
     interface IRemoteService with
@@ -216,6 +235,10 @@ type Model =
         startingJob: bool
         pilotError: string option
         pilots: JobSummaryDto list
+        /// Milestone 13/Part C: most-recent-50 terminal jobs, read straight from
+        /// the `jobs` table — unlike `pilots` above (which forgets terminal jobs
+        /// once the server process restarts), this survives a restart.
+        jobHistory: JobHistoryDto list
         /// Milestone 7 (§15): true whenever any pilot is non-terminal — the shared
         /// workspace is forced read-only while this holds, and the manual
         /// read-only toggle is disabled (watch mode, §3a/§15).
@@ -264,6 +287,20 @@ type Model =
 
 let private terminalPilotStatuses = [ "Completed"; "Failed"; "Cancelled" ]
 
+/// Milestone 13/Part D (plan.md §15's "Pilot Max" idea): no name field exists
+/// anywhere in the real SpaceTraders API data, so a display name has to be
+/// invented rather than read from anything. One shared pool for both locales —
+/// picking 24 distinct names for zero functional gain isn't worth it.
+let private pilotNamePool =
+    [| "Max"; "Lina"; "Tom"; "Mia"; "Ben"; "Ella"; "Finn"; "Nora"; "Leo"; "Zoe"; "Emil"; "Ida" |]
+
+/// A stable hash of `shipSymbol` (not `System.String.GetHashCode`, which is
+/// randomized per process in .NET) so the same ship always shows the same name
+/// across restarts and re-runs — continuity, not randomness.
+let private pilotName (shipSymbol: string) : string =
+    let hash = shipSymbol |> Seq.sumBy int
+    pilotNamePool.[hash % pilotNamePool.Length]
+
 let initModel =
     {
         containerId = ""
@@ -281,6 +318,7 @@ let initModel =
         startingJob = false
         pilotError = None
         pilots = []
+        jobHistory = []
         watchModeLocked = false
         customBlocks = []
         newCustomBlockName = ""
@@ -330,6 +368,8 @@ type Message =
     | ProgramStartResult of Result<string, string>
     | LoadPilots
     | PilotsLoaded of JobSummaryDto list
+    | LoadJobHistory
+    | JobHistoryLoaded of JobHistoryDto list
     | WatchModeReadOnlySet of bool
     | PausePilot of string
     | ResumePilot of string
@@ -477,7 +517,7 @@ type Strings =
       refreshPilots: string
       pilotsHeading: string
       noPilotsYet: string
-      pilotShipLine: string -> string
+      pilotNameLine: string * string -> string
       pilotStatusLine: string -> string
       lastLogLine: string -> string
       resume: string
@@ -490,6 +530,10 @@ type Strings =
       logbookHeading: string
       noActivePilots: string
       logbookLine: string * string -> string
+      historyHeading: string
+      refreshHistory: string
+      noHistoryYet: string
+      historyLine: string * string * string * System.DateTime -> string
 
       customBlocksHeading: string
       newBlockNamePlaceholder: string
@@ -625,7 +669,7 @@ let private stringsDe: Strings =
       refreshPilots = "Piloten aktualisieren"
       pilotsHeading = "Piloten"
       noPilotsYet = "Noch kein Pilot aktiv."
-      pilotShipLine = fun symbol -> $"🤖 Schiff: {symbol}"
+      pilotNameLine = fun (name, ship) -> $"🤖 Pilot {name} steuert Schiff {ship}"
       pilotStatusLine = fun status -> $"Status: {status}"
       lastLogLine = fun line -> $"Zuletzt: {line}"
       resume = "Fortsetzen"
@@ -638,6 +682,12 @@ let private stringsDe: Strings =
       logbookHeading = "Logbuch"
       noActivePilots = "Keine Piloten aktiv."
       logbookLine = fun (symbol, line) -> $"🤖 {symbol}: {line}"
+      historyHeading = "Verlauf"
+      refreshHistory = "Verlauf aktualisieren"
+      noHistoryYet = "Noch kein abgeschlossener Lauf."
+      historyLine =
+          fun (programName, shipSymbol, status, finishedAt) ->
+              $"{programName} — Schiff {shipSymbol} — {status} ({finishedAt.ToLocalTime():g})"
 
       customBlocksHeading = "Eigene Blöcke (Milestone 9)"
       newBlockNamePlaceholder = "Name des neuen Blocks"
@@ -771,7 +821,7 @@ let private stringsEn: Strings =
       refreshPilots = "Refresh pilots"
       pilotsHeading = "Pilots"
       noPilotsYet = "No pilot active yet."
-      pilotShipLine = fun symbol -> $"🤖 Ship: {symbol}"
+      pilotNameLine = fun (name, ship) -> $"🤖 Pilot {name} is flying ship {ship}"
       pilotStatusLine = fun status -> $"Status: {status}"
       lastLogLine = fun line -> $"Last: {line}"
       resume = "Resume"
@@ -784,6 +834,12 @@ let private stringsEn: Strings =
       logbookHeading = "Log"
       noActivePilots = "No pilots active."
       logbookLine = fun (symbol, line) -> $"🤖 {symbol}: {line}"
+      historyHeading = "History"
+      refreshHistory = "Refresh history"
+      noHistoryYet = "No finished run yet."
+      historyLine =
+          fun (programName, shipSymbol, status, finishedAt) ->
+              $"{programName} — ship {shipSymbol} — {status} ({finishedAt.ToLocalTime():g})"
 
       customBlocksHeading = "Custom blocks (Milestone 9)"
       newBlockNamePlaceholder = "New block name"
@@ -963,7 +1019,11 @@ let update
     | CancelPilot jobId ->
         model, Cmd.OfAsync.perform (fun () -> jobRemote.cancel jobId) () (fun () -> PilotActionDone)
     | PilotActionDone ->
-        model, Cmd.ofMsg LoadPilots
+        model, Cmd.batch [ Cmd.ofMsg LoadPilots; Cmd.ofMsg LoadJobHistory ]
+    | LoadJobHistory ->
+        model, Cmd.OfAsync.perform (fun () -> jobRemote.listHistory ()) () JobHistoryLoaded
+    | JobHistoryLoaded history ->
+        { model with jobHistory = history }, Cmd.none
 
     | LoadCustomBlocks ->
         model, Cmd.OfAsync.perform (fun () -> customBlockRemote.list ()) () CustomBlocksLoaded
@@ -1594,7 +1654,7 @@ let private viewJobRunner model dispatch =
 
                 div {
                     attr.style "border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem; margin: 0.5rem 0"
-                    p { s.pilotShipLine pilot.shipSymbol }
+                    p { s.pilotNameLine (pilotName pilot.shipSymbol, pilot.shipSymbol) }
                     p { s.pilotStatusLine (s.pilotStatus pilot.status) }
                     match pilot.statusDetail with
                     | Some detail -> p { detail }
@@ -1640,6 +1700,18 @@ let private viewJobRunner model dispatch =
                         match pilot.lastLogLine with
                         | Some line -> s.logbookLine (pilot.shipSymbol, line)
                         | None -> s.logbookLine (pilot.shipSymbol, s.pilotStatus pilot.status)
+                    }
+            }
+
+        h3 { s.historyHeading }
+        button { on.click (fun _ -> dispatch LoadJobHistory); s.refreshHistory }
+        if model.jobHistory.IsEmpty then
+            p { s.noHistoryYet }
+        else
+            ul {
+                for entry in model.jobHistory do
+                    li {
+                        s.historyLine (entry.programName, entry.shipSymbol, s.pilotStatus entry.status, entry.finishedAt)
                     }
             }
     }
@@ -1818,6 +1890,7 @@ type MyApp() =
                     Cmd.ofMsg LoadDashboard
                     Cmd.ofMsg LoadQueueStatus
                     Cmd.ofMsg LoadPilots
+                    Cmd.ofMsg LoadJobHistory
                     Cmd.ofMsg LoadCustomBlocks
                     Cmd.ofMsg LoadPrograms
                     Cmd.ofMsg LoadLocale

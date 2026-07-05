@@ -78,7 +78,11 @@ type private CompileState =
       customBlocks: System.Collections.Generic.Dictionary<string, CompiledCustomBlock>
       lookup: string -> CustomBlockDefinition option
       /// Custom blocks currently being compiled — a re-entry here is a cycle.
-      inProgress: System.Collections.Generic.HashSet<string> }
+      inProgress: System.Collections.Generic.HashSet<string>
+      /// Milestone 13 (bilingual compile errors): threaded through every helper via
+      /// `state` already, so only the two public entry points below gain a new
+      /// parameter — no other helper's signature changes.
+      locale: Locale }
 
 let private newTemp (state: CompileState) : string =
     state.tempCounter <- state.tempCounter + 1
@@ -175,9 +179,12 @@ let rec private compileExpr (state: CompileState) (hoisted: ResizeArray<Instruct
         match instr with
         | CallCustomBlock(_, _, _, Some temp) -> TempRef temp
         | CallCustomBlock(_, customBlockId, _, None) ->
-            state.errors.Add
-                { blockId = Some block.id
-                  message = $"Der eigene Block \"{customBlockId}\" hat kein Ergebnis und kann nicht als Wert verwendet werden." }
+            let message =
+                match state.locale with
+                | De -> $"Der eigene Block \"{customBlockId}\" hat kein Ergebnis und kann nicht als Wert verwendet werden."
+                | En -> $"The custom block \"{customBlockId}\" has no result and cannot be used as a value."
+
+            state.errors.Add { blockId = Some block.id; message = message }
             Literal(BoolLit false)
         | _ -> Literal(BoolLit false)
     | t when INFO_BLOCKS.ContainsKey t ->
@@ -200,17 +207,32 @@ let rec private compileExpr (state: CompileState) (hoisted: ResizeArray<Instruct
             let fieldName = t.Substring(idx + 1)
             Accessor(fieldName, compileInput state hoisted block "TARGET")
         | _ ->
-            state.errors.Add { blockId = Some block.id; message = $"Ungültiger Zugriffsblock: {t}." }
+            let message =
+                match state.locale with
+                | De -> $"Ungültiger Zugriffsblock: {t}."
+                | En -> $"Invalid accessor block: {t}."
+
+            state.errors.Add { blockId = Some block.id; message = message }
             Literal(BoolLit false)
     | other ->
-        state.errors.Add { blockId = Some block.id; message = $"Unbekannter Blocktyp: {other}." }
+        let message =
+            match state.locale with
+            | De -> $"Unbekannter Blocktyp: {other}."
+            | En -> $"Unknown block type: {other}."
+
+        state.errors.Add { blockId = Some block.id; message = message }
         Literal(BoolLit false)
 
 and private compileInput (state: CompileState) (hoisted: ResizeArray<Instruction>) (block: RawBlock) (inputName: string) : Expr =
     match block.inputs.TryFind inputName with
     | Some inputBlock -> compileExpr state hoisted inputBlock
     | None ->
-        state.errors.Add { blockId = Some block.id; message = $"Eingabe \"{inputName}\" fehlt." }
+        let message =
+            match state.locale with
+            | De -> $"Eingabe \"{inputName}\" fehlt."
+            | En -> $"Input \"{inputName}\" is missing."
+
+        state.errors.Add { blockId = Some block.id; message = message }
         Literal(BoolLit false)
 
 and private compileArgs (state: CompileState) (hoisted: ResizeArray<Instruction>) (block: RawBlock) (argNames: (string * string) list) : Map<string, Expr> =
@@ -246,12 +268,21 @@ and private resolveCustomBlock (state: CompileState) (customBlockId: string) : u
     if state.customBlocks.ContainsKey customBlockId then
         ()
     elif state.inProgress.Contains customBlockId then
-        state.errors.Add
-            { blockId = None
-              message = $"Der eigene Block \"{customBlockId}\" ruft sich selbst auf (direkt oder über andere Blöcke) — das ist nicht erlaubt." }
+        let message =
+            match state.locale with
+            | De -> $"Der eigene Block \"{customBlockId}\" ruft sich selbst auf (direkt oder über andere Blöcke) — das ist nicht erlaubt."
+            | En -> $"The custom block \"{customBlockId}\" calls itself (directly or through other blocks) — this is not allowed."
+
+        state.errors.Add { blockId = None; message = message }
     else
         match state.lookup customBlockId with
-        | None -> state.errors.Add { blockId = None; message = $"Der eigene Block \"{customBlockId}\" wurde nicht gefunden." }
+        | None ->
+            let message =
+                match state.locale with
+                | De -> $"Der eigene Block \"{customBlockId}\" wurde nicht gefunden."
+                | En -> $"The custom block \"{customBlockId}\" was not found."
+
+            state.errors.Add { blockId = None; message = message }
         | Some definition ->
             state.inProgress.Add customBlockId |> ignore
             let topBlocks = BlocklyJson.parseWorkspace definition.workspaceJson
@@ -310,7 +341,12 @@ and private compileStatement (state: CompileState) (block: RawBlock) : Instructi
         | "callCustomBlock" -> compileCustomBlockCall state hoisted block
         | t when ACTION_BLOCKS.ContainsKey t -> ApiAction(block.id, t, compileArgs state hoisted block ACTION_BLOCKS.[t])
         | other ->
-            state.errors.Add { blockId = Some block.id; message = $"Unbekannter Blocktyp: {other}." }
+            let message =
+                match state.locale with
+                | De -> $"Unbekannter Blocktyp: {other}."
+                | En -> $"Unknown block type: {other}."
+
+            state.errors.Add { blockId = Some block.id; message = message }
             ApiAction(block.id, other, Map.empty)
     List.ofSeq hoisted @ [ instr ]
 
@@ -337,12 +373,13 @@ and private compileStatementChain (state: CompileState) (start: RawBlock option)
     | None -> []
     | Some block -> compileStatement state block @ compileStatementChain state block.next
 
-let private newState (lookup: string -> CustomBlockDefinition option) : CompileState =
+let private newState (locale: Locale) (lookup: string -> CustomBlockDefinition option) : CompileState =
     { tempCounter = 0
       errors = ResizeArray<DslError>()
       customBlocks = System.Collections.Generic.Dictionary<string, CompiledCustomBlock>()
       lookup = lookup
-      inProgress = System.Collections.Generic.HashSet<string>() }
+      inProgress = System.Collections.Generic.HashSet<string>()
+      locale = locale }
 
 /// Resolves and compiles a custom block, and everything it transitively calls, via
 /// `lookup` — detecting cycles and recording one error per unresolvable/cyclic
@@ -350,10 +387,11 @@ let private newState (lookup: string -> CustomBlockDefinition option) : CompileS
 /// (transitive closure, cycle detection) independent of a real caller block existing
 /// on any canvas yet (that's Milestone 9).
 let resolveCustomBlockCall
+    (locale: Locale)
     (lookup: string -> CustomBlockDefinition option)
     (customBlockId: string)
     : Result<Map<string, CompiledCustomBlock>, DslError list> =
-    let state = newState lookup
+    let state = newState locale lookup
     resolveCustomBlock state customBlockId
     if state.errors.Count > 0 then
         Error(List.ofSeq state.errors)
@@ -399,10 +437,11 @@ let deriveCustomBlockSignature (workspaceJson: string) : CustomBlockSignature =
 
 /// Compiles a Blockly workspace's serialized JSON into the DSL (§10).
 let compileWorkspace
+    (locale: Locale)
     (lookup: string -> CustomBlockDefinition option)
     (workspaceJson: string)
     : Result<CompiledProgram, DslError list> =
-    let state = newState lookup
+    let state = newState locale lookup
     let topBlocks = BlocklyJson.parseWorkspace workspaceJson
     let instructions = topBlocks |> List.collect (fun b -> compileStatementChain state (Some b))
     if state.errors.Count > 0 then

@@ -17,6 +17,15 @@ type CustomBlockRemoteHandler(ctx: IRemoteContext) =
     let toSummaryDto (b: Persistence.CustomBlockRepository.CustomBlockSummary) : CustomBlockSummaryDto =
         { id = b.id; name = b.name; version = b.version }
 
+    /// Milestone 13 (bilingual compile errors): every message this handler can
+    /// return is translated by the stored locale setting, same pattern as
+    /// `JobRemoting.fs`'s/`ProgramRemoting.fs`'s own `currentLocale()`.
+    let currentLocale () : Async<SpaceKids.Core.Dsl.Locale> =
+        async {
+            let! raw = Persistence.SettingsRepository.getLocale dbPath
+            return SpaceKids.Core.Dsl.Locale.ofString raw
+        }
+
     override this.Handler =
         {
             list = fun () -> async { let! blocks = Persistence.CustomBlockRepository.list dbPath in return blocks |> List.map toSummaryDto }
@@ -45,7 +54,9 @@ type CustomBlockRemoteHandler(ctx: IRemoteContext) =
                             else
                                 Persistence.CustomBlockRepository.load dbPath lookupId |> Async.RunSynchronously
 
-                        match SpaceKids.Core.Dsl.Compiler.resolveCustomBlockCall lookup id with
+                        let! locale = currentLocale ()
+
+                        match SpaceKids.Core.Dsl.Compiler.resolveCustomBlockCall locale lookup id with
                         | Error errors ->
                             let message = errors |> List.map (fun e -> e.message) |> String.concat "; "
                             return Error message
@@ -64,7 +75,14 @@ type CustomBlockRemoteHandler(ctx: IRemoteContext) =
                             do! Persistence.CustomBlockRepository.delete dbPath id
                             return Ok()
                         else
+                            let! locale = currentLocale ()
                             let usageList = usages |> String.concat ", "
-                            return Error $"Kann nicht gelöscht werden — wird noch verwendet von: {usageList}."
+
+                            let message =
+                                match locale with
+                                | SpaceKids.Core.Dsl.De -> $"Kann nicht gelöscht werden — wird noch verwendet von: {usageList}."
+                                | SpaceKids.Core.Dsl.En -> $"Cannot be deleted — still used by: {usageList}."
+
+                            return Error message
                     }
         }

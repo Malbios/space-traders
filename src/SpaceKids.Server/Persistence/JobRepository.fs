@@ -143,3 +143,47 @@ let loadNonTerminal (dbPath: string) : Async<JobRow list> =
         use reader = cmd.ExecuteReader()
         return [ while reader.Read() do yield readRow reader ]
     }
+
+/// Milestone 13/Part C: one row of the job history browser. `jobs` never deletes
+/// rows, so a terminal job's history is already sitting in the table — only the
+/// in-memory dashboard (`JobRunner.fs`'s `ConcurrentDictionary`) forgets it after a
+/// restart. `programName` comes from a join through `programs.workspace_id` to
+/// `program_definitions.name` (same join `ProgramRepository.delete`'s own refusal
+/// check already uses) rather than showing a raw program/workspace id.
+type JobHistoryRow =
+    { jobId: string
+      programName: string
+      shipSymbol: string
+      state: string
+      updatedAt: DateTime }
+
+/// Most-recent-50 terminal jobs, newest first — no real pagination needed at this
+/// app's scale.
+let listHistory (dbPath: string) : Async<JobHistoryRow list> =
+    async {
+        use conn = Database.openConnection dbPath
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <-
+            $"""
+            SELECT j.id, pd.name, j.assigned_ship_symbol, j.state, j.updated_at
+            FROM jobs j
+            JOIN programs p ON p.id = j.program_id
+            JOIN program_definitions pd ON pd.id = p.workspace_id
+            WHERE j.state IN ({terminalStates |> List.map (sprintf "'%s'") |> String.concat ", "})
+            ORDER BY j.updated_at DESC
+            LIMIT 50;
+            """
+
+        use reader = cmd.ExecuteReader()
+
+        return
+            [ while reader.Read() do
+                  yield
+                      { jobId = reader.GetString(0)
+                        programName = reader.GetString(1)
+                        shipSymbol = reader.GetString(2)
+                        state = reader.GetString(3)
+                        updatedAt =
+                            DateTime.Parse(reader.GetString(4), null, System.Globalization.DateTimeStyles.RoundtripKind) } ]
+    }
