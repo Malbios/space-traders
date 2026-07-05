@@ -41,14 +41,18 @@ type PathEntry =
       index: int
       loopState: LoopState option }
 
-/// One active custom-block call (§9d/§14). Milestone 6 only ever has exactly one
-/// Frame (`scope = "main"`) — `CallCustomBlock` fails the job cleanly rather than
-/// pushing a second frame (real calls are Milestone 9) — but the shape is the real
-/// one later milestones build on, not a placeholder.
+/// One active custom-block call (§9d/§14). The bottom frame (`scope = "main"`) has
+/// `returnTarget = None`; every frame pushed by a `CallCustomBlock` carries the
+/// caller's `resultTarget` here, so popping it (§9d, Milestone 9) knows which local
+/// in the newly-restored top frame to write the callee's `returnExpr` result into —
+/// the caller's own position is left unadvanced at the call site for exactly this,
+/// the same way `AwaitingApiResponse` leaves the caller's position pointing at the
+/// action until its result comes back.
 type Frame =
     { scope: string
       position: PathEntry list
-      locals: Map<string, Value> }
+      locals: Map<string, Value>
+      returnTarget: string option }
 
 /// A ship-state snapshot as the scheduler needs it for reconciliation (§13) —
 /// deliberately independent of `SpaceKids.SpaceTraders.Ship` (see the namespace note

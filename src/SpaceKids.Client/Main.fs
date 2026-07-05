@@ -78,6 +78,15 @@ type JobStatusDto =
         status: string
         statusDetail: string option
         log: string list
+        /// Milestone 9/Part E (§9d/§14): one (scope, blockId) pair per call-stack
+        /// frame, deepest-first — index 0 is the block actually executing right now
+        /// (possibly inside a custom block's own workshop, identified by `scope`),
+        /// the rest are the calling blocks still "innen aktiv" further up the
+        /// program (`scope = "main"` for the program's own frame). `blockId` is
+        /// `None` for a frame whose position is already exhausted (e.g. it's
+        /// suspended on its own last instruction's real-world wait) — the frame is
+        /// still genuinely on the stack, just with nothing left to highlight.
+        blockIdPerFrame: (string * string option) list
     }
 
 /// Milestone 7 (§15): one row of the pilot dashboard.
@@ -107,6 +116,33 @@ type JobService =
     interface IRemoteService with
         member this.BasePath = "/job"
 
+/// Milestone 9/Part D (§9b/§9c): the Blockwerkstatt's block library + save/rename/
+/// delete, backed by `SpaceKids.Server.Persistence.CustomBlockRepository`.
+type CustomBlockSummaryDto =
+    {
+        id: string
+        name: string
+        version: int
+    }
+
+type CustomBlockService =
+    {
+        list: unit -> Async<CustomBlockSummaryDto list>
+        /// name -> new custom block id.
+        create: string -> Async<string>
+        /// id -> the workshop's stored workspace JSON, if any version has been saved yet.
+        loadDefinition: string -> Async<string option>
+        /// id, current workshop workspace JSON -> new version number, or a German
+        /// compile/validation error.
+        save: string * string -> Async<Result<int, string>>
+        rename: string * string -> Async<unit>
+        /// id -> Ok, or a German refusal message listing what still uses it (§9c).
+        delete: string -> Async<Result<unit, string>>
+    }
+
+    interface IRemoteService with
+        member this.BasePath = "/customblock"
+
 type Model =
     {
         containerId: string
@@ -128,6 +164,18 @@ type Model =
         /// workspace is forced read-only while this holds, and the manual
         /// read-only toggle is disabled (watch mode, §3a/§15).
         watchModeLocked: bool
+        /// Milestone 9/Part D (§9b/§9c): the block library — every custom block
+        /// currently saved, regardless of which one (if any) is open in the workshop.
+        customBlocks: CustomBlockSummaryDto list
+        newCustomBlockName: string
+        openCustomBlockId: string option
+        renameNameInput: string
+        workshopStatus: string
+        /// Milestone 9/Part E (§9d/§14): the pilot currently being watched (highlight
+        /// polling), if any — independent of `watchModeLocked`, which just governs
+        /// read-only/edit locking for *any* active pilot.
+        watchedJobId: string option
+        watchedFrames: (string * string option) list
     }
 
 let private terminalPilotStatuses = [ "Completed"; "Failed"; "Cancelled" ]
@@ -150,6 +198,13 @@ let initModel =
         pilotError = None
         pilots = []
         watchModeLocked = false
+        customBlocks = []
+        newCustomBlockName = ""
+        openCustomBlockId = None
+        renameNameInput = ""
+        workshopStatus = ""
+        watchedJobId = None
+        watchedFrames = []
     }
 
 type Message =
@@ -185,6 +240,24 @@ type Message =
     | ResumePilot of string
     | CancelPilot of string
     | PilotActionDone
+    | LoadCustomBlocks
+    | CustomBlocksLoaded of CustomBlockSummaryDto list
+    | NewCustomBlockNameChanged of string
+    | CreateCustomBlock
+    | CustomBlockCreated of string
+    | OpenCustomBlock of string * string
+    | CustomBlockDefinitionLoaded of string option
+    | RenameNameInputChanged of string
+    | RenameCustomBlock of string
+    | CustomBlockRenamed
+    | DeleteCustomBlock of string
+    | CustomBlockDeleteResult of string * Result<unit, string>
+    | SaveWorkshop
+    | WorkshopSaved of Result<int, string>
+    | WatchPilot of string
+    | StopWatching
+    | WatchTick
+    | WatchStatusLoaded of JobStatusDto option
 
 let private callVoid (js: IJSRuntime) (identifier: string) (args: obj[]) : Async<unit> =
     js.InvokeVoidAsync(identifier, args).AsTask() |> Async.AwaitTask
@@ -198,6 +271,7 @@ let update
     (agentRemote: AgentService)
     (queueRemote: QueueService)
     (jobRemote: JobService)
+    (customBlockRemote: CustomBlockService)
     message
     model
     =
@@ -327,6 +401,134 @@ let update
         model, Cmd.OfAsync.perform (fun () -> jobRemote.cancel jobId) () (fun () -> PilotActionDone)
     | PilotActionDone ->
         model, Cmd.ofMsg LoadPilots
+
+    | LoadCustomBlocks ->
+        model, Cmd.OfAsync.perform (fun () -> customBlockRemote.list ()) () CustomBlocksLoaded
+    | CustomBlocksLoaded blocks ->
+        { model with customBlocks = blocks }, Cmd.none
+
+    | NewCustomBlockNameChanged value ->
+        { model with newCustomBlockName = value }, Cmd.none
+    | CreateCustomBlock ->
+        if model.newCustomBlockName.Trim() = "" then
+            model, Cmd.none
+        else
+            { model with workshopStatus = "Erstelle..." },
+            Cmd.OfAsync.perform (fun () -> customBlockRemote.create model.newCustomBlockName) () CustomBlockCreated
+    | CustomBlockCreated id ->
+        let name = model.newCustomBlockName
+        { model with newCustomBlockName = ""; workshopStatus = "Block erstellt." },
+        Cmd.batch [ Cmd.ofMsg LoadCustomBlocks; Cmd.ofMsg (OpenCustomBlock(id, name)) ]
+
+    | OpenCustomBlock(id, name) ->
+        { model with
+            openCustomBlockId = Some id
+            renameNameInput = name
+            workshopStatus = "Werkstatt wird geladen..." },
+        Cmd.OfAsync.perform (fun () -> customBlockRemote.loadDefinition id) () CustomBlockDefinitionLoaded
+    | CustomBlockDefinitionLoaded jsonOpt ->
+        let json = jsonOpt |> Option.defaultValue """{"blocks":{"languageVersion":0,"blocks":[]}}"""
+
+        { model with workshopStatus = "Werkstatt geladen." },
+        Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.loadWorkspace" [| box model.workshopContainerId; box json |]) () (fun () -> Loaded)
+
+    | RenameNameInputChanged value ->
+        { model with renameNameInput = value }, Cmd.none
+    | RenameCustomBlock id ->
+        model, Cmd.OfAsync.perform (fun () -> customBlockRemote.rename (id, model.renameNameInput)) () (fun () -> CustomBlockRenamed)
+    | CustomBlockRenamed ->
+        { model with workshopStatus = "Umbenannt." }, Cmd.ofMsg LoadCustomBlocks
+
+    | DeleteCustomBlock id ->
+        model,
+        Cmd.OfAsync.perform
+            (fun () ->
+                async {
+                    let! result = customBlockRemote.delete id
+                    return (id, result)
+                })
+            ()
+            CustomBlockDeleteResult
+    | CustomBlockDeleteResult(id, Ok()) ->
+        let openId = if model.openCustomBlockId = Some id then None else model.openCustomBlockId
+        { model with openCustomBlockId = openId; workshopStatus = "Gelöscht." }, Cmd.ofMsg LoadCustomBlocks
+    | CustomBlockDeleteResult(_, Error message) ->
+        { model with workshopStatus = message }, Cmd.none
+
+    | SaveWorkshop ->
+        match model.openCustomBlockId with
+        | None -> { model with workshopStatus = "Kein Block zum Speichern geöffnet." }, Cmd.none
+        | Some id ->
+            { model with workshopStatus = "Speichere..." },
+            Cmd.OfAsync.perform
+                (fun () ->
+                    async {
+                        let! json = call<string> js "spaceKids.serializeWorkspace" [| box model.workshopContainerId |]
+                        return! customBlockRemote.save (id, json)
+                    })
+                ()
+                WorkshopSaved
+    | WorkshopSaved(Ok version) ->
+        let publishCmd =
+            match model.openCustomBlockId with
+            | Some id ->
+                Cmd.OfAsync.perform
+                    (fun () -> call<string> js "spaceKids.publishCustomBlockSignature" [| box model.workshopContainerId; box model.containerId; box id |])
+                    ()
+                    Published
+            | None -> Cmd.none
+
+        { model with workshopStatus = $"Gespeichert (Version {version})." }, Cmd.batch [ publishCmd; Cmd.ofMsg LoadCustomBlocks ]
+    | WorkshopSaved(Error message) ->
+        { model with workshopStatus = $"Fehler: {message}" }, Cmd.none
+
+    | WatchPilot jobId ->
+        { model with watchedJobId = Some jobId; watchedFrames = [] }, Cmd.ofMsg WatchTick
+    | StopWatching ->
+        { model with watchedJobId = None; watchedFrames = [] },
+        Cmd.batch [
+            Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.clearHighlight" [| box model.containerId |]) () (fun () -> Highlighted)
+            Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.clearHighlight" [| box model.workshopContainerId |]) () (fun () -> Highlighted)
+        ]
+    | WatchTick ->
+        match model.watchedJobId with
+        | None -> model, Cmd.none
+        | Some jobId -> model, Cmd.OfAsync.perform (fun () -> jobRemote.getStatus jobId) () WatchStatusLoaded
+    | WatchStatusLoaded None ->
+        { model with watchedJobId = None; watchedFrames = [] }, Cmd.none
+    | WatchStatusLoaded(Some dto) ->
+        match model.watchedJobId with
+        | None -> model, Cmd.none
+        | Some _ ->
+            let frames = dto.blockIdPerFrame
+
+            let programHighlightCmd =
+                match frames |> List.tryFind (fun (scope, _) -> scope = "main") with
+                | Some(_, Some blockId) ->
+                    Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.highlightBlock" [| box model.containerId; box blockId |]) () (fun () -> Highlighted)
+                | Some(_, None)
+                | None -> Cmd.none
+
+            let workshopHighlightCmd =
+                match model.openCustomBlockId, frames |> List.tryHead with
+                | Some openId, Some(scope, Some blockId) when scope = openId ->
+                    Cmd.OfAsync.perform
+                        (fun () -> callVoid js "spaceKids.highlightBlock" [| box model.workshopContainerId; box blockId |])
+                        ()
+                        (fun () -> Highlighted)
+                | Some _, _ ->
+                    Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.clearHighlight" [| box model.workshopContainerId |]) () (fun () -> Highlighted)
+                | None, _ -> Cmd.none
+
+            let terminal = List.contains dto.status terminalPilotStatuses
+
+            let nextTickCmd =
+                if terminal then
+                    Cmd.none
+                else
+                    Cmd.OfAsync.perform (fun () -> async { do! Async.Sleep 1000 }) () (fun () -> WatchTick)
+
+            { model with watchedFrames = frames }, Cmd.batch [ programHighlightCmd; workshopHighlightCmd; nextTickCmd ]
 
 let private viewDashboard model dispatch =
     div {
@@ -472,7 +674,64 @@ let private viewJobRunner model dispatch =
                         else
                             button { on.click (fun _ -> dispatch (PausePilot pilot.jobId)); "Pause" }
                         button { on.click (fun _ -> dispatch (CancelPilot pilot.jobId)); "Stoppen" }
+                        if model.watchedJobId = Some pilot.jobId then
+                            button { on.click (fun _ -> dispatch StopWatching); "Beobachtung stoppen" }
+                        else
+                            button { on.click (fun _ -> dispatch (WatchPilot pilot.jobId)); "Beobachten" }
+
+                    if model.watchedJobId = Some pilot.jobId then
+                        match model.watchedFrames with
+                        | [] -> ()
+                        | frames when frames.Length > 1 ->
+                            let innerScope = fst frames.[0]
+                            let innerName =
+                                model.customBlocks |> List.tryFind (fun b -> b.id = innerScope) |> Option.map (fun b -> b.name) |> Option.defaultValue innerScope
+
+                            p {
+                                $"Innen aktiv: \"{innerName}\" "
+                                button { on.click (fun _ -> dispatch (OpenCustomBlock(innerScope, innerName))); "Block öffnen" }
+                            }
+                        | _ -> ()
                 }
+    }
+
+let private viewCustomBlockLibrary model dispatch =
+    div {
+        h2 { "Eigene Blöcke (Milestone 9)" }
+        div {
+            input {
+                attr.``type`` "text"
+                attr.placeholder "Name des neuen Blocks"
+                attr.value model.newCustomBlockName
+                on.change (fun e -> dispatch (NewCustomBlockNameChanged(string e.Value)))
+            }
+            button { on.click (fun _ -> dispatch CreateCustomBlock); "Neuer Block" }
+        }
+        if model.customBlocks.IsEmpty then
+            p { "Noch kein eigener Block gespeichert." }
+        else
+            ul {
+                for b in model.customBlocks do
+                    li {
+                        $"{b.name} (Version {b.version}) "
+                        button { on.click (fun _ -> dispatch (OpenCustomBlock(b.id, b.name))); "Öffnen" }
+                        button { on.click (fun _ -> dispatch (DeleteCustomBlock b.id)); "Löschen" }
+                    }
+            }
+        match model.openCustomBlockId with
+        | None -> ()
+        | Some id ->
+            div {
+                input {
+                    attr.``type`` "text"
+                    attr.value model.renameNameInput
+                    on.change (fun e -> dispatch (RenameNameInputChanged(string e.Value)))
+                }
+                button { on.click (fun _ -> dispatch (RenameCustomBlock id)); "Umbenennen" }
+                button { on.click (fun _ -> dispatch SaveWorkshop); "Workshop speichern" }
+            }
+        if model.workshopStatus <> "" then
+            p { model.workshopStatus }
     }
 
 let view model dispatch =
@@ -500,6 +759,7 @@ let view model dispatch =
             attr.id model.containerId
             attr.style "height: 360px; width: 100%; border: 1px solid #ccc; margin-top: 0.5rem"
         }
+        viewCustomBlockLibrary model dispatch
         h2 { "Blockwerkstatt (Eigener Block definieren)" }
         p {
             "Ziehe \"Eigener Block\" auf die Fläche, öffne sein Zahnrad-Menü, füge eine Eingabe hinzu, dann:"
@@ -523,7 +783,10 @@ type MyApp() =
         let agentRemote = this.Remote<AgentService>()
         let queueRemote = this.Remote<QueueService>()
         let jobRemote = this.Remote<JobService>()
+        let customBlockRemote = this.Remote<CustomBlockService>()
         Program.mkProgram
-            (fun _ -> initModel, Cmd.batch [ Cmd.ofMsg Init; Cmd.ofMsg LoadDashboard; Cmd.ofMsg LoadQueueStatus; Cmd.ofMsg LoadPilots ])
-            (update js remote agentRemote queueRemote jobRemote)
+            (fun _ ->
+                initModel,
+                Cmd.batch [ Cmd.ofMsg Init; Cmd.ofMsg LoadDashboard; Cmd.ofMsg LoadQueueStatus; Cmd.ofMsg LoadPilots; Cmd.ofMsg LoadCustomBlocks ])
+            (update js remote agentRemote queueRemote jobRemote customBlockRemote)
             view

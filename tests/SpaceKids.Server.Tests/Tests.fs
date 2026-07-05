@@ -4,6 +4,7 @@ open System
 open System.IO
 open Microsoft.Data.Sqlite
 open Xunit
+open SpaceKids.Core.Dsl
 open SpaceKids.Server.Persistence
 
 let private tempDbPath () =
@@ -93,3 +94,136 @@ let ``backup produces a file and prunes beyond retention`` () =
     finally
         deleteDbFiles dbPath
         if Directory.Exists(backupsDir) then Directory.Delete(backupsDir, recursive = true)
+
+// --- CustomBlockRepository (Milestone 9/Part B, §9/§12) --------------------------------
+
+let private aCompiledBlock (inputs: string list) (output: string option) : CompiledCustomBlock =
+    { signature =
+        { inputs = inputs |> List.map (fun n -> { name = n; inputType = "Zahl" })
+          output = output
+          outputFields = None }
+      instructions = []
+      returnExpr = None }
+
+[<Fact>]
+let ``custom block repository round-trips a saved definition, always returning the latest version`` () =
+    let dbPath = tempDbPath ()
+    try
+        MigrationRunner.run dbPath
+        let id = CustomBlockRepository.insert dbPath "Verdopple" None |> Async.RunSynchronously
+
+        let v1 =
+            CustomBlockRepository.saveVersion dbPath id """{"blocks":{}}""" (aCompiledBlock [ "Zahl" ] (Some "Zahl"))
+            |> Async.RunSynchronously
+
+        Assert.Equal(1, v1)
+
+        let v2 =
+            CustomBlockRepository.saveVersion
+                dbPath
+                id
+                """{"blocks":{"v":2}}"""
+                (aCompiledBlock [ "Zahl"; "Zahl2" ] (Some "Zahl"))
+            |> Async.RunSynchronously
+
+        Assert.Equal(2, v2)
+
+        match CustomBlockRepository.load dbPath id |> Async.RunSynchronously with
+        | Some definition ->
+            Assert.Equal(2, definition.signature.inputs.Length)
+            Assert.Equal("""{"blocks":{"v":2}}""", definition.workspaceJson)
+        | None -> Assert.Fail("expected the block to load")
+    finally
+        deleteDbFiles dbPath
+
+[<Fact>]
+let ``custom block repository lists and renames blocks`` () =
+    let dbPath = tempDbPath ()
+    try
+        MigrationRunner.run dbPath
+        let id = CustomBlockRepository.insert dbPath "Baue Erz ab" None |> Async.RunSynchronously
+        CustomBlockRepository.saveVersion dbPath id "{}" (aCompiledBlock [] None) |> Async.RunSynchronously |> ignore
+
+        let before = CustomBlockRepository.list dbPath |> Async.RunSynchronously
+        Assert.Contains(before, fun b -> b.id = id && b.name = "Baue Erz ab" && b.version = 1)
+
+        CustomBlockRepository.rename dbPath id "Baue Rohstoffe ab" |> Async.RunSynchronously
+
+        let after = CustomBlockRepository.list dbPath |> Async.RunSynchronously
+        Assert.Contains(after, fun b -> b.id = id && b.name = "Baue Rohstoffe ab")
+    finally
+        deleteDbFiles dbPath
+
+[<Fact>]
+let ``findUsages is empty for a custom block nothing references`` () =
+    let dbPath = tempDbPath ()
+    try
+        MigrationRunner.run dbPath
+        let id = CustomBlockRepository.insert dbPath "Unbenutzt" None |> Async.RunSynchronously
+        CustomBlockRepository.saveVersion dbPath id "{}" (aCompiledBlock [] None) |> Async.RunSynchronously |> ignore
+
+        let usages = CustomBlockRepository.findUsages dbPath id |> Async.RunSynchronously
+        Assert.Empty(usages)
+    finally
+        deleteDbFiles dbPath
+
+[<Fact>]
+let ``findUsages lists a program that references the custom block`` () =
+    let dbPath = tempDbPath ()
+    try
+        MigrationRunner.run dbPath
+        let id = CustomBlockRepository.insert dbPath "Baue Erz ab" None |> Async.RunSynchronously
+        CustomBlockRepository.saveVersion dbPath id "{}" (aCompiledBlock [] None) |> Async.RunSynchronously |> ignore
+
+        WorkspaceRepository.save dbPath "blockly-spike" "{}" |> Async.RunSynchronously
+
+        let program: CompiledProgram =
+            { version = 1
+              customBlocks = Map [ id, aCompiledBlock [] None ]
+              instructions = [] }
+
+        ProgramRepository.insert dbPath "blockly-spike" (JobStateJson.serializeProgram program)
+        |> Async.RunSynchronously
+        |> ignore
+
+        let usages = CustomBlockRepository.findUsages dbPath id |> Async.RunSynchronously
+        Assert.Contains(usages, fun u -> u.Contains("Programm"))
+    finally
+        deleteDbFiles dbPath
+
+[<Fact>]
+let ``findUsages lists another custom block that calls it`` () =
+    let dbPath = tempDbPath ()
+    try
+        MigrationRunner.run dbPath
+        let innerId = CustomBlockRepository.insert dbPath "Innen" None |> Async.RunSynchronously
+        CustomBlockRepository.saveVersion dbPath innerId "{}" (aCompiledBlock [] None) |> Async.RunSynchronously |> ignore
+
+        let outerId = CustomBlockRepository.insert dbPath "Aussen" None |> Async.RunSynchronously
+
+        let outerCompiled =
+            { signature = { inputs = []; output = None; outputFields = None }
+              instructions = [ CallCustomBlock("c1", innerId, Map.empty, None) ]
+              returnExpr = None }
+
+        CustomBlockRepository.saveVersion dbPath outerId "{}" outerCompiled |> Async.RunSynchronously |> ignore
+
+        let usages = CustomBlockRepository.findUsages dbPath innerId |> Async.RunSynchronously
+        Assert.Contains(usages, fun u -> u.Contains("Aussen"))
+    finally
+        deleteDbFiles dbPath
+
+[<Fact>]
+let ``delete removes the custom block and its versions`` () =
+    let dbPath = tempDbPath ()
+    try
+        MigrationRunner.run dbPath
+        let id = CustomBlockRepository.insert dbPath "Wegwerfen" None |> Async.RunSynchronously
+        CustomBlockRepository.saveVersion dbPath id "{}" (aCompiledBlock [] None) |> Async.RunSynchronously |> ignore
+
+        CustomBlockRepository.delete dbPath id |> Async.RunSynchronously
+
+        let loaded = CustomBlockRepository.load dbPath id |> Async.RunSynchronously
+        Assert.True(loaded.IsNone)
+    finally
+        deleteDbFiles dbPath

@@ -852,3 +852,91 @@ the real `SpaceKids.Server` pointed at it via `SpaceTraders:BaseUrl` (not the re
 SpaceTraders API): a program using `refuel` (Part A) feeding straight into `Treibstoff
 aus Schiff` (`getShipInfo` + accessor, Part B) piped to a show-message block —
 completed successfully, correct fuel value displayed, zero console errors.
+
+## Milestone 9: custom reusable blocks (§9)
+
+(Naming note: the section above, "finish the block catalog," was informally called
+"Milestone 9" at the time even though it's really Milestone 9-adjacent catalog-
+completion work — plan.md's actual, numbered Milestone 9 is this one: real function
+calls between custom blocks. The user confirmed proceeding to this real Milestone 9
+after that catalog work landed.)
+
+Five parts, each built/tested/verified independently. **Part A** made
+`JobState.stack` (a `Frame list`, forward-designed since Milestone 6/7 specifically
+for this milestone) actually push/pop on `CallCustomBlock`: arguments bind into a
+fresh frame's locals, the callee's `returnExpr` (a new `CompiledCustomBlock` field)
+evaluates against its own locals once its position is exhausted, and the result
+binds into the caller's `resultTarget`. A call that suspends on an
+`ApiAction`/`InfoRead` leaves the caller frame on the stack underneath — a real call
+stack, not inlining. **Part B** built `CustomBlockRepository.fs` (append-only
+versioning; `findUsages` for delete-refusal, asymmetric by necessity: programs via a
+`CompiledProgram.customBlocks` map-key lookup since that closure already exists,
+other custom blocks via a substring match on serialized JSON since a lone
+`CompiledCustomBlock` has no closure of its own) and finally wired
+`JobRemoting.fs`'s `lookup` to real persistence instead of `fun _ -> None`.
+`Validator.revalidateAgainstCurrentDefinitions` (the structural-mismatch check) was
+deliberately *not* wired into `startJob` — its own doc comment says it only matters
+when re-checking an *already-compiled* program later, and compile+run still happen
+in the same request here; its real call site arrives with a future saved-program
+library, not this one.
+
+**Part C** replaced the Milestone-0 mutator spike with the real thing: all six typed
+inputs (Schiff/Wegpunkt/Ware/Anzahl/Preisgrenze/Liste) behind one generic mutator-arg
+block with a type dropdown; one generic `callCustomBlock` caller block type (not
+`sk_call_<id>` per block) whose shape rebuilds per-instance from a client-side
+signature cache; one generic `sk_param_get` getter; structured-record outputs via a
+new `Expr.RecordLiteral` DSL case, an `sk_build_record` mutator block, and
+dynamically generated `accessor_<customBlockId>_<field>` blocks. **Part D** built the
+Blockwerkstatt UI in `Main.fs`/`CustomBlockRemoting.fs`: a block library
+(create/open/rename/delete, delete refused inline with a German message listing
+usages) and a workshop view; saving derives a fresh signature from the just-edited
+JSON (`Compiler.deriveCustomBlockSignature`, the server-side counterpart to the
+client's own `readSignature`), persists a new version, and re-publishes the caller
+into the main program's toolbox via the existing `publishCustomBlockSignature`
+mechanism (no new plumbing needed there).
+
+**Part E** added `Step.blockIdPerFrame : JobState -> (string * string option) list`
+— one entry per stack frame, deepest-first, `scope` naming which workshop (or
+`"main"` for the program) a frame belongs to. The program view shows an "innen
+aktiv" indicator plus a "Block öffnen" button whenever the list has more than one
+entry (a call is in flight), driven by a per-pilot "Beobachten" watch/poll loop in
+`Main.fs` (`WatchTick`/`WatchStatusLoaded`, polling `JobService.getStatus` once a
+second while non-terminal).
+
+### A real bug found during Part E's own live verification
+
+The first version of `blockIdPerFrame` used `List.choose`, silently dropping any
+frame whose position was already exhausted. That's a common, not edge, case: several
+existing instructions (`Wait`, and the post-action-resolution paths for
+`NavigateOk`/`ExtractOk`/etc.) deliberately call `advanceJobPosition` *before*
+entering a suspended status — "advance past the block that started the wait, so the
+next block runs the moment the wait resolves." When a custom block's *last*
+instruction is one of these, its frame's position becomes empty at the exact moment
+it suspends — genuinely still on the stack (not yet popped; popping only happens via
+`completeOrPopFrame`, which hasn't run since the walk stopped to suspend), but with
+nothing left to report. `List.choose` threw that frame away entirely, so a call
+suspended in exactly this state looked identical to "no call in progress" — the one
+case "innen aktiv" most needed to catch. Fixed by switching to `List.map` returning
+`string option` for the blockId (one entry always emitted per frame; `None` just
+means "nothing to highlight inside," not "this frame doesn't exist") — the client
+derives "is a call in flight" from the list's *length*, never from whether a
+particular blockId is present. Found by deliberately testing a custom block whose
+one-instruction body was a `Wait`, not an `ApiAction` — the two suspend differently
+in this exact respect, and only one of them exposed the bug.
+
+### Verification
+
+`dotnet test --blame-hang-timeout 60s` after every part, 101 tests total (62
+`SpaceKids.Core.Tests`, 29 `SpaceKids.IntegrationTests`, 10 `SpaceKids.Server.Tests`),
+all green; `npm run typecheck` clean after Part C/D's TypeScript changes. Live
+Playwright checks after Parts C, D, and E against a locally-run
+`SpaceKids.FakeSpaceTraders` with the real `SpaceKids.Server` pointed at it (env var
+`SpaceTraders__BaseUrl` — note: the fake serves its routes at the bare root, e.g.
+`/my/agent`, not under a `/v2` prefix the way the real API does, so the env var must
+be set to the fake's own root URL, not `.../v2/`, or every call 404s): Part C proved
+one `callCustomBlock` type rendering two different signatures side-by-side; Part D
+proved create → workshop opens → save persists a version → caller injected into the
+main program's toolbox → rename updates the library, end to end through real HTTP;
+Part E proved a call into a custom block whose body waits shows "innen aktiv" +
+"Block öffnen" while suspended, and both clear once the job completes. Zero console
+errors throughout.

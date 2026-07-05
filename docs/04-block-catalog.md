@@ -338,3 +338,22 @@ this doc is the source of truth for both. `Markt.Handelswaren`'s and
 `Werft.Schiffstypen`'s price fields are only populated by the real API when a ship is
 present at that waypoint — otherwise both fall back to a price of 0 (documented
 simplification, same class as "market is always headquarters").
+
+## Custom-block structured outputs (§9, Milestone 9/Part C)
+
+A different, player-authored counterpart to the table above: a custom block's own
+definition can plug an `sk_build_record` block into its `RETURN` socket instead of a
+plain value. `sk_build_record` has its own mutator (add/remove named field rows,
+each a value-input socket) and compiles to `Expr.RecordLiteral of (string * Expr)
+list` — evaluated by `Eval.eval` into the same `VRecord` the 9 static records above
+use, so the existing `Accessor` evaluation needs no changes.
+
+For each field name declared on a custom block's `sk_build_record`, the client
+dynamically registers one accessor block type, `accessor_<customBlockId>_<field>`,
+reusing the exact `TARGET`-input/`asValue: true` shape the static accessor blocks
+above use. Unlike the static table, these aren't hand-catalogued here — they're
+generated at runtime (`registerCustomBlockAccessors` in `blocks.ts`,
+`publishCustomBlockSignature` in `blockly-host.ts`) whenever a custom block's
+signature is published to another workspace's toolbox, and compiled by `Compiler.fs`
+via a dynamic match arm (`t when t.StartsWith("accessor_")`) rather than the static
+`ACCESSOR_BLOCKS` map — there's no fixed list to keep in sync for these.

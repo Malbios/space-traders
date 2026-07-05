@@ -638,6 +638,69 @@ let ``refuel reconciles after an ambiguous failure without a duplicate refuel`` 
         let finalShip = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
         Assert.Equal(finalShip.fuel.capacity, finalShip.fuel.current))
 
+// ---------------------------------------------------------------------------
+// Milestone 9/Part B: custom-block `lookup` wiring, proven via a real compile
+// against a persisted definition, then a real run.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``a program calling a custom block loaded from the repository compiles and runs to completion`` () =
+    use fixture = new JobFixture()
+
+    withJobTest fixture.RawClient (fun dbPath ->
+        // Persist the custom block's own workshop first — its body is real Blockly
+        // JSON, recompiled fresh from `workspaceJson` every time `Compiler` resolves
+        // it (the stored `compiled_body_json` only freezes the signature snapshot;
+        // see `CustomBlockRepository.saveVersion`'s doc comment).
+        let realId = CustomBlockRepository.insert dbPath "Gruss" None |> Async.RunSynchronously
+
+        let definitionJson =
+            """
+            { "blocks": { "languageVersion": 0, "blocks": [
+                { "type": "sk_show_message", "id": "cb1", "inputs": {
+                    "TEXT": { "block": { "type": "text", "id": "cb1t", "fields": { "TEXT": "Hallo aus dem eigenen Block!" } } }
+                } }
+            ] } }
+            """
+
+        let voidSignatureBlock: CompiledCustomBlock =
+            { signature = { inputs = []; output = None; outputFields = None }
+              instructions = []
+              returnExpr = None }
+
+        CustomBlockRepository.saveVersion dbPath realId definitionJson voidSignatureBlock
+        |> Async.RunSynchronously
+        |> ignore
+
+        let mainWorkspaceJson =
+            $$"""
+            { "blocks": { "languageVersion": 0, "blocks": [
+                { "type": "callCustomBlock", "id": "call1", "extraState": { "customBlockId": "{{realId}}" } }
+            ] } }
+            """
+
+        let lookup (id: string) = CustomBlockRepository.load dbPath id |> Async.RunSynchronously
+
+        let compiled =
+            match Compiler.compileWorkspace lookup mainWorkspaceJson with
+            | Error errors -> failwith $"expected Ok, got errors: %A{errors}"
+            | Ok program -> program
+
+        Assert.Empty(Validator.validate compiled)
+
+        let initialShip = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+        let jobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" compiled initialShip
+
+        withPumpedQueue 20.0 (fun () ->
+            JobRunner.runToCompletion fixture.Client dbPath App.seededToken jobId
+            |> Async.RunSynchronously)
+
+        match JobRunner.getStatus jobId with
+        | Some job ->
+            Assert.Equal(Completed, job.status)
+            Assert.Contains("Hallo aus dem eigenen Block!", job.log)
+        | None -> Assert.Fail("job not found"))
+
 [<Fact>]
 let ``an info-read plus accessor chain resolves against the real fake over HTTP`` () =
     use fixture = new JobFixture()

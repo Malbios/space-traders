@@ -40,7 +40,8 @@ let private initialFrame: Frame =
         [ { bodyRef = MainBody
             index = 0
             loopState = None } ]
-      locals = Map.empty }
+      locals = Map.empty
+      returnTarget = None }
 
 /// A cooldown is only meaningful while still counting down — matches how
 /// `ExtractBaseline`/reconciliation treat "no active cooldown" as `None`.

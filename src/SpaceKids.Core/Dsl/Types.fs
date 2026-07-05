@@ -23,6 +23,11 @@ type Expr =
     | Comparison of op: string * left: Expr * right: Expr
     | ListLiteral of items: Expr list
     | ListGet of list: Expr * index: Expr
+    /// A custom block's structured-output "build record" block (§9 Outputs,
+    /// Milestone 9/Part C) — a flat `VRecord` literal, symmetric with the fixed §8
+    /// records produced by info blocks. Only ever appears plugged into a definition
+    /// block's return-value socket.
+    | RecordLiteral of fields: (string * Expr) list
 
 type WhileMode =
     | While
@@ -52,7 +57,14 @@ type CustomBlockSignatureInput = { name: string; inputType: string }
 
 type CustomBlockSignature =
     { inputs: CustomBlockSignatureInput list
-      output: string option }
+      output: string option
+      /// `Some fieldNames` when `output` is a structured record built by this
+      /// block's own `sk_build_record` return value (§9 Outputs, Milestone 9/Part
+      /// C) — `None` for a plain-value or void output. Field order matches
+      /// declaration order in the mutator, mirrored by the client's dynamically
+      /// generated `accessor_<id>_<field>` blocks (kept in sync manually, same as
+      /// the fixed §8 `ACCESSOR_BLOCKS` table).
+      outputFields: string list option }
 
 /// A custom block's definition, as looked up from storage (§9's `custom_blocks`/
 /// `custom_block_versions` tables — Milestone 9 scope; Milestone 4 only needs the
@@ -66,9 +78,12 @@ type CustomBlockDefinition =
 
 /// One referenced custom block's compiled body plus the signature snapshot it was
 /// compiled against (§9 mismatch check, §10 "recorded once per custom block").
+/// `returnExpr` is `None` for a block with no output (`signature.output = None`);
+/// evaluated against the callee's own locals when its frame pops (§9d, §14).
 type CompiledCustomBlock =
     { signature: CustomBlockSignature
-      instructions: Instruction list }
+      instructions: Instruction list
+      returnExpr: Expr option }
 
 type CompiledProgram =
     { version: int

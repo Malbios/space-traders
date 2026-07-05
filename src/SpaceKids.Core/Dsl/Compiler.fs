@@ -130,6 +130,21 @@ let private extraStateString (block: RawBlock) (name: string) : string option =
         | false, _ -> None
     | None -> None
 
+/// `sk_build_record`'s mutator-declared field names, in declaration order (§9
+/// Outputs, Milestone 9/Part C) — read from `extraState.fields[].name`, matching the
+/// client's `BuildRecordExtraState` shape.
+let private recordFieldNames (block: RawBlock) : string list =
+    match block.extraState with
+    | Some el ->
+        match el.TryGetProperty("fields") with
+        | true, arr when arr.ValueKind = JsonValueKind.Array ->
+            [ for item in arr.EnumerateArray() ->
+                match item.TryGetProperty("name") with
+                | true, nameEl -> nameEl.GetString()
+                | false, _ -> "" ]
+        | _ -> []
+    | None -> []
+
 let rec private compileExpr (state: CompileState) (hoisted: ResizeArray<Instruction>) (block: RawBlock) : Expr =
     match block.blockType with
     | "math_number" -> Literal(NumberLit(fieldNumber block "NUM" |> Option.defaultValue 0.0))
@@ -141,6 +156,7 @@ let rec private compileExpr (state: CompileState) (hoisted: ResizeArray<Instruct
         let op = fieldString block "OP" |> Option.defaultValue "ADD"
         Arithmetic(op, compileInput state hoisted block "A", compileInput state hoisted block "B")
     | "variables_get" -> VariableRef(variableName block "VAR")
+    | "sk_param_get" -> ParamRef(fieldString block "PARAM_NAME" |> Option.defaultValue "?")
     | "lists_create_with" ->
         let itemCount = extraStateInt block "itemCount" 0
         let items = [ for i in 0 .. itemCount - 1 -> compileInput state hoisted block $"ADD{i}" ]
@@ -166,6 +182,22 @@ let rec private compileExpr (state: CompileState) (hoisted: ResizeArray<Instruct
         hoisted.Add(InfoRead(block.id, t, args, temp))
         TempRef temp
     | t when ACCESSOR_BLOCKS.ContainsKey t -> Accessor(ACCESSOR_BLOCKS.[t], compileInput state hoisted block "TARGET")
+    | "sk_build_record" ->
+        let fieldNames = recordFieldNames block
+        let fields = fieldNames |> List.mapi (fun i name -> name, compileInput state hoisted block $"FIELD_{i}")
+        RecordLiteral fields
+    // Milestone 9/Part C — one dynamic accessor block per custom-block structured
+    // output field (`accessor_<customBlockId>_<field>`), generated client-side rather
+    // than declared in the static `ACCESSOR_BLOCKS` table above. The field name is
+    // always the block type's own suffix, so no separate lookup table is needed.
+    | t when t.StartsWith("accessor_") ->
+        match t.LastIndexOf('_') with
+        | idx when idx > "accessor_".Length - 1 ->
+            let fieldName = t.Substring(idx + 1)
+            Accessor(fieldName, compileInput state hoisted block "TARGET")
+        | _ ->
+            state.errors.Add { blockId = Some block.id; message = $"Ungültiger Zugriffsblock: {t}." }
+            Literal(BoolLit false)
     | other ->
         state.errors.Add { blockId = Some block.id; message = $"Unbekannter Blocktyp: {other}." }
         Literal(BoolLit false)
@@ -219,8 +251,36 @@ and private resolveCustomBlock (state: CompileState) (customBlockId: string) : u
         | Some definition ->
             state.inProgress.Add customBlockId |> ignore
             let topBlocks = BlocklyJson.parseWorkspace definition.workspaceJson
-            let instructions = topBlocks |> List.collect (fun b -> compileStatementChain state (Some b))
-            state.customBlocks.[customBlockId] <- { signature = definition.signature; instructions = instructions }
+
+            // A real workshop's stored JSON is the whole `sk_custom_block_def` shell
+            // (§9b) — its "BODY" statement input is the actual body, its "RETURN"
+            // value input (Milestone 9/Part C) compiles into `returnExpr`. Older
+            // fixtures/tests that predate the real Blockwerkstatt UI store the body
+            // directly with no shell block at all; both are supported so nothing that
+            // already passed compiles differently now.
+            let instructions, returnExpr =
+                match topBlocks |> List.tryFind (fun b -> b.blockType = "sk_custom_block_def") with
+                | Some defBlock ->
+                    let returnHoisted = ResizeArray<Instruction>()
+
+                    let body =
+                        match defBlock.inputs.TryFind "BODY" with
+                        | Some bodyBlock -> compileStatementChain state (Some bodyBlock)
+                        | None -> []
+
+                    // Hoisted instructions from the return expression (e.g. an info
+                    // read plugged directly into "Ergebnis") run *after* the body,
+                    // immediately before the call returns — not before it, which
+                    // would run them ahead of the body's own effects.
+                    let ret = defBlock.inputs.TryFind "RETURN" |> Option.map (compileExpr state returnHoisted)
+                    body @ List.ofSeq returnHoisted, ret
+                | None -> (topBlocks |> List.collect (fun b -> compileStatementChain state (Some b))), None
+
+            state.customBlocks.[customBlockId] <-
+                { signature = definition.signature
+                  instructions = instructions
+                  returnExpr = returnExpr }
+
             state.inProgress.Remove customBlockId |> ignore
 
 and private compileStatement (state: CompileState) (block: RawBlock) : Instruction list =
@@ -295,6 +355,43 @@ let resolveCustomBlockCall
         Error(List.ofSeq state.errors)
     else
         Ok(state.customBlocks |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq)
+
+/// Reads a custom block's own signature straight off its workshop's raw Blockly JSON
+/// (§9b/§9c), independent of whatever was previously stored — the server-side
+/// counterpart to `blocks.ts`'s `readSignature`, used when persisting a *new* version
+/// (Milestone 9/Part D): the signature to save must reflect the mutator edits just
+/// made, not the definition already on disk. Returns a void signature (no inputs, no
+/// output) if no `sk_custom_block_def` block is found — the caller (`CustomBlockRemoting`)
+/// surfaces that as a validation error before saving, same as any other empty program.
+let deriveCustomBlockSignature (workspaceJson: string) : CustomBlockSignature =
+    let topBlocks = BlocklyJson.parseWorkspace workspaceJson
+
+    match topBlocks |> List.tryFind (fun b -> b.blockType = "sk_custom_block_def") with
+    | None -> { inputs = []; output = None; outputFields = None }
+    | Some defBlock ->
+        let inputs =
+            match defBlock.extraState with
+            | Some el ->
+                match el.TryGetProperty("inputs") with
+                | true, arr when arr.ValueKind = JsonValueKind.Array ->
+                    [ for item in arr.EnumerateArray() ->
+                        let name = match item.TryGetProperty("name") with
+                                   | true, n -> n.GetString()
+                                   | false, _ -> ""
+                        let typeLabel = match item.TryGetProperty("typeLabel") with
+                                        | true, t -> t.GetString()
+                                        | false, _ -> "Anzahl"
+                        { name = name; inputType = typeLabel } ]
+                | _ -> []
+            | None -> []
+
+        match defBlock.inputs.TryFind "RETURN" with
+        | None -> { inputs = inputs; output = None; outputFields = None }
+        | Some returnBlock when returnBlock.blockType = "sk_build_record" ->
+            { inputs = inputs
+              output = Some "$record"
+              outputFields = Some(recordFieldNames returnBlock) }
+        | Some _ -> { inputs = inputs; output = Some "$value"; outputFields = None }
 
 /// Compiles a Blockly workspace's serialized JSON into the DSL (§10).
 let compileWorkspace

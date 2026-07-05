@@ -163,3 +163,25 @@ structure. See `plan.md` §19 for what each milestone covers.
   pre-existing log-ordering bug (Milestone 6) found and fixed via live verification.
   Milestone 8 ("first missions") deliberately skipped for now — not the user's
   current priority (see `docs/decisions.md`/TODO.md).
+- **Milestone 9 (custom reusable blocks, §9): done.** Real function-call semantics,
+  built in five parts. Part A: `JobState.stack` (a `Frame list`, forward-designed
+  since Milestone 6) now genuinely pushes/pops on `CallCustomBlock`, binding
+  arguments and the return value (`CompiledCustomBlock.returnExpr`) via
+  `resultTarget`. Part B: `CustomBlockRepository.fs` — append-only versioning, a
+  working delete-usage-check (`findUsages`), and `JobRemoting.fs`'s `lookup`
+  finally backed by real persistence instead of `fun _ -> None`. Part C: a real
+  typed-input mutator (Schiff/Wegpunkt/Ware/Anzahl/Preisgrenze/Liste), one generic
+  `callCustomBlock` caller block type (replacing the Milestone-0 spike's
+  `sk_call_<id>` scheme) whose shape is rebuilt per-instance from a signature
+  cache, and structured-record outputs (`Expr.RecordLiteral`, an `sk_build_record`
+  mutator block, dynamically generated `accessor_<id>_<field>` blocks). Part D: the
+  Blockwerkstatt UI — a block library (create/open/rename/delete) and a workshop
+  view wired to `CustomBlockRemoting.fs`; saving a workshop derives a fresh
+  signature from the just-edited JSON, persists a new version, and re-publishes the
+  caller into the main program's toolbox. Part E: `Step.blockIdPerFrame` (one
+  `(scope, blockId option)` pair per stack frame, deepest-first) drives an "innen
+  aktiv" indicator + "Block öffnen" affordance on the program view while a call is
+  in flight. See `docs/decisions.md` for a real bug found during Part E's live
+  verification (a frame whose position had already advanced past its own last
+  instruction was silently dropped, making "innen aktiv" undetectable in exactly
+  that case).

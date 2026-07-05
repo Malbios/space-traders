@@ -35,3 +35,12 @@ let serializeProgram (program: CompiledProgram) : string =
 
 let deserializeProgram (json: string) : CompiledProgram =
     JsonSerializer.Deserialize<CompiledProgram>(json, options)
+
+/// Milestone 9/Part B: a single custom block's own compiled body, stored per-version
+/// in `custom_block_versions.compiled_body_json` — unlike `CompiledProgram`, this
+/// carries no `customBlocks` closure map of its own (it's just the one block).
+let serializeCustomBlock (block: CompiledCustomBlock) : string =
+    JsonSerializer.Serialize(block, options)
+
+let deserializeCustomBlock (json: string) : CompiledCustomBlock =
+    JsonSerializer.Deserialize<CompiledCustomBlock>(json, options)

@@ -121,7 +121,7 @@ let private simpleWaitBody =
 let ``resolveCustomBlockCall compiles the full transitive closure`` () =
     let blockB: CustomBlockDefinition =
         { id = "block-b"
-          signature = { inputs = []; output = None }
+          signature = { inputs = []; output = None; outputFields = None }
           workspaceJson = simpleWaitBody }
 
     let blockAWorkspace =
@@ -129,7 +129,7 @@ let ``resolveCustomBlockCall compiles the full transitive closure`` () =
 
     let blockA: CustomBlockDefinition =
         { id = "block-a"
-          signature = { inputs = []; output = None }
+          signature = { inputs = []; output = None; outputFields = None }
           workspaceJson = blockAWorkspace }
 
     let lookup =
@@ -152,12 +152,12 @@ let ``resolveCustomBlockCall rejects a cycle`` () =
 
     let blockX: CustomBlockDefinition =
         { id = "block-x"
-          signature = { inputs = []; output = None }
+          signature = { inputs = []; output = None; outputFields = None }
           workspaceJson = workspaceCallingOther "block-y" }
 
     let blockY: CustomBlockDefinition =
         { id = "block-y"
-          signature = { inputs = []; output = None }
+          signature = { inputs = []; output = None; outputFields = None }
           workspaceJson = workspaceCallingOther "block-x" }
 
     let lookup =
@@ -174,7 +174,7 @@ let ``resolveCustomBlockCall rejects a cycle`` () =
 let ``validate rejects a custom-block call with mismatched arguments`` () =
     let blockDef: CustomBlockDefinition =
         { id = "needs-input"
-          signature = { inputs = [ { name = "Anzahl"; inputType = "Zahl" } ]; output = None }
+          signature = { inputs = [ { name = "Anzahl"; inputType = "Zahl" } ]; output = None; outputFields = None }
           workspaceJson = simpleWaitBody }
 
     let lookup =
@@ -193,7 +193,7 @@ let ``validate rejects a custom-block call with mismatched arguments`` () =
 
 [<Fact>]
 let ``revalidateAgainstCurrentDefinitions catches a signature that changed after compile`` () =
-    let originalSignature = { inputs = []; output = None }
+    let originalSignature = { inputs = []; output = None; outputFields = None }
     let blockDef: CustomBlockDefinition =
         { id = "block-a"; signature = originalSignature; workspaceJson = simpleWaitBody }
 
@@ -215,7 +215,7 @@ let ``revalidateAgainstCurrentDefinitions catches a signature that changed after
             | "block-a" ->
                 Some
                     { blockDef with
-                        signature = { inputs = [ { name = "Anzahl"; inputType = "Zahl" } ]; output = None } }
+                        signature = { inputs = [ { name = "Anzahl"; inputType = "Zahl" } ]; output = None; outputFields = None } }
             | _ -> None
 
         let errors = Validator.revalidateAgainstCurrentDefinitions changedLookup program
@@ -263,3 +263,102 @@ let ``Eval Accessor on a non-record value raises a clear German type-mismatch er
     let locals = Map.ofList [ "x", VNumber 5.0 ]
     let ex = Assert.Throws<System.Exception>(fun () -> Eval.eval locals (Accessor("Treibstoff", VariableRef "x")) |> ignore)
     Assert.Contains("Datensatz", ex.Message)
+
+// --- Structured custom-block outputs (§9 Outputs, Milestone 9/Part C) -----------------
+
+[<Fact>]
+let ``sk_build_record compiles to a RecordLiteral with fields in declaration order`` () =
+    let json =
+        """
+        { "blocks": { "languageVersion": 0, "blocks": [
+            { "type": "variables_set", "id": "b1", "fields": { "VAR": "info" }, "inputs": {
+                "VALUE": { "block": {
+                    "type": "sk_build_record", "id": "rec1",
+                    "extraState": { "fields": [ { "name": "Wegpunkt" }, { "name": "Kaufpreis" } ] },
+                    "inputs": {
+                        "FIELD_0": { "block": """ + textBlock "f0t" "X1-TEST-A1" + """ },
+                        "FIELD_1": { "block": """ + numberBlock "f1t" 42.0 + """ }
+                    }
+                } }
+            } }
+        ] } }
+        """
+
+    match Compiler.compileWorkspace noCustomBlocks json with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        Assert.Equal<Instruction list>(
+            [ SetVariable(
+                  "b1",
+                  "info",
+                  RecordLiteral [ "Wegpunkt", Literal(StringLit "X1-TEST-A1"); "Kaufpreis", Literal(NumberLit 42.0) ]
+              ) ],
+            program.instructions
+        )
+
+[<Fact>]
+let ``Eval evaluates a RecordLiteral into a VRecord`` () =
+    let expr = RecordLiteral [ "Wegpunkt", Literal(StringLit "X1-TEST-A1"); "Kaufpreis", Literal(NumberLit 42.0) ]
+    let result = Eval.eval Map.empty expr
+    Assert.Equal(VRecord(Map.ofList [ "Wegpunkt", VString "X1-TEST-A1"; "Kaufpreis", VNumber 42.0 ]), result)
+
+[<Fact>]
+let ``a dynamic accessor_<id>_<field> block compiles to an Accessor for that field`` () =
+    let json =
+        """
+        { "blocks": { "languageVersion": 0, "blocks": [
+            { "type": "variables_set", "id": "b1", "fields": { "VAR": "preis" }, "inputs": {
+                "VALUE": { "block": {
+                    "type": "accessor_marktinfo-block_Kaufpreis", "id": "acc1",
+                    "inputs": { "TARGET": { "block": { "type": "variables_get", "id": "g1", "fields": { "VAR": "info" } } } }
+                } }
+            } }
+        ] } }
+        """
+
+    match Compiler.compileWorkspace noCustomBlocks json with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        Assert.Equal<Instruction list>(
+            [ SetVariable("b1", "preis", Accessor("Kaufpreis", VariableRef "info")) ],
+            program.instructions
+        )
+
+[<Fact>]
+let ``a custom block whose workshop JSON is a real def-shell block compiles its BODY and RETURN socket`` () =
+    let defShellWorkspace =
+        """
+        { "blocks": { "languageVersion": 0, "blocks": [
+            { "type": "sk_custom_block_def", "id": "def1", "fields": { "BLOCK_NAME": "Prüfe Markt" },
+              "extraState": { "inputs": [ { "name": "Wegpunkt", "typeLabel": "Wegpunkt" } ] },
+              "inputs": {
+                "BODY": { "block": { "type": "sk_wait", "id": "w1", "inputs": { "SECONDS": { "block": """ + numberBlock "n1" 1.0 + """ } } } },
+                "RETURN": { "block": {
+                    "type": "sk_build_record", "id": "rec1",
+                    "extraState": { "fields": [ { "name": "Wegpunkt" } ] },
+                    "inputs": { "FIELD_0": { "block": { "type": "sk_param_get", "id": "p1", "fields": { "PARAM_NAME": "Wegpunkt" } } } }
+                } }
+              }
+            }
+        ] } }
+        """
+
+    let definition: CustomBlockDefinition =
+        { id = "marktinfo-block"
+          signature =
+            { inputs = [ { name = "Wegpunkt"; inputType = "Wegpunkt" } ]
+              output = Some "$record"
+              outputFields = Some [ "Wegpunkt" ] }
+          workspaceJson = defShellWorkspace }
+
+    let lookup =
+        function
+        | "marktinfo-block" -> Some definition
+        | _ -> None
+
+    match Compiler.resolveCustomBlockCall lookup "marktinfo-block" with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok customBlocks ->
+        let compiled = customBlocks.["marktinfo-block"]
+        Assert.Equal<Instruction list>([ Wait("w1", Literal(NumberLit 1.0)) ], compiled.instructions)
+        Assert.Equal(Some(RecordLiteral [ "Wegpunkt", ParamRef "Wegpunkt" ]), compiled.returnExpr)

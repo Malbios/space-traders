@@ -93,6 +93,7 @@ let rec eval (locals: Map<string, Value>) (expr: Expr) : Value =
 
         VBool result
     | ListLiteral items -> VList(items |> List.map (eval locals))
+    | RecordLiteral fields -> VRecord(fields |> List.map (fun (name, expr) -> name, eval locals expr) |> Map.ofList)
     | ListGet(list, index) ->
         let items = eval locals list |> asList
         let i = eval locals index |> asInt

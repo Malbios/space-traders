@@ -15,6 +15,31 @@ let private mkProgram (instructions: Instruction list) : CompiledProgram =
       customBlocks = Map.empty
       instructions = instructions }
 
+let private mkCustomBlock (instructions: Instruction list) (returnExpr: Expr option) : CompiledCustomBlock =
+    { signature = { inputs = []; output = (returnExpr |> Option.map (fun _ -> "Zahl")); outputFields = None }
+      instructions = instructions
+      returnExpr = returnExpr }
+
+let private mkJobWithCustomBlocks
+    (customBlocks: Map<string, CompiledCustomBlock>)
+    (instructions: Instruction list)
+    (lastKnownShip: ShipSnapshot option)
+    : JobState =
+    { jobId = "job1"
+      program = { version = 1; customBlocks = customBlocks; instructions = instructions }
+      shipSymbol = "SHIP-1"
+      status = Running
+      stack =
+        [ { scope = "main"
+            position = [ { bodyRef = MainBody; index = 0; loopState = None } ]
+            locals = Map.empty
+            returnTarget = None } ]
+      lastKnownShip = lastKnownShip
+      lastKnownFleetShipCount = Some 2
+      log = []
+      pausePending = false
+      cancelPending = false }
+
 let private mkJob (instructions: Instruction list) (lastKnownShip: ShipSnapshot option) : JobState =
     { jobId = "job1"
       program = mkProgram instructions
@@ -23,7 +48,8 @@ let private mkJob (instructions: Instruction list) (lastKnownShip: ShipSnapshot 
       stack =
         [ { scope = "main"
             position = [ { bodyRef = MainBody; index = 0; loopState = None } ]
-            locals = Map.empty } ]
+            locals = Map.empty
+            returnTarget = None } ]
       lastKnownShip = lastKnownShip
       lastKnownFleetShipCount = Some 2
       log = []
@@ -751,3 +777,98 @@ let ``info-read followed by an accessor chain resolves the field end-to-end`` ()
     match job2.stack with
     | top :: _ -> Assert.Equal(VNumber 380.0, top.locals.["treibstoff"])
     | [] -> Assert.Fail("expected a stack frame")
+
+// --- Custom-block call-stack execution (§9d, Milestone 9/Part A) ---------------------
+
+[<Fact>]
+let ``a custom-block call binds its return value into the caller's resultTarget`` () =
+    let clock = fakeClock (ref epoch)
+
+    let verdopple =
+        mkCustomBlock
+            [ SetVariable("d1", "x", Arithmetic("MULTIPLY", ParamRef "Zahl", Literal(NumberLit 2.0))) ]
+            (Some(VariableRef "x"))
+
+    let instructions =
+        [ CallCustomBlock("call1", "verdopple", Map [ "Zahl", Literal(NumberLit 5.0) ], Some "$t1")
+          SetVariable("b2", "ergebnis", TempRef "$t1") ]
+
+    let job0 = mkJobWithCustomBlocks (Map [ "verdopple", verdopple ]) instructions None
+    let job1, effects1 = Step.step clock job0 WakeTick
+
+    Assert.Equal(Completed, job1.status)
+    Assert.Contains(JobCompleted "job1", effects1)
+
+    match job1.stack with
+    | top :: [] -> Assert.Equal(VNumber 10.0, top.locals.["ergebnis"])
+    | _ -> Assert.Fail("expected exactly one (the main) frame left")
+
+[<Fact>]
+let ``a void custom-block call (no resultTarget) executes its body without binding anything`` () =
+    let clock = fakeClock (ref epoch)
+
+    let grussen = mkCustomBlock [ ShowMessage("g1", Literal(StringLit "Hallo!")) ] None
+
+    let instructions = [ CallCustomBlock("call1", "gruessen", Map.empty, None) ]
+    let job0 = mkJobWithCustomBlocks (Map [ "gruessen", grussen ]) instructions None
+    let job1, _ = Step.step clock job0 WakeTick
+
+    Assert.Equal(Completed, job1.status)
+    Assert.Contains<string>("Hallo!", job1.log)
+
+[<Fact>]
+let ``nested custom-block calls resolve correctly through two levels`` () =
+    let clock = fakeClock (ref epoch)
+
+    let double =
+        mkCustomBlock
+            [ SetVariable("dd1", "x", Arithmetic("MULTIPLY", ParamRef "n", Literal(NumberLit 2.0))) ]
+            (Some(VariableRef "x"))
+
+    let quadruple =
+        mkCustomBlock
+            [ CallCustomBlock("ic1", "double", Map [ "n", ParamRef "n" ], Some "$q1")
+              CallCustomBlock("ic2", "double", Map [ "n", TempRef "$q1" ], Some "$q2") ]
+            (Some(TempRef "$q2"))
+
+    let instructions =
+        [ CallCustomBlock("call1", "quadruple", Map [ "n", Literal(NumberLit 3.0) ], Some "$t1")
+          SetVariable("b2", "result", TempRef "$t1") ]
+
+    let job0 = mkJobWithCustomBlocks (Map [ "double", double; "quadruple", quadruple ]) instructions None
+    let job1, _ = Step.step clock job0 WakeTick
+
+    Assert.Equal(Completed, job1.status)
+
+    match job1.stack with
+    | top :: [] -> Assert.Equal(VNumber 12.0, top.locals.["result"])
+    | _ -> Assert.Fail("expected exactly one (the main) frame left")
+
+[<Fact>]
+let ``a call whose body suspends on an ApiAction keeps the caller frame on the stack until it resolves`` () =
+    let clock = fakeClock (ref epoch)
+
+    let orbitThenOne = mkCustomBlock [ ApiAction("ob1", "orbit", Map.empty) ] (Some(Literal(NumberLit 1.0)))
+
+    let instructions =
+        [ CallCustomBlock("call1", "orbitThenOne", Map.empty, Some "$t1")
+          SetVariable("b2", "result", TempRef "$t1") ]
+
+    let job0 = mkJobWithCustomBlocks (Map [ "orbitThenOne", orbitThenOne ]) instructions (Some defaultShip)
+    let job1, effects1 = Step.step clock job0 WakeTick
+
+    Assert.Equal(AwaitingApiResponse(0, DoOrbit, DockOrbitBaseline "IN_ORBIT"), job1.status)
+    Assert.Contains(QueueApiCall("job1", "SHIP-1", DoOrbit, 0), effects1)
+    Assert.Equal(2, List.length job1.stack)
+    Assert.Equal<(string * string option) list>([ "orbitThenOne", Some "ob1"; "main", Some "call1" ], Step.blockIdPerFrame job1)
+
+    let job2, effects2 = Step.step clock job1 (ApiResponseReceived("job1", 0, NavResultOk("IN_ORBIT", "X1-TEST-A1")))
+
+    Assert.Equal(Completed, job2.status)
+    Assert.Contains(JobCompleted "job1", effects2)
+    Assert.Equal(1, List.length job2.stack)
+    Assert.Equal<(string * string option) list>([ "main", None ], Step.blockIdPerFrame job2)
+
+    match job2.stack with
+    | top :: [] -> Assert.Equal(VNumber 1.0, top.locals.["result"])
+    | _ -> Assert.Fail("expected exactly one (the main) frame left")

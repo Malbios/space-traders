@@ -22,6 +22,7 @@ let rec private exprRefs (expr: Expr) : string list =
     | Arithmetic(_, l, r) -> exprRefs l @ exprRefs r
     | Comparison(_, l, r) -> exprRefs l @ exprRefs r
     | ListLiteral items -> items |> List.collect exprRefs
+    | RecordLiteral fields -> fields |> List.collect (snd >> exprRefs)
     | ListGet(list, index) -> exprRefs list @ exprRefs index
 
 /// All variable/parameter names referenced anywhere in an instruction (including

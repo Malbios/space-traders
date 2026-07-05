@@ -15,6 +15,7 @@
     <Compile Include="Persistence/ProgramRepository.fs" />
     <Compile Include="Persistence/JobRepository.fs" />
     <Compile Include="Persistence/ShipLockRepository.fs" />
+    <Compile Include="Persistence/CustomBlockRepository.fs" />
     <Compile Include="Persistence/Backup.fs" />
     <Compile Include="RequestQueue.fs" />
     <Compile Include="JobRunner.fs" />
@@ -23,6 +24,7 @@
     <Compile Include="AgentRemoting.fs" />
     <Compile Include="QueueRemoting.fs" />
     <Compile Include="JobRemoting.fs" />
+    <Compile Include="CustomBlockRemoting.fs" />
     <Compile Include="Index.fs" />
     <Compile Include="Startup.fs" />
   </ItemGroup>

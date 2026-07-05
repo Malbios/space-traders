@@ -150,6 +150,18 @@ let private currentLocals (job: JobState) : Map<string, Value> =
     | [] -> Map.empty
     | top :: _ -> top.locals
 
+// --- Call stack (§9d/§14, Milestone 9) ----------------------------------------------
+
+let private pushFrame (frame: Frame) (job: JobState) : JobState = { job with stack = frame :: job.stack }
+
+/// Pops the top frame, unless it's the only one left — the bottom (`"main"`) frame
+/// is never popped this way; its position emptying means the whole job is
+/// `Completed`, handled separately where this is called.
+let private popFrame (job: JobState) : (Frame * JobState) option =
+    match job.stack with
+    | top :: (_ :: _ as rest) -> Some(top, { job with stack = rest })
+    | _ -> None
+
 // --- Reconciliation (§13) -----------------------------------------------------------
 
 /// Decides, from a fresh ship snapshot, whether the ambiguous action already
@@ -218,9 +230,28 @@ let rec private advance (clock: Clock) (job: JobState) : JobState * Effect list 
     match job.status with
     | Running ->
         match currentInstruction job with
-        | None -> { job with status = Completed }, [ JobCompleted job.jobId ]
+        | None -> completeOrPopFrame clock job
         | Some instr -> advanceInstruction clock job instr
     | _ -> job, []
+
+/// The top frame's position is exhausted (§9d, Milestone 9): if it's the only frame,
+/// the whole job is `Completed`; otherwise it's a custom-block call returning —
+/// pop it, evaluate its own `returnExpr` against its own (now-discarded) locals, bind
+/// the result into the caller's `resultTarget` local (if any), and resume the caller
+/// from its call site, which `advanceJobPosition` moves past.
+and private completeOrPopFrame (clock: Clock) (job: JobState) : JobState * Effect list =
+    match popFrame job with
+    | None -> { job with status = Completed }, [ JobCompleted job.jobId ]
+    | Some(poppedFrame, job') ->
+        let job'' =
+            match poppedFrame.returnTarget, job.program.customBlocks.TryFind poppedFrame.scope with
+            | Some target, Some cb ->
+                match cb.returnExpr with
+                | Some expr -> setLocal target (Eval.eval poppedFrame.locals expr) job'
+                | None -> job'
+            | _ -> job'
+
+        advance clock (job'' |> advanceJobPosition)
 
 and private advanceInstruction (clock: Clock) (job: JobState) (instr: Instruction) : JobState * Effect list =
     let locals = currentLocals job
@@ -285,12 +316,26 @@ and private advanceInstruction (clock: Clock) (job: JobState) (instr: Instructio
 
             advance clock job'
     | InfoRead(blockId, infoType, args, resultTarget) -> emitInfoRead job blockId infoType args resultTarget
-    | CallCustomBlock _ ->
-        // Out of scope until Milestone 9's real custom-block calls — fail the job
-        // with a clear German message rather than crash or silently no-op, so a
-        // full-catalog program degrades safely.
-        let msg = "Dieser Block wird erst in einem späteren Meilenstein unterstützt."
-        { job with status = Failed msg }, [ JobFailed(job.jobId, msg) ]
+    | CallCustomBlock(_, customBlockId, arguments, resultTarget) ->
+        match job.program.customBlocks.TryFind customBlockId with
+        | None ->
+            let msg = $"Eigener Block \"{customBlockId}\" wurde nicht gefunden."
+            { job with status = Failed msg }, [ JobFailed(job.jobId, msg) ]
+        | Some cb ->
+            let boundArgs = arguments |> Map.map (fun _ expr -> Eval.eval locals expr)
+
+            let calleeFrame =
+                { scope = customBlockId
+                  position = [ { bodyRef = CustomBlockBody customBlockId; index = 0; loopState = None } ]
+                  locals = boundArgs
+                  returnTarget = resultTarget }
+
+            // The caller's own position is deliberately left unadvanced — it still
+            // points at this `CallCustomBlock` instruction, so `completeOrPopFrame`'s
+            // `advanceJobPosition` (once the callee's frame pops) moves past it,
+            // exactly like an in-flight `ApiAction`/`InfoRead` leaves its position
+            // unadvanced until its result comes back.
+            advance clock (job |> pushFrame calleeFrame)
     | ApiAction(blockId, actionType, args) -> emitApiAction job blockId actionType args
 
 /// Stops the free-transition walk for an info-read block (§8/§14, Milestone 9/Part
@@ -736,3 +781,20 @@ let step (clock: Clock) (job: JobState) (event: SchedulerEvent) : JobState * Eff
 /// deserializing `execution_state_json` per row.
 let currentBlockId (job: JobState) : string option =
     currentInstruction job |> Option.map blockIdOf
+
+/// One (scope, blockId option) pair per stack frame, deepest-first (§9d/§14,
+/// Milestone 9/Part E) — always one entry per frame, even one whose position is
+/// already exhausted (e.g. a custom block whose last instruction is a `Wait`/
+/// `ApiAction` that advances its own position *before* suspending, per the
+/// existing "advance past the block that started the wait" pattern shared with
+/// `NavigateOk`/`ExtractOk` — the frame is still genuinely on the stack, just with
+/// nothing left to highlight inside it). Dropping such frames (as an earlier,
+/// `List.choose`-based version of this function did) would make a call's own
+/// "innen aktiv" state undetectable in exactly this common case, since the caller
+/// frame would then look like the only frame left. `scope` is `"main"` for the
+/// program's own frame, or the custom block's id for a call frame — the client uses
+/// it to decide which open Blockly workspace (program vs. a specific workshop) a
+/// given entry's `blockId` belongs to.
+let blockIdPerFrame (job: JobState) : (string * string option) list =
+    job.stack
+    |> List.map (fun frame -> frame.scope, currentInstructionOf job.program frame |> Option.map blockIdOf)

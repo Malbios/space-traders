@@ -163,12 +163,22 @@ function registerBlock(spec: CatalogBlockSpec, colour: number, asValue: boolean)
 }
 
 function registerAccessorBlock(spec: AccessorBlockSpec): void {
-    Blockly.Blocks[spec.type] = {
+    registerDynamicAccessorBlock(spec.type, spec.label, spec.tooltip);
+}
+
+/**
+ * Registers a single `TARGET`-input/`asValue: true` accessor block, exactly the same
+ * shape the fixed §8 accessor blocks above use. Exported for Milestone 9/Part C's
+ * per-custom-block structured-output accessors (`accessor_<customBlockId>_<field>`),
+ * which are generated dynamically per block rather than declared statically here.
+ */
+export function registerDynamicAccessorBlock(blockType: string, label: string, tooltip: string): void {
+    Blockly.Blocks[blockType] = {
         init: function (this: Blockly.Block) {
-            this.appendValueInput("TARGET").appendField(spec.label);
+            this.appendValueInput("TARGET").appendField(label);
             this.setOutput(true, null);
             this.setColour(ACCESSOR_COLOUR);
-            this.setTooltip(spec.tooltip);
+            this.setTooltip(tooltip);
         },
     };
 }

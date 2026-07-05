@@ -1,7 +1,14 @@
 import * as Blockly from "blockly/core";
 import "blockly/blocks";
 import { applyGermanLocale } from "./i18n-locale";
-import { registerTrivialBlocks, registerDefinitionShellBlock, registerCallerBlock, readSignature, CustomBlockSignature } from "./blocks";
+import {
+    registerTrivialBlocks,
+    registerDefinitionShellBlock,
+    registerCallerBlock,
+    registerSignature,
+    registerCustomBlockAccessors,
+    readSignature,
+} from "./blocks";
 import { registerCatalogBlocks } from "./blocks-catalog";
 import { buildCatalogToolbox } from "./toolbox-de";
 import { serializeWorkspace as serialize, loadWorkspace as load } from "./workspace-serialization";
@@ -15,11 +22,14 @@ import { serializeWorkspace as serialize, loadWorkspace as load } from "./worksp
 applyGermanLocale();
 registerTrivialBlocks();
 registerDefinitionShellBlock();
+registerCallerBlock();
 registerCatalogBlocks();
 
 const workspaces = new Map<string, Blockly.WorkspaceSvg>();
-/** Per-workspace list of generated custom-block caller types currently injected into that workspace's "Eigene Blöcke" category (§9b). */
-const callerBlockTypesByContainer = new Map<string, string[]>();
+/** Per-workspace list of custom-block ids currently injected into that workspace's "Eigene Blöcke" category, one generic `callCustomBlock` toolbox entry each (§9b). */
+const customBlockIdsByContainer = new Map<string, string[]>();
+/** Per-workspace list of dynamically generated structured-output accessor block types currently injected into "Zugriffe" (§9 Outputs, Milestone 9/Part C). */
+const dynamicAccessorTypesByContainer = new Map<string, string[]>();
 /** Debug-only: records which event classes reached each workspace's change listener, so Milestone 0's "fires on meaningful events only, not every drag frame" check can be verified from the console/tests. Not part of the documented §3a surface. */
 const changeLogByContainer = new Map<string, string[]>();
 
@@ -33,8 +43,9 @@ function requireWorkspace(containerId: string): Blockly.WorkspaceSvg {
 
 function refreshToolbox(containerId: string): void {
     const ws = requireWorkspace(containerId);
-    const callerTypes = callerBlockTypesByContainer.get(containerId) ?? [];
-    ws.updateToolbox(buildCatalogToolbox(callerTypes) as Blockly.utils.toolbox.ToolboxDefinition);
+    const customBlockIds = customBlockIdsByContainer.get(containerId) ?? [];
+    const dynamicAccessorTypes = dynamicAccessorTypesByContainer.get(containerId) ?? [];
+    ws.updateToolbox(buildCatalogToolbox(customBlockIds, dynamicAccessorTypes) as Blockly.utils.toolbox.ToolboxDefinition);
 }
 
 function initWorkspace(containerId: string, readOnly: boolean): void {
@@ -45,10 +56,11 @@ function initWorkspace(containerId: string, readOnly: boolean): void {
     if (!el) {
         throw new Error(`No element with id "${containerId}" to inject a Blockly workspace into.`);
     }
-    callerBlockTypesByContainer.set(containerId, []);
+    customBlockIdsByContainer.set(containerId, []);
+    dynamicAccessorTypesByContainer.set(containerId, []);
     changeLogByContainer.set(containerId, []);
     const ws = Blockly.inject(el, {
-        toolbox: buildCatalogToolbox([]) as Blockly.utils.toolbox.ToolboxDefinition,
+        toolbox: buildCatalogToolbox([], []) as Blockly.utils.toolbox.ToolboxDefinition,
         readOnly,
     });
     workspaces.set(containerId, ws);
@@ -60,7 +72,8 @@ function destroyWorkspace(containerId: string): void {
     if (ws) {
         ws.dispose();
         workspaces.delete(containerId);
-        callerBlockTypesByContainer.delete(containerId);
+        customBlockIdsByContainer.delete(containerId);
+        dynamicAccessorTypesByContainer.delete(containerId);
         changeLogByContainer.delete(containerId);
     }
 }
@@ -138,11 +151,12 @@ async function simulateRun(containerId: string): Promise<void> {
 let nextCustomBlockSeq = 1;
 
 /**
- * Milestone 0 Part C mechanics spike (§9): reads the signature off the one
- * `sk_custom_block_def` block living in the workshop workspace `defContainerId`,
- * generates/regenerates its caller block type, and injects that caller into the
- * "Eigene Blöcke" category of `targetContainerId` (a *different* workspace) —
- * proving cross-workspace toolbox updates work before Milestone 9 builds on it.
+ * Reads the signature off the one `sk_custom_block_def` block living in the workshop
+ * workspace `defContainerId` (§9b/§9c), caches it (so the generic `callCustomBlock`
+ * caller type can rebuild its shape per-instance), registers any structured-output
+ * accessor blocks it needs (§9 Outputs), and injects both into `targetContainerId`'s
+ * toolbox (a *different* workspace — a program, or another block's workshop, since
+ * blocks can call blocks).
  */
 function publishCustomBlockSignature(defContainerId: string, targetContainerId: string, customBlockId: string | null): string {
     const defWs = requireWorkspace(defContainerId);
@@ -151,13 +165,21 @@ function publishCustomBlockSignature(defContainerId: string, targetContainerId: 
         throw new Error(`No "sk_custom_block_def" block found in workspace "${defContainerId}".`);
     }
     const id = customBlockId ?? `spike-${nextCustomBlockSeq++}`;
-    const signature: CustomBlockSignature = readSignature(defBlock, id);
-    const blockType = registerCallerBlock(signature);
+    const signature = readSignature(defBlock, id);
+    registerSignature(signature);
+    const accessorTypes = registerCustomBlockAccessors(signature);
 
-    const existing = callerBlockTypesByContainer.get(targetContainerId) ?? [];
-    if (!existing.includes(blockType)) {
-        callerBlockTypesByContainer.set(targetContainerId, [...existing, blockType]);
+    const existingIds = customBlockIdsByContainer.get(targetContainerId) ?? [];
+    if (!existingIds.includes(id)) {
+        customBlockIdsByContainer.set(targetContainerId, [...existingIds, id]);
     }
+
+    const existingAccessors = dynamicAccessorTypesByContainer.get(targetContainerId) ?? [];
+    const newAccessors = accessorTypes.filter((t) => !existingAccessors.includes(t));
+    if (newAccessors.length > 0) {
+        dynamicAccessorTypesByContainer.set(targetContainerId, [...existingAccessors, ...newAccessors]);
+    }
+
     refreshToolbox(targetContainerId);
     return id;
 }

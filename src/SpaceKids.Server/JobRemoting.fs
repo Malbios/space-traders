@@ -32,7 +32,8 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
         |> Option.map (fun job ->
             { status = JobRunner.statusName job.status
               statusDetail = statusDetail job.status
-              log = job.log })
+              log = job.log
+              blockIdPerFrame = Step.blockIdPerFrame job })
 
     let toSummaryDto (job: JobState) : JobSummaryDto =
         { jobId = job.jobId
@@ -46,6 +47,15 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
             let! stored = Persistence.AgentRepository.loadStoredAgent dbPath
             return stored |> Option.map snd
         }
+
+    /// The `lookup: string -> CustomBlockDefinition option` `Compiler.compileWorkspace`
+    /// expects is synchronous by design (Milestone 4 built it that way deliberately, so
+    /// `SpaceKids.Core` never depends on persistence or async plumbing) — bridging to
+    /// the repository's `Async` here, rather than making Core's compiler async, keeps
+    /// that boundary intact. A local SQLite read is fast enough that blocking the
+    /// request thread for it is an acceptable, deliberate tradeoff.
+    let customBlockLookup (customBlockId: string) : SpaceKids.Core.Dsl.CustomBlockDefinition option =
+        Persistence.CustomBlockRepository.load dbPath customBlockId |> Async.RunSynchronously
 
     override this.Handler =
         {
@@ -68,12 +78,19 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                                     client.GetShip(token, shipSymbol))
 
                             let! agent = RequestQueue.enqueue dbPath 1 "getAgent" (fun () -> client.GetAgent(token))
-                            // Custom-block calls aren't in scope this milestone (§9's
-                            // real mechanism is Milestone 9) — a lookup that always
-                            // misses is correct here; the compiler/validator already
-                            // reject any program that references one.
+
+                            // Milestone 9/Part B: `customBlockLookup` resolves real,
+                            // persisted custom-block definitions now. Note:
+                            // `Validator.revalidateAgainstCurrentDefinitions` (the §9
+                            // structural mismatch check) is deliberately *not* called
+                            // here — its own doc comment says it's "only meaningful
+                            // when re-checking an already-compiled program later";
+                            // since compile and run happen in this same request
+                            // against the same live definitions, nothing could have
+                            // drifted yet, so calling it here would always be a no-op.
+                            // Its real call site arrives with a saved-program library.
                             let compiled =
-                                SpaceKids.Core.Dsl.Compiler.compileWorkspace (fun _ -> None) workspaceJson
+                                SpaceKids.Core.Dsl.Compiler.compileWorkspace customBlockLookup workspaceJson
                                 |> Result.bind (fun program ->
                                     match SpaceKids.Core.Dsl.Validator.validate program with
                                     | [] -> Ok program

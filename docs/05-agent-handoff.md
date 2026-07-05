@@ -267,34 +267,35 @@ history.
   drops off the dashboard after a restart — there's no job-history browser yet.
 - Ship-lock lease duration (90s) and the scheduler's tick/sweep intervals (1s/60s) are
   hardcoded constants in `JobRunner.fs`/`JobScheduler.fs`, not configurable.
-- `JobRunner` only ever has one `Frame` per job (`scope = "main"`) — `CallCustomBlock`
-  is one of the block types that fails cleanly above. The `Frame`/`PathEntry`/
-  `LoopState` shapes support real nested calls already (Milestone 9 scope) so this
-  isn't expected to need restructuring, only extending.
+- `CallCustomBlock` executes as a real call (Milestone 9/Part A): `JobState.stack`
+  pushes/pops a `Frame` per call, with arguments bound and the return value
+  evaluated against the callee's own locals once its position is exhausted.
 - The market fetched is always the agent's own headquarters waypoint, not discovered via
   waypoint traits — a documented simplifying assumption (see `docs/decisions.md`), fine
   for most starting waypoints but a real limitation otherwise.
-- Catalog block inputs are plain value sockets (accept any block), not typed
-  (Schiff/Wegpunkt/Ware/...) — typed sockets are Milestone 9 scope; the 26 new
-  accessor blocks (Milestone 9/Part B) are likewise untyped value sockets, so nothing
-  stops connecting the wrong record type into an accessor's `TARGET` input other than
-  a German runtime error message once it actually runs.
+- Catalog block inputs are still plain value sockets (accept any block), not typed —
+  same for the 26 §8 accessor blocks. Custom-block *inputs* (Milestone 9/Part C) do
+  have a typed mutator (Schiff/Wegpunkt/Ware/Anzahl/Preisgrenze/Liste), but it's a
+  text label only, not real Blockly type-checking — nothing stops plugging the wrong
+  kind of block into either sort of socket other than a German runtime error message
+  once it actually runs.
 - `docs/06-localization.md` and the other docs listed in `plan.md` §17 don't exist yet —
   they're created as their milestones start.
-- Custom-block call compilation uses a placeholder `callCustomBlock`/`customBlockId`
-  convention invented for Milestone 4's own testing needs, not the Milestone 0 spike's
-  `sk_call_<id>` naming — Milestone 9 defines the real mechanism when it builds the
-  actual Blockwerkstatt UI (see `docs/decisions.md`).
-- Custom-block argument type-checking is a shallow literal-only heuristic (`Expr` has no
-  static type system) — revisit once Milestone 9's real typed inputs exist.
+- The `callCustomBlock`/`customBlockId` convention Milestone 4 invented for its own
+  testing needs turned out to be exactly the real mechanism — Milestone 9/Part C's
+  client-side caller block was built to match it, not the other way around.
+- Custom-block argument type-checking is still a shallow literal-only heuristic
+  (`Expr` has no static type system) — Milestone 9/Part C's typed-input mutator is a
+  text label only, not enforcement (see the bullet above on plain value sockets).
 - `lists_getIndex`/`lists_setIndex` only support the common "get/append at a plain index"
   shape — other WHERE modes (FROM_END/FIRST/LAST/RANDOM) aren't compiled yet.
 
 ## Next tasks
 
-1. Milestone 8 onward — see `plan.md` §19. Milestone 8 ("first missions") builds the
-   guided mission flow and progress tracking on top of the now-real, persistent
-   scheduler — no more scheduler-shell rework expected before then.
+1. Milestone 8/10 onward — see `plan.md` §19. Milestone 9 (custom reusable blocks,
+   §9) is done: real call-stack execution, persistence, typed inputs/structured
+   outputs, the Blockwerkstatt UI, and cross-view highlighting. Milestone 8 ("first
+   missions") remains deliberately skipped (not the user's current priority).
 
 ## Commands
 
@@ -331,9 +332,10 @@ Custom-block definitions live in the Blockwerkstatt and the
 Inline DSL expressions are pure; every effectful value is its own
   instruction with a resultTarget.
 Custom blocks execute as real function calls with a call stack, not
-  inlined at compile time. JobState is stack-based with path positions
-  and per-frame locals from Milestone 7 onward, even before
-  Milestone 9 introduces actual calls.
+  inlined at compile time. JobState has been stack-based with path
+  positions and per-frame locals since Milestone 7 (forward-designed
+  for this); Milestone 9/Part A made CallCustomBlock actually
+  push/pop a frame.
 A program with an active job is read-only (watch mode); editing
   requires pausing or stopping the job.
 Custom block versioning is intentionally not fully enforced yet —

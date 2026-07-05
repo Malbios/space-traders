@@ -113,6 +113,32 @@ See `docs/05-agent-handoff.md` for full context on each of these.
       ordering.
 - [x] All 20 SpaceTraders catalog blocks now actually run — 86 tests total, all green.
 
+## Milestone 9: Custom reusable blocks (§9) — done
+
+(This is plan.md's actual, numbered Milestone 9 — the section above, "finish the
+block catalog," was informally called that at the time too; see `docs/decisions.md`
+for the naming note.)
+
+- [x] Part A — real call-stack execution: `JobState.stack` push/pop on
+      `CallCustomBlock`, argument binding, `returnExpr` evaluated into the caller's
+      `resultTarget`, a suspending call keeps the caller frame on the stack.
+- [x] Part B — `CustomBlockRepository.fs` (append-only versioning, delete-usage
+      refusal), `JobRemoting.fs`'s `lookup` wired to real persistence.
+- [x] Part C — the real typed-input mutator (6 types), one generic `callCustomBlock`
+      caller block type, one generic `sk_param_get` getter, structured-record
+      outputs (`Expr.RecordLiteral`, `sk_build_record`, dynamic accessor blocks).
+- [x] Part D — the Blockwerkstatt UI: block library (create/open/rename/delete) +
+      workshop view, wired to a new `CustomBlockRemoting.fs`.
+- [x] Part E — `Step.blockIdPerFrame`, an "innen aktiv" indicator + "Block öffnen"
+      affordance on the program view while a call is in flight, a per-pilot
+      watch/poll loop.
+- [x] Found and fixed a real bug during Part E's own live verification: a stack
+      frame whose position had already advanced past its own last instruction (a
+      common case, not an edge one — several existing suspend paths do this
+      deliberately) was silently dropped, making "innen aktiv" undetectable in
+      exactly that case.
+- [x] 101 tests total, all green; live Playwright verification after Parts C, D, E.
+
 ## Later milestones
 
 Milestone 8 ("first missions") deliberately skipped — explicit user feedback that
