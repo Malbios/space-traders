@@ -197,7 +197,6 @@ market/shipyard on demand.
 
 ## Later milestones
 
-Milestone 8 ("first missions") deliberately skipped — explicit user feedback that
-guided-mission/pedagogy work isn't the current priority; practical tool capability
-(finishing the block catalog, then custom blocks) is. See `plan.md` §19 for the full
-milestone list (8, 10) and `docs/decisions.md` for the skip rationale.
+Milestone 8 ("first missions") was removed from the roadmap entirely — not deferred,
+gone. See `docs/decisions.md` for the removal rationale. See `plan.md` §19 for the
+remaining milestone list.

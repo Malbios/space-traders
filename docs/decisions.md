@@ -1097,3 +1097,30 @@ buttons (no matching traits); Part D proved correct circle/triangle counts, that
 clicking either opens the right inspector, that the map is absent before login,
 and that a navigating ship's triangle visibly moves between two polls with no
 manual refresh. Zero console errors throughout.
+
+## Milestone 8 ("first missions") removed from the roadmap
+
+Every prior mention of Milestone 8 in this project's docs framed it as
+"deliberately skipped for now" — a deferral, implying it might still happen
+later once guided-mission/pedagogy work became the priority. The user then
+explicitly asked to remove it outright, not just leave it parked. Removed both
+the Milestone 8 roadmap entry and its backing design section (§16 "Missions
+and progression" — the mission list, teaching mechanics, "verified via API
+state deltas, not program shape" design notes) from `plan.md` entirely, per
+the user's own call: if missions aren't happening, the design notes feeding
+them are dead weight too, not worth keeping as orphaned reference material.
+
+This is a different kind of change than every other plan.md deviation recorded
+in this file — those were all "we checked and the plan's assumption didn't
+hold" (the insufficient-credits error, for instance). This one is a plain
+scope decision: the user doesn't want guided missions in this project, full
+stop, not "we found out something that changes whether it's needed."
+
+`plan.md`'s section numbering keeps the gap (§15 → §17) rather than
+renumbering everything after — nothing else in the document points forward to
+a section by number past §15, so renumbering would have touched a lot of
+unrelated headers for no functional benefit. Milestone *numbers* were never
+touched either way — "Milestone 9"/"Milestone 10" are load-bearing identifiers
+already used throughout this file, `TODO.md`, `00-project-map.md`, and git
+history for real, already-shipped work; renumbering them to close the gap
+would have been actively harmful, not tidying.

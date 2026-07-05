@@ -317,18 +317,22 @@ history.
 
 ## Next tasks
 
-1. Milestone 8 onward — see `plan.md` §19. Milestones 9 (custom reusable blocks,
-   §9) and 10 (fleet mode) are both done. Milestone 9: real call-stack execution,
-   persistence, typed inputs/structured outputs, the Blockwerkstatt UI, and
-   cross-view highlighting. Milestone 10: queue priority differentiation
-   (background vs. interactive), a fleet-level Logbuch, and a test proving
-   concurrent-pilot reconciliation doesn't cross-contaminate. The entity
-   inspector + visual system map (plan.md's own "later idea," grown into a real
-   drill-down feature per the user's own redirect) is also done: waypoint
-   traits, on-demand market/shipyard, a ship/waypoint inspector with full
-   cross-navigation, and an SVG map with clickable, auto-refreshing markers.
-   Milestone 8 ("first missions") remains deliberately skipped (not the user's
-   current priority).
+1. plan.md's roadmap (§19) has nothing outstanding: Milestones 9 (custom
+   reusable blocks, §9) and 10 (fleet mode) are both done. Milestone 9: real
+   call-stack execution, persistence, typed inputs/structured outputs, the
+   Blockwerkstatt UI, and cross-view highlighting. Milestone 10: queue priority
+   differentiation (background vs. interactive), a fleet-level Logbuch, and a
+   test proving concurrent-pilot reconciliation doesn't cross-contaminate. The
+   entity inspector + visual system map (plan.md's own "later idea," grown into
+   a real drill-down feature per the user's own redirect) is also done:
+   waypoint traits, on-demand market/shipyard, a ship/waypoint inspector with
+   full cross-navigation, and an SVG map with clickable, auto-refreshing
+   markers. Milestone 8 ("first missions") was removed from the roadmap
+   entirely, not deferred — see `docs/decisions.md`. Any further work now comes
+   from known limitations logged elsewhere in this doc (e.g. no saved/named
+   multiple-program library yet — the single shared Blockly workspace is what's
+   currently blocking per-program watch mode and the real structural-mismatch
+   check's actual call site), not an existing roadmap item.
 
 ## Commands
 

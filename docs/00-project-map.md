@@ -161,8 +161,8 @@ structure. See `plan.md` §19 for what each milestone covers.
   into flat German records, and 26 new accessor blocks (a 7th "Zugriffe" toolbox
   category). See `docs/decisions.md` for the OpenAPI-spec surprises and a real
   pre-existing log-ordering bug (Milestone 6) found and fixed via live verification.
-  Milestone 8 ("first missions") deliberately skipped for now — not the user's
-  current priority (see `docs/decisions.md`/TODO.md).
+  Milestone 8 ("first missions") was later removed from the roadmap entirely
+  (see `docs/decisions.md`/TODO.md) — not deferred, gone.
 - **Milestone 9 (custom reusable blocks, §9): done.** Real function-call semantics,
   built in five parts. Part A: `JobState.stack` (a `Frame list`, forward-designed
   since Milestone 6) now genuinely pushes/pops on `CallCustomBlock`, binding

@@ -1303,76 +1303,6 @@ Das Schiff wartet noch 18 Sekunden, bevor es wieder abbauen kann.
 Der Marktplatz verkauft diese Ware nicht.
 ```
 
-## 16. Missions and progression
-
-Missions teach blocks gradually. They should guide without solving the program.
-
-Mission completion is verified against API state, not against the shape of the child's program: "deliver 8 copper" is checked by observing the contract's delivery progress (or cargo/credits state for trading missions) via the same queued reads everything else uses. Requiring player-created logic is enforced by what the missions *teach and unlock*, not by inspecting block arrangements — inspecting programs for "the right solution" would fight the whole premise that strategy is the player's.
-
-### Mission 1: Der erste Flug
-
-Teach:
-
-```txt
-Wähle Schiff
-Fliege zu Wegpunkt
-Gehe in Umlaufbahn
-```
-
-### Mission 2: Erz für die Station
-
-Teach:
-
-```txt
-Baue Rohstoffe ab
-Wiederhole
-Prüfe Fracht
-```
-
-### Mission 3: Der erste Handel
-
-Teach:
-
-```txt
-Docke an
-Hole Marktdaten
-Kaufe Ware
-Verkaufe Ware
-Credits prüfen
-```
-
-### Mission 4: Ein Auftrag
-
-Teach:
-
-```txt
-Nimm Auftrag an
-Hole Auftragsdaten
-Liefere Fracht
-Wenn
-```
-
-### Mission 5: Eigene Blöcke
-
-Teach:
-
-```txt
-Erstelle eigenen Block (öffnet die Blockwerkstatt)
-Baue die Logik hinein
-Definiere Eingaben
-Nutze eigenen Block in einem Programm
-```
-
-### Mission 6: Zwei Piloten
-
-Teach:
-
-```txt
-Starte Hintergrundprogramm
-Überwache Pilot
-Pausiere Programm
-```
-
 ## 17. Repository structure
 
 ```txt
@@ -1692,21 +1622,6 @@ Done when:
 A program can continue safely while the player uses another screen or
 returns later; a job stopped mid-loop overnight resumes correctly; and
 a running program cannot be edited out from under its pilot.
-```
-
-### Milestone 8: First missions
-
-* Add guided mission flow.
-* Add mission progress, verified via API state deltas (contract delivery counts, cargo, credits — §16).
-* Add rewards.
-* Add German explanations.
-* Ensure missions require player-created logic through what they teach and unlock, not by inspecting the child's program shape (§16).
-
-Done when:
-
-```txt
-A child can complete mining, trading, and delivery missions with
-primitive blocks.
 ```
 
 ### Milestone 9: Custom blocks
