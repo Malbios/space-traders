@@ -162,6 +162,11 @@ let rec private compileExpr (state: CompileState) (hoisted: ResizeArray<Instruct
     | "logic_compare" ->
         let op = fieldString block "OP" |> Option.defaultValue "EQ"
         Comparison(op, compileInput state hoisted block "A", compileInput state hoisted block "B")
+    | "logic_boolean" -> Literal(BoolLit(fieldString block "BOOL" = Some "TRUE"))
+    | "logic_operation" ->
+        let op = fieldString block "OP" |> Option.defaultValue "AND"
+        LogicalOp(op, compileInput state hoisted block "A", compileInput state hoisted block "B")
+    | "logic_negate" -> LogicalNot(compileInput state hoisted block "BOOL")
     | "math_arithmetic" ->
         let op = fieldString block "OP" |> Option.defaultValue "ADD"
         Arithmetic(op, compileInput state hoisted block "A", compileInput state hoisted block "B")

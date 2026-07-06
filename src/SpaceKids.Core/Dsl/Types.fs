@@ -21,6 +21,8 @@ type Expr =
     | Accessor of field: string * target: Expr
     | Arithmetic of op: string * left: Expr * right: Expr
     | Comparison of op: string * left: Expr * right: Expr
+    | LogicalOp of op: string * left: Expr * right: Expr
+    | LogicalNot of operand: Expr
     | ListLiteral of items: Expr list
     | ListGet of list: Expr * index: Expr
     /// A custom block's structured-output "build record" block (§9 Outputs,

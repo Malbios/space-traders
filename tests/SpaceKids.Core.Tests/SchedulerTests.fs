@@ -104,6 +104,47 @@ let ``if with no matching branch and no else just advances`` () =
     Assert.Equal(Completed, job'.status)
     Assert.Equal<string list>([ "reached" ], job'.log)
 
+[<Fact>]
+let ``LogicalOp AND/OR and LogicalNot evaluate correctly`` () =
+    let clock = fakeClock (ref epoch)
+
+    let instructions =
+        [ If(
+              "b1",
+              [ (LogicalOp("AND", Literal(BoolLit true), LogicalNot(Literal(BoolLit false))),
+                 [ ShowMessage("b2", Literal(StringLit "and-true")) ])
+                (LogicalOp("OR", Literal(BoolLit false), Literal(BoolLit true)), [ ShowMessage("b3", Literal(StringLit "unreachable")) ]) ],
+              None
+          ) ]
+
+    let job = mkJob instructions None
+    let job', _ = Step.step clock job WakeTick
+
+    Assert.Equal(Completed, job'.status)
+    Assert.Equal<string list>([ "and-true" ], job'.log)
+
+[<Fact>]
+let ``LogicalOp AND short-circuits: a false left operand never evaluates the right`` () =
+    let clock = fakeClock (ref epoch)
+
+    // If short-circuiting were broken, evaluating the unresolved `VariableRef` on the
+    // right would throw ("Unbekannter Name zur Laufzeit"), failing the job instead of
+    // completing it.
+    let instructions =
+        [ If(
+              "b1",
+              [ (LogicalOp("AND", Literal(BoolLit false), VariableRef "undefined"),
+                 [ ShowMessage("b2", Literal(StringLit "unreachable")) ]) ],
+              None
+          )
+          ShowMessage("b3", Literal(StringLit "reached")) ]
+
+    let job = mkJob instructions None
+    let job', _ = Step.step clock job WakeTick
+
+    Assert.Equal(Completed, job'.status)
+    Assert.Equal<string list>([ "reached" ], job'.log)
+
 // --- Loop counter persistence across steps ------------------------------------------
 
 [<Fact>]

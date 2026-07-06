@@ -21,6 +21,8 @@ let rec private exprRefs (expr: Expr) : string list =
     | Accessor(_, target) -> exprRefs target
     | Arithmetic(_, l, r) -> exprRefs l @ exprRefs r
     | Comparison(_, l, r) -> exprRefs l @ exprRefs r
+    | LogicalOp(_, l, r) -> exprRefs l @ exprRefs r
+    | LogicalNot operand -> exprRefs operand
     | ListLiteral items -> items |> List.collect exprRefs
     | RecordLiteral fields -> fields |> List.collect (snd >> exprRefs)
     | ListGet(list, index) -> exprRefs list @ exprRefs index

@@ -329,13 +329,22 @@ program with a user, not yet planned into a milestone.
       program can filter safely before ever calling `getShipyard`/
       `getMarket`. Verified live with a real forEach-over-every-waypoint
       program.
-- [ ] No `true`/`false` (`logic_boolean`) block in the toolbox
-      (`toolbox-de.ts`'s "Programmierung" category) — a program needing a
-      boolean flag has to fake it with a Number variable (0/1) compared via
-      `logic_compare`. Add the stock `logic_boolean` block.
-- [ ] Do a pass over the rest of the stock-Blockly/programming category for
-      other obviously-missing block kinds (found while looking for
-      `logic_boolean`) — no such audit has been done since Milestone 3.
+- [x] No `true`/`false` (`logic_boolean`) block in the toolbox — added
+      (`Compiler.fs`: `Literal(BoolLit ...)`, plus a `toolbox-de.ts` entry).
+- [x] Audited the rest of the stock-Blockly/programming category for other
+      obviously-missing block kinds — added `logic_operation` (AND/OR) and
+      `logic_negate` (NOT), both fully wired (`Types.fs`'s `Expr`, `Eval.fs`
+      short-circuiting, `Compiler.fs`, toolbox). See
+      `docs/04-block-catalog.md`'s "Additional stock blocks" section.
+- [ ] `controls_flow_statements` (break/continue) — found during the above
+      audit and a real, concretely-felt gap (no way to stop a `forEach`
+      early once a "found" condition is hit, today faked with a boolean
+      flag variable checked at the top of every loop body). Not a quick
+      toolbox add: needs loop-exit semantics threaded through `Step.fs`'s
+      `ForEach`/`WhileUntil`/`Repeat` handling in the pure scheduler core
+      (no `Break`/`Continue` `Instruction` case exists today), so it
+      deserves its own planned pass rather than being folded into a
+      "missing block" audit.
 - [ ] Make the system map (`viewSystemMap`, Galaxie tab) zoomable — currently
       a fixed 400x400 SVG with no pan/zoom controls.
 - [ ] Ship selection is mandatory to run a program in the Piloten tab, even

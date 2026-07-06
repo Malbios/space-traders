@@ -106,6 +106,50 @@ let ``compiles nested controls_if, controls_repeat_ext, and controls_forEach`` (
         )
 
 [<Fact>]
+let ``compiles logic_boolean to a BoolLit literal`` () =
+    let json =
+        """
+        { "blocks": { "languageVersion": 0, "blocks": [
+            { "type": "variables_set", "id": "b1", "fields": { "VAR": "Flag" }, "inputs": {
+                "VALUE": { "block": { "type": "logic_boolean", "id": "b2", "fields": { "BOOL": "TRUE" } } }
+            } }
+        ] } }
+        """
+
+    match Compiler.compileWorkspace De noCustomBlocks json with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        Assert.Equal<Instruction list>([ SetVariable("b1", "Flag", Literal(BoolLit true)) ], program.instructions)
+
+[<Fact>]
+let ``compiles logic_operation and logic_negate`` () =
+    let json =
+        """
+        { "blocks": { "languageVersion": 0, "blocks": [
+            { "type": "variables_set", "id": "b1", "fields": { "VAR": "Flag" }, "inputs": {
+                "VALUE": { "block": { "type": "logic_operation", "id": "b2", "fields": { "OP": "OR" }, "inputs": {
+                    "A": { "block": { "type": "logic_boolean", "id": "b2a", "fields": { "BOOL": "FALSE" } } },
+                    "B": { "block": { "type": "logic_negate", "id": "b2b", "inputs": {
+                        "BOOL": { "block": { "type": "logic_boolean", "id": "b2c", "fields": { "BOOL": "FALSE" } } }
+                    } } }
+                } } }
+            } }
+        ] } }
+        """
+
+    match Compiler.compileWorkspace De noCustomBlocks json with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        Assert.Equal<Instruction list>(
+            [ SetVariable(
+                  "b1",
+                  "Flag",
+                  LogicalOp("OR", Literal(BoolLit false), LogicalNot(Literal(BoolLit false)))
+              ) ],
+            program.instructions
+        )
+
+[<Fact>]
 let ``rejects an unknown block type`` () =
     let json = """{ "blocks": { "languageVersion": 0, "blocks": [ { "type": "totally_unknown", "id": "b1" } ] } }"""
 

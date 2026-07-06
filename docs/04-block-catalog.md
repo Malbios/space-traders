@@ -263,6 +263,23 @@ No DSL instruction shapes are recorded here for the stock blocks — their compi
 DSL constructs (if/while/for/assignment) is generic control-flow compilation, not a
 catalog entry, and is Milestone 4 work.
 
+### Additional stock blocks beyond §6's original 14
+
+Added later (post-Milestone-3 audit) to close gaps found once real programs needed
+boolean logic beyond `logic_compare`:
+
+```txt
+Wahrheitswert (true/false) -> logic_boolean (Compiler.fs: Literal(BoolLit ...))
+Und/Oder                   -> logic_operation (Compiler.fs: LogicalOp(op, ...); Types.fs's
+                               Expr; Eval.fs short-circuits AND/OR like F#'s own &&/||)
+Nicht                      -> logic_negate (Compiler.fs: LogicalNot(...))
+```
+
+`controls_flow_statements` (break/continue) was also considered in that audit and found
+to be a real, felt gap (no way to stop a `forEach` early) but was **not** added — it
+needs loop-exit semantics threaded through `Step.fs`'s `ForEach`/`WhileUntil`/`Repeat`
+handling in the scheduler core, not just a new `Expr`/toolbox entry. See `TODO.md`.
+
 ## Datensätze und Zugriffsblöcke (records and accessor blocks, §8, Milestone 9/Part B)
 
 The 9 information blocks above return one of the "friendly structured records" below

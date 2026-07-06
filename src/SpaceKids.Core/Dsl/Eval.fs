@@ -75,6 +75,15 @@ let rec eval (locals: Map<string, Value>) (expr: Expr) : Value =
             | other -> failwith $"Unbekannter Rechenoperator: {other}"
 
         VNumber result
+    | LogicalOp(op, left, right) ->
+        let result =
+            match op with
+            | "AND" -> (eval locals left |> asBool) && (eval locals right |> asBool)
+            | "OR" -> (eval locals left |> asBool) || (eval locals right |> asBool)
+            | other -> failwith $"Unbekannter Logikoperator: {other}"
+
+        VBool result
+    | LogicalNot operand -> VBool(not (eval locals operand |> asBool))
     | Comparison(op, left, right) ->
         let l = eval locals left
         let r = eval locals right
