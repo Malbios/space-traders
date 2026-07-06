@@ -7,6 +7,7 @@
     <Project Path="src/SpaceKids.SpaceTraders/SpaceKids.SpaceTraders.fsproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/SpaceKids.Client.Tests/SpaceKids.Client.Tests.fsproj" />
     <Project Path="tests/SpaceKids.Core.Tests/SpaceKids.Core.Tests.fsproj" />
     <Project Path="tests/SpaceKids.IntegrationTests/SpaceKids.IntegrationTests.fsproj" />
     <Project Path="tests/SpaceKids.Server.Tests/SpaceKids.Server.Tests.fsproj" />
