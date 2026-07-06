@@ -104,10 +104,20 @@ let private readAllContracts () : Contract list = lock shipLock (fun () -> contr
 /// two seeded ships, reset alongside them between tests.
 let mutable private nextShipNumber = 3
 
+/// Mirrors the real API's "priced market/shipyard data only shows up when a ship
+/// of yours is physically there" behavior (§8, `SpaceTraders/Types.fs:144-162`) —
+/// both seeded ships live at `headquarters`, so this is only ever true there.
+let private hasShipAt (waypointSymbol: string) : bool =
+    readAllShips () |> List.exists (fun s -> s.nav.waypointSymbol = waypointSymbol)
+
 let private shipyardFixture (waypointSymbol: string) : Shipyard =
     { symbol = waypointSymbol
       shipTypes = [ { ``type`` = "SHIP_MINING_DRONE" } ]
-      ships = [ { ``type`` = "SHIP_MINING_DRONE"; purchasePrice = 50000 } ] }
+      ships =
+        if hasShipAt waypointSymbol then
+            [ { ``type`` = "SHIP_MINING_DRONE"; purchasePrice = 50000 } ]
+        else
+            [] }
 
 let private waypoints =
     [ { symbol = headquarters
@@ -126,7 +136,18 @@ let private waypoints =
         traits =
           [ { symbol = "COMMON_METAL_DEPOSITS"
               name = "Häufige Metallvorkommen"
-              description = "Hier lassen sich häufige Metalle abbauen." } ] } ]
+              description = "Hier lassen sich häufige Metalle abbauen." } ] }
+      /// Same MARKETPLACE+SHIPYARD traits as `headquarters`, but no ship is ever
+      /// seeded here — the "no ship present" counterpart to `headquarters`, so both
+      /// halves of the real API's ship-presence-gated pricing are reachable.
+      { symbol = "X1-TEST-C3"
+        ``type`` = "PLANET"
+        systemSymbol = systemSymbol
+        x = -6
+        y = 4
+        traits =
+          [ { symbol = "MARKETPLACE"; name = "Marktplatz"; description = "Ein Ort zum Handeln." }
+            { symbol = "SHIPYARD"; name = "Werft"; description = "Hier können Schiffe gekauft werden." } ] } ]
 
 /// Mirrors the real API: a waypoint without the matching trait 404s rather than
 /// answering with fixture data regardless — needed so the entity inspector's
@@ -138,16 +159,19 @@ let private hasTrait (waypointSymbol: string) (traitSymbol: string) : bool =
     |> Option.map (fun w -> w.traits |> List.exists (fun t -> t.symbol = traitSymbol))
     |> Option.defaultValue false
 
-let private market =
-    { symbol = headquarters
+let private marketFixture (waypointSymbol: string) : Market =
+    { symbol = waypointSymbol
       exports = [ { symbol = "FOOD"; name = "Food" } ]
       imports = [ { symbol = "FUEL"; name = "Fuel" } ]
       exchange = [ { symbol = "IRON"; name = "Iron" } ]
       tradeGoods =
-        Some
-            [ { symbol = "FOOD"; purchasePrice = 8; sellPrice = 12 }
-              { symbol = "FUEL"; purchasePrice = 5; sellPrice = 9 }
-              { symbol = "IRON"; purchasePrice = 10; sellPrice = 10 } ] }
+        if hasShipAt waypointSymbol then
+            Some
+                [ { symbol = "FOOD"; purchasePrice = 8; sellPrice = 12 }
+                  { symbol = "FUEL"; purchasePrice = 5; sellPrice = 9 }
+                  { symbol = "IRON"; purchasePrice = 10; sellPrice = 10 } ]
+        else
+            None }
 
 let private authorized (ctx: HttpContext) : bool =
     let header = ctx.Request.Headers.Authorization.ToString()
@@ -347,7 +371,7 @@ let configureApp (app: WebApplication) =
                                 let waypointSymbol = routeWaypointSymbol ctx
 
                                 if hasTrait waypointSymbol "MARKETPLACE" then
-                                    return ok market
+                                    return ok (marketFixture waypointSymbol)
                                 else
                                     return Results.NotFound()
                             })))

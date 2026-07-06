@@ -119,3 +119,67 @@ let ``fetchWaypointMarket returns None for a waypoint with no market`` () =
                 |> Async.RunSynchronously)
 
         Assert.True(result.IsNone))
+
+/// The real API only includes priced `tradeGoods`/`ships` when one of the player's
+/// own ships is physically at that waypoint — both seeded ships live at
+/// headquarters (`X1-TEST-A1`), so these two facts lock in the ship-present half
+/// of that behavior explicitly, not just implicitly via other tests.
+[<Fact>]
+let ``fetchWaypointMarket includes priced tradeGoods when a ship is present`` () =
+    use fixture = new AgentFixture()
+
+    withAgentTest (fun dbPath ->
+        let result =
+            withPumpedQueue 20.0 (fun () ->
+                AgentRemoting.fetchWaypointMarket fixture.Client dbPath App.seededToken "X1-TEST-A1"
+                |> Async.RunSynchronously)
+
+        match result with
+        | Some market -> Assert.True(market.tradeGoods |> Option.map (fun g -> not g.IsEmpty) |> Option.defaultValue false)
+        | None -> Assert.Fail("expected a market for the headquarters waypoint"))
+
+[<Fact>]
+let ``fetchWaypointShipyard includes priced ships when a ship is present`` () =
+    use fixture = new AgentFixture()
+
+    withAgentTest (fun dbPath ->
+        let result =
+            withPumpedQueue 20.0 (fun () ->
+                AgentRemoting.fetchWaypointShipyard fixture.Client dbPath App.seededToken "X1-TEST-A1"
+                |> Async.RunSynchronously)
+
+        match result with
+        | Some shipyard -> Assert.NotEmpty(shipyard.ships)
+        | None -> Assert.Fail("expected a shipyard for the headquarters waypoint"))
+
+/// `X1-TEST-C3` has the same MARKETPLACE+SHIPYARD traits as headquarters, but no
+/// ship is ever seeded there — the "no ship present" counterpart.
+[<Fact>]
+let ``fetchWaypointMarket omits tradeGoods when no ship is present`` () =
+    use fixture = new AgentFixture()
+
+    withAgentTest (fun dbPath ->
+        let result =
+            withPumpedQueue 20.0 (fun () ->
+                AgentRemoting.fetchWaypointMarket fixture.Client dbPath App.seededToken "X1-TEST-C3"
+                |> Async.RunSynchronously)
+
+        match result with
+        | Some market -> Assert.True(market.tradeGoods.IsNone)
+        | None -> Assert.Fail("expected a market for X1-TEST-C3"))
+
+[<Fact>]
+let ``fetchWaypointShipyard has empty priced ships but non-empty shipTypes when no ship is present`` () =
+    use fixture = new AgentFixture()
+
+    withAgentTest (fun dbPath ->
+        let result =
+            withPumpedQueue 20.0 (fun () ->
+                AgentRemoting.fetchWaypointShipyard fixture.Client dbPath App.seededToken "X1-TEST-C3"
+                |> Async.RunSynchronously)
+
+        match result with
+        | Some shipyard ->
+            Assert.Empty(shipyard.ships)
+            Assert.NotEmpty(shipyard.shipTypes)
+        | None -> Assert.Fail("expected a shipyard for X1-TEST-C3"))
