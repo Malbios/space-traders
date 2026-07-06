@@ -475,3 +475,19 @@ let ``staleWarnings is empty for a program that has never been run`` () =
         Assert.Empty(warnings)
     finally
         deleteDbFiles dbPath
+
+[<Fact>]
+let ``loadStoredAgent returns the most recently saved agent, not the first ever saved`` () =
+    let dbPath = tempDbPath ()
+    try
+        MigrationRunner.run dbPath
+        AgentRepository.saveAgent dbPath "OLD-AGENT" "old-token" |> Async.RunSynchronously
+        AgentRepository.saveAgent dbPath "NEW-AGENT" "new-token" |> Async.RunSynchronously
+
+        // Re-login to the first agent again — should now be the most recent one.
+        AgentRepository.saveAgent dbPath "OLD-AGENT" "old-token-refreshed" |> Async.RunSynchronously
+
+        let stored = AgentRepository.loadStoredAgent dbPath |> Async.RunSynchronously
+        Assert.Equal(Some("OLD-AGENT", "old-token-refreshed"), stored)
+    finally
+        deleteDbFiles dbPath

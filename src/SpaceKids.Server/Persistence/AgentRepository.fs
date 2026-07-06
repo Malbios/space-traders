@@ -15,7 +15,7 @@ let saveAgent (dbPath: string) (symbol: string) (token: string) : Async<unit> =
             """
             INSERT INTO agents (id, symbol, created_at)
             VALUES ($id, $symbol, $createdAt)
-            ON CONFLICT(id) DO UPDATE SET symbol = excluded.symbol;
+            ON CONFLICT(id) DO UPDATE SET symbol = excluded.symbol, created_at = excluded.created_at;
             """
         agentCmd.Parameters.AddWithValue("$id", symbol) |> ignore
         agentCmd.Parameters.AddWithValue("$symbol", symbol) |> ignore
@@ -28,7 +28,7 @@ let saveAgent (dbPath: string) (symbol: string) (token: string) : Async<unit> =
             """
             INSERT INTO api_tokens (agent_id, token, created_at)
             VALUES ($agentId, $token, $createdAt)
-            ON CONFLICT(agent_id) DO UPDATE SET token = excluded.token;
+            ON CONFLICT(agent_id) DO UPDATE SET token = excluded.token, created_at = excluded.created_at;
             """
         tokenCmd.Parameters.AddWithValue("$agentId", symbol) |> ignore
         tokenCmd.Parameters.AddWithValue("$token", token) |> ignore
