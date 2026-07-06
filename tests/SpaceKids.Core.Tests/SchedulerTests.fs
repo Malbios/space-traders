@@ -902,6 +902,21 @@ let ``refuel reconciliation both branches`` () =
     let job3b, _ = Step.step clock job2b (ApiResponseReceived("job1", 0, ReconciliationShip refueled))
     Assert.Equal(Completed, job3b.status)
 
+/// The compiler never produces an action type outside `ACTION_BLOCKS`, so this
+/// defensive fallback in `emitApiAction` is only reachable via a hand-crafted
+/// `CompiledProgram` like this one — previously untested.
+[<Fact>]
+let ``an unknown action type fails clearly (defensive fallback, unreachable via the real compiler)`` () =
+    let clock = fakeClock (ref epoch)
+    let job = mkJob [ ApiAction("b1", "bogus", Map.empty) ] (Some defaultShip)
+    let job1, effects1 = Step.step clock job WakeTick
+
+    match job1.status with
+    | Failed msg -> Assert.Equal("Unbekannte Aktion: bogus", msg)
+    | other -> Assert.Fail($"expected Failed, got {other}")
+
+    Assert.Contains(JobFailed("job1", "Unbekannte Aktion: bogus"), effects1)
+
 // --- Part B: info-read blocks and accessors (Milestone 9, §8) -------------------------
 
 [<Fact>]

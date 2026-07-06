@@ -255,6 +255,35 @@ let ``programRequiresShip detects a ship-scoped block inside a called custom blo
 
     Assert.True(Validator.programRequiresShip program)
 
+// --- Eval (previously-uncovered paths found in review) -------------------------------
+
+[<Fact>]
+let ``ListGet returns the item at a valid index`` () =
+    let expr =
+        ListGet(ListLiteral [ Literal(NumberLit 10.0); Literal(NumberLit 20.0); Literal(NumberLit 30.0) ], Literal(NumberLit 1.0))
+
+    Assert.Equal(VNumber 20.0, Eval.eval Map.empty expr)
+
+[<Fact>]
+let ``ListGet fails clearly on an out-of-range index`` () =
+    let expr = ListGet(ListLiteral [ Literal(NumberLit 10.0) ], Literal(NumberLit 5.0))
+    let ex = Assert.Throws<System.Exception>(fun () -> Eval.eval Map.empty expr |> ignore)
+    Assert.Equal("Listenindex außerhalb des gültigen Bereichs.", ex.Message)
+
+[<Fact>]
+let ``ListGet fails clearly on a negative index`` () =
+    let expr = ListGet(ListLiteral [ Literal(NumberLit 10.0) ], Literal(NumberLit -1.0))
+    let ex = Assert.Throws<System.Exception>(fun () -> Eval.eval Map.empty expr |> ignore)
+    Assert.Equal("Listenindex außerhalb des gültigen Bereichs.", ex.Message)
+
+/// Regression test: `asFloat`'s `VString` branch used to rely on the bare `float`
+/// operator, which throws a raw, unlocalized `System.FormatException` instead of this
+/// function's own consistent German `failwith` style used by every other branch.
+[<Fact>]
+let ``asFloat on a non-numeric string fails with a clear German message, not a raw FormatException`` () =
+    let ex = Assert.Throws<System.Exception>(fun () -> Eval.asFloat (VString "abc") |> ignore)
+    Assert.Equal("Erwarte eine Zahl, aber der Text \"abc\" lässt sich nicht in eine Zahl umwandeln.", ex.Message)
+
 [<Fact>]
 let ``rejects an unknown block type`` () =
     let json = """{ "blocks": { "languageVersion": 0, "blocks": [ { "type": "totally_unknown", "id": "b1" } ] } }"""
@@ -381,7 +410,7 @@ let ``resolveCustomBlockCall rejects a cycle`` () =
 let ``validate rejects a custom-block call with mismatched arguments`` () =
     let blockDef: CustomBlockDefinition =
         { id = "needs-input"
-          signature = { inputs = [ { name = "Anzahl"; inputType = "Zahl" } ]; output = None; outputFields = None }
+          signature = { inputs = [ { name = "Anzahl"; inputType = "Anzahl" } ]; output = None; outputFields = None }
           workspaceJson = simpleWaitBody }
 
     let lookup =
@@ -397,6 +426,35 @@ let ``validate rejects a custom-block call with mismatched arguments`` () =
     | Ok program ->
         let errors = Validator.validate De program
         Assert.Contains(errors, fun e -> e.message.Contains("Anzahl") && e.message.Contains("fehlt"))
+
+/// Regression test: `literalTypeMismatch` used to check `inputType = "Zahl"`, a label
+/// the real compiler/client never actually produce (`"Anzahl"`/`"Number"` are the real
+/// ones) — so this check silently never fired. This is the first test anywhere to
+/// exercise its true-path directly.
+[<Fact>]
+let ``validate rejects a string literal passed where a custom block expects a number`` () =
+    let blockDef: CustomBlockDefinition =
+        { id = "needs-number"
+          signature = { inputs = [ { name = "Anzahl"; inputType = "Anzahl" } ]; output = None; outputFields = None }
+          workspaceJson = simpleWaitBody }
+
+    let lookup =
+        function
+        | "needs-number" -> Some blockDef
+        | _ -> None
+
+    let argInputs = """"Anzahl": { "block": """ + textBlock "t1" "not a number" + " }"
+
+    let json =
+        """{ "blocks": { "languageVersion": 0, "blocks": [ """
+        + customBlockCallJson "call1" "needs-number" argInputs
+        + """ ] } }"""
+
+    match Compiler.compileWorkspace De lookup json with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        let errors = Validator.validate De program
+        Assert.Contains(errors, fun e -> e.message.Contains("Anzahl") && e.message.Contains("falschen Typ"))
 
 [<Fact>]
 let ``revalidateAgainstCurrentDefinitions catches a signature that changed after compile`` () =
@@ -422,7 +480,7 @@ let ``revalidateAgainstCurrentDefinitions catches a signature that changed after
             | "block-a" ->
                 Some
                     { blockDef with
-                        signature = { inputs = [ { name = "Anzahl"; inputType = "Zahl" } ]; output = None; outputFields = None } }
+                        signature = { inputs = [ { name = "Anzahl"; inputType = "Anzahl" } ]; output = None; outputFields = None } }
             | _ -> None
 
         let errors = Validator.revalidateAgainstCurrentDefinitions De changedLookup program

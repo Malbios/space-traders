@@ -152,10 +152,16 @@ let programRequiresShip (program: CompiledProgram) : bool =
     (program.instructions |> List.exists instructionNeedsShip)
     || (program.customBlocks |> Map.exists (fun _ cb -> cb.instructions |> List.exists instructionNeedsShip))
 
+/// The real stored labels for a numeric custom-block input (`blocks.ts`'s
+/// `INPUT_TYPE_LABELS_DE`/`_EN`, via `TYPE_LABEL_TO_CHECK`'s `"Number"` entries) —
+/// `"Zahl"` never actually occurs (found in review: it was checked here but never
+/// produced by the compiler/client, so this check was silently dead in practice).
+let private numericInputTypeLabels = set [ "Anzahl"; "Number"; "Preisgrenze"; "Price limit" ]
+
 let private literalTypeMismatch (inputType: string) (arg: Expr) : bool =
-    match inputType, arg with
-    | "Zahl", Literal(StringLit _) -> true
-    | "Zahl", Literal(BoolLit _) -> true
+    match arg with
+    | Literal(StringLit _)
+    | Literal(BoolLit _) -> numericInputTypeLabels.Contains inputType
     | _ -> false
 
 let private checkCustomBlockCalls (locale: Locale) (program: CompiledProgram) (instructions: Instruction list) : DslError list =

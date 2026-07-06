@@ -9,7 +9,10 @@ let asFloat (v: Value) : float =
     match v with
     | VNumber n -> n
     | VBool b -> if b then 1.0 else 0.0
-    | VString s -> float s
+    | VString s ->
+        match System.Double.TryParse s with
+        | true, n -> n
+        | false, _ -> failwith $"Erwarte eine Zahl, aber der Text \"{s}\" lässt sich nicht in eine Zahl umwandeln."
     | VList _ -> failwith "Erwarte eine Zahl, aber eine Liste wurde übergeben."
     | VRecord _ -> failwith "Erwarte eine Zahl, aber ein Datensatz wurde übergeben."
 

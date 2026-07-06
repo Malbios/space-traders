@@ -259,15 +259,20 @@ and private compileInputOptional (state: CompileState) (hoisted: ResizeArray<Ins
 and private compileCustomBlockCall (state: CompileState) (hoisted: ResizeArray<Instruction>) (block: RawBlock) : Instruction =
     let customBlockId = extraStateString block "customBlockId" |> Option.defaultValue ""
     resolveCustomBlock state customBlockId
-    match state.lookup customBlockId with
-    | Some definition ->
+    // `resolveCustomBlock` already resolved (and cached into `state.customBlocks`) the
+    // same signature this needs — reading it back from there instead of calling the
+    // external `state.lookup` a second time avoids a redundant fetch per call site
+    // (found in review; harmless with the in-memory dictionaries used in tests, but a
+    // real cost if `lookup` is DB/cache-backed in production).
+    match state.customBlocks.TryGetValue customBlockId with
+    | true, compiled ->
         let args =
-            definition.signature.inputs
+            compiled.signature.inputs
             |> List.choose (fun input -> compileInputOptional state hoisted block input.name |> Option.map (fun e -> input.name, e))
             |> Map.ofList
-        let resultTarget = if definition.signature.output.IsSome then Some(newTemp state) else None
+        let resultTarget = if compiled.signature.output.IsSome then Some(newTemp state) else None
         CallCustomBlock(block.id, customBlockId, args, resultTarget)
-    | None ->
+    | false, _ ->
         // resolveCustomBlock already recorded the "not found"/cycle error.
         CallCustomBlock(block.id, customBlockId, Map.empty, None)
 
