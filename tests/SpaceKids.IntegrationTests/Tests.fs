@@ -68,6 +68,23 @@ let ``ListWaypoints round-trips each waypoint's traits`` () =
     Assert.NotEmpty(asteroidField.traits)
 
 [<Fact>]
+let ``ListShips walks every page instead of truncating at the API's max page size`` () =
+    use fixture = new FakeSpaceTradersFixture()
+
+    try
+        // The fake seeds 2 ships; buy enough more to exceed the real API's max page
+        // size (20) so a single-page fetch would silently truncate the result.
+        for _ in 1..20 do
+            fixture.Client.PurchaseShip(App.seededToken, "SHIP_MINING_DRONE", "X1-TEST-A1")
+            |> Async.RunSynchronously
+            |> ignore
+
+        let ships = fixture.Client.ListShips(App.seededToken) |> Async.RunSynchronously
+        Assert.Equal(22, ships.Length)
+    finally
+        App.resetForTests ()
+
+[<Fact>]
 let ``GetMarket returns the seeded market`` () =
     use fixture = new FakeSpaceTradersFixture()
     let market = fixture.Client.GetMarket(App.seededToken, "X1-TEST", "X1-TEST-A1") |> Async.RunSynchronously

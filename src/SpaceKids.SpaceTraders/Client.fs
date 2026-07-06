@@ -16,7 +16,7 @@ type SpaceTradersClient(httpClient: HttpClient) =
     static let jsonOptions =
         JsonSerializerOptions(PropertyNameCaseInsensitive = true)
 
-    member private _.HandleResponse<'a>(response: HttpResponseMessage, body: string) : 'a =
+    member private _.CheckStatus(response: HttpResponseMessage, body: string) : unit =
         if int response.StatusCode = 429 then
             let retryAfterSeconds =
                 match response.Headers.RetryAfter with
@@ -27,6 +27,9 @@ type SpaceTradersClient(httpClient: HttpClient) =
             raise (SpaceTradersRateLimitException(retryAfterSeconds, body))
         if not response.IsSuccessStatusCode then
             raise (SpaceTradersApiException(int response.StatusCode, body))
+
+    member private this.HandleResponse<'a>(response: HttpResponseMessage, body: string) : 'a =
+        this.CheckStatus(response, body)
         let envelope = JsonSerializer.Deserialize<DataEnvelope<'a>>(body, jsonOptions)
         envelope.data
 
@@ -53,11 +56,38 @@ type SpaceTradersClient(httpClient: HttpClient) =
             return this.HandleResponse<'a>(response, respBody)
         }
 
+    /// The real API paginates list endpoints (default 10/page, max 20/page) — a
+    /// single unpaginated fetch silently truncates any account with more than one
+    /// page of ships/contracts/waypoints (confirmed: a real home system alone can
+    /// exceed one page of waypoints). Walks every page until `meta.total` is
+    /// satisfied.
+    member private this.GetAllPages<'a>(token: string, path: string) : Async<'a list> =
+        let pageSize = 20
+
+        let rec loop (page: int) (acc: 'a list) : Async<'a list> =
+            async {
+                let sep = if path.Contains("?") then "&" else "?"
+                use request = new HttpRequestMessage(HttpMethod.Get, $"{path}{sep}page={page}&limit={pageSize}")
+                request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+                let! response = httpClient.SendAsync(request) |> Async.AwaitTask
+                let! body = response.Content.ReadAsStringAsync() |> Async.AwaitTask
+                this.CheckStatus(response, body)
+                let envelope = JsonSerializer.Deserialize<PagedEnvelope<'a>>(body, jsonOptions)
+                let combined = acc @ envelope.data
+
+                if envelope.data.IsEmpty || combined.Length >= envelope.meta.total then
+                    return combined
+                else
+                    return! loop (page + 1) combined
+            }
+
+        loop 1 []
+
     member this.GetAgent(token: string) : Async<Agent> =
         this.GetData(token, "my/agent")
 
     member this.ListShips(token: string) : Async<Ship list> =
-        this.GetData(token, "my/ships")
+        this.GetAllPages(token, "my/ships")
 
     /// Single-ship fetch (Milestone 6) — the reconciliation call §13 describes: "get
     /// current ship state" to compare against a pre-call baseline after an ambiguous
@@ -66,10 +96,10 @@ type SpaceTradersClient(httpClient: HttpClient) =
         this.GetData(token, $"my/ships/{shipSymbol}")
 
     member this.ListContracts(token: string) : Async<Contract list> =
-        this.GetData(token, "my/contracts")
+        this.GetAllPages(token, "my/contracts")
 
     member this.ListWaypoints(token: string, systemSymbol: string) : Async<Waypoint list> =
-        this.GetData(token, $"systems/{systemSymbol}/waypoints")
+        this.GetAllPages(token, $"systems/{systemSymbol}/waypoints")
 
     member this.GetMarket(token: string, systemSymbol: string, waypointSymbol: string) : Async<Market> =
         this.GetData(token, $"systems/{systemSymbol}/waypoints/{waypointSymbol}/market")

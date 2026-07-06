@@ -220,3 +220,9 @@ type Shipyard =
 type GetShipyardResult = { shipyard: Shipyard }
 
 type DataEnvelope<'a> = { data: 'a }
+
+/// Pagination metadata the real API attaches to list endpoints (ships/contracts/
+/// waypoints) alongside `data` -- default page size 10, max 20.
+type Meta = { total: int; page: int; limit: int }
+
+type PagedEnvelope<'a> = { data: 'a list; meta: Meta }

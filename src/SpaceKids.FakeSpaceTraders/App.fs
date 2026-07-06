@@ -158,6 +158,24 @@ let private withAuth (ctx: HttpContext) (respond: unit -> Task<IResult>) : Task<
 
 let private ok (data: 'a) : IResult = Results.Ok({| data = data |})
 
+/// Mirrors the real API's `?page=`/`?limit=` pagination on list endpoints (default
+/// page 1/limit 10) — needed so `SpaceTradersClient.GetAllPages`'s multi-page walk
+/// has something real to exercise, not just a client-side assumption.
+let private readPaging (ctx: HttpContext) : int * int =
+    let intQuery (name: string) (fallback: int) =
+        match ctx.Request.Query.TryGetValue(name) with
+        | true, v ->
+            match Int32.TryParse(v.ToString()) with
+            | true, n -> n
+            | _ -> fallback
+        | _ -> fallback
+
+    intQuery "page" 1, intQuery "limit" 10
+
+let private okPaged (items: 'a list) (page: int) (limit: int) : IResult =
+    let pageItems = items |> List.skip (min items.Length ((page - 1) * limit)) |> List.truncate limit
+    Results.Ok({| data = pageItems; meta = {| total = items.Length; page = page; limit = limit |} |})
+
 let private readJsonBody (ctx: HttpContext) : Task<JsonDocument> =
     task {
         use reader = new System.IO.StreamReader(ctx.Request.Body)
@@ -235,7 +253,16 @@ let configureApp (app: WebApplication) =
     app.MapGet(
         "/my/ships",
         Func<HttpContext, Task<IResult>>(fun ctx ->
-            applyFault ctx (fun () -> withAuth ctx (fun () -> task { return ok (readAllShips ()) })))
+            applyFault
+                ctx
+                (fun () ->
+                    withAuth
+                        ctx
+                        (fun () ->
+                            task {
+                                let page, limit = readPaging ctx
+                                return okPaged (readAllShips ()) page limit
+                            })))
     )
     |> ignore
 
@@ -249,7 +276,16 @@ let configureApp (app: WebApplication) =
     app.MapGet(
         "/my/contracts",
         Func<HttpContext, Task<IResult>>(fun ctx ->
-            applyFault ctx (fun () -> withAuth ctx (fun () -> task { return ok (readAllContracts ()) })))
+            applyFault
+                ctx
+                (fun () ->
+                    withAuth
+                        ctx
+                        (fun () ->
+                            task {
+                                let page, limit = readPaging ctx
+                                return okPaged (readAllContracts ()) page limit
+                            })))
     )
     |> ignore
 
@@ -285,7 +321,16 @@ let configureApp (app: WebApplication) =
     app.MapGet(
         "/systems/{systemSymbol}/waypoints",
         Func<HttpContext, Task<IResult>>(fun ctx ->
-            applyFault ctx (fun () -> withAuth ctx (fun () -> task { return ok waypoints })))
+            applyFault
+                ctx
+                (fun () ->
+                    withAuth
+                        ctx
+                        (fun () ->
+                            task {
+                                let page, limit = readPaging ctx
+                                return okPaged waypoints page limit
+                            })))
     )
     |> ignore
 
