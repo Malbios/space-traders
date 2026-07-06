@@ -826,6 +826,41 @@ let ``tickOnce doesn't resurrect a ship lock the same step just released on fail
 
         Assert.False(shipLockExists dbPath "FAKE-AGENT-1"))
 
+/// Regression test: a real bug found live — a pure DSL evaluation error (e.g. a
+/// non-list value wired into a `forEach`, which stock/untyped Blockly control
+/// blocks don't prevent at edit time) was a raw exception thrown from
+/// `Step.step`, only wrapped in `tick`'s `try/finally` (no `try/with`). Left
+/// uncaught, it propagated out of `JobScheduler`'s background tick loop and, per
+/// the host's `StopHost` exception behavior, took the entire ASP.NET server down
+/// — confirmed live from a real crash log ("Erwarte eine Liste." / `Eval.asList`).
+/// Fixed by catching any exception during `Step.step` and failing just that job.
+[<Fact>]
+let ``a DSL evaluation error fails just that job instead of crashing the tick loop`` () =
+    use fixture = new JobFixture()
+
+    withJobTest fixture.RawClient (fun dbPath ->
+        Persistence.AgentRepository.saveAgent dbPath "FAKE-AGENT" App.seededToken
+        |> Async.RunSynchronously
+
+        let ship1 = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+
+        // A forEach whose "list" expression evaluates to a plain number — exactly
+        // the kind of mismatch a stock (untyped) Blockly control block allows,
+        // reproducing the live "Erwarte eine Liste." crash.
+        let instructions = [ ForEach("b1", "item", Literal(NumberLit 1.0), []) ]
+
+        let jobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" (program instructions) ship1
+
+        // Must not throw — that's the whole point of the fix.
+        JobScheduler.tickOnce fixture.Client dbPath |> Async.RunSynchronously
+
+        match JobRunner.getStatus jobId with
+        | Some { status = Failed msg } -> Assert.Contains("Liste", msg)
+        | Some other -> Assert.Fail($"expected the job to have failed, got {other.status}")
+        | None -> Assert.Fail("job not found")
+
+        Assert.False(shipLockExists dbPath "FAKE-AGENT-1"))
+
 [<Fact>]
 let ``a concurrent trade on another ship doesn't corrupt an in-flight ambiguous-failure reconciliation`` () =
     use fixture = new JobFixture()

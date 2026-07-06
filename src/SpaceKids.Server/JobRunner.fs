@@ -560,10 +560,25 @@ and private tick
                     match jobs.TryGetValue jobId with
                     | false, _ -> return None
                     | true, job ->
-                        let job', effects = Step.step realClock job event
-                        jobs[jobId] <- job'
-                        do! persist dbPath job'
-                        return Some effects
+                        try
+                            let job', effects = Step.step realClock job event
+                            jobs[jobId] <- job'
+                            do! persist dbPath job'
+                            return Some effects
+                        with ex ->
+                            // A pure-evaluation error (e.g. `Eval.asList` rejecting a
+                            // non-list value wired into a `forEach`) is a program bug,
+                            // not an infrastructure one — it must fail this one job,
+                            // never escape `tick` itself. Left uncaught, this exception
+                            // propagates out of `JobScheduler`'s background tick loop
+                            // and crashes the entire host (confirmed live: a single bad
+                            // program took the whole server down). Same graceful
+                            // "Failed" outcome and `JobFailed` effect (ship-lock
+                            // release) an API failure already gets.
+                            let failedJob = { job with status = Failed ex.Message }
+                            jobs[jobId] <- failedJob
+                            do! persist dbPath failedJob
+                            return Some [ JobFailed(jobId, ex.Message) ]
                 finally
                     tickLock.Release() |> ignore
             }
