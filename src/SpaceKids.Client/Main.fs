@@ -343,7 +343,11 @@ let private terminalPilotStatuses = [ "Completed"; "Failed"; "Cancelled" ]
 /// anywhere in the real SpaceTraders API data, so a display name has to be
 /// invented rather than read from anything. One shared pool for both locales —
 /// picking 24 distinct names for zero functional gain isn't worth it.
-let private pilotNamePool =
+/// `internal` (not `private`) so `SpaceKids.Client.Tests` can unit-test this and the
+/// other pure helpers below directly — see the `InternalsVisibleTo` attribute in
+/// `Startup.fs`. Found in review: this file previously had zero test coverage of its
+/// non-trivial pure logic (map math, this hash) despite none of it needing Blazor.
+let internal pilotNamePool =
     [| "Max"; "Lina"; "Tom"; "Mia"; "Ben"; "Ella"; "Finn"; "Nora"; "Leo"; "Zoe"; "Emil"; "Ida" |]
 
 /// A stable hash of `key` (not `System.String.GetHashCode`, which is randomized per
@@ -351,7 +355,7 @@ let private pilotNamePool =
 /// re-runs — continuity, not randomness. Keyed by ship symbol normally, or by job id
 /// for a ship-agnostic job (§14 follow-up) that was never assigned one — either way,
 /// a stable key yields a stable, flavorful name.
-let private pilotName (key: string) : string =
+let internal pilotName (key: string) : string =
     let hash = key |> Seq.sumBy int
     pilotNamePool.[hash % pilotNamePool.Length]
 
@@ -416,7 +420,10 @@ type Message =
     | HighlightFirstBlock
     | Highlighted
     | ToggleReadOnly
-    | ReadOnlyToggled
+    /// Carries the value actually committed to the Blockly workspace via JS — not
+    /// re-derived from `model.readOnly` at completion time, which could have drifted
+    /// (e.g. a concurrent watch-mode lock change) between dispatch and completion.
+    | ReadOnlyToggled of bool
     | PublishSignature
     | Published of string
     | SimulateRun
@@ -459,14 +466,19 @@ type Message =
     | WatchPilot of string
     | StopWatching
     | WatchTick
-    | WatchStatusLoaded of JobStatusDto option
+    /// `jobId` is the one this response was requested *for* — checked against
+    /// `model.watchedJobId` before applying, so a slow response for a pilot the
+    /// player has since stopped watching can't overwrite a newer, faster watch.
+    | WatchStatusLoaded of jobId: string * JobStatusDto option
     | InspectShip of string
     | InspectWaypoint of string
     | CloseInspector
     | LoadWaypointMarket of string
-    | WaypointMarketLoaded of Market option
+    /// `waypointSymbol` is the one this response was requested for — same
+    /// stale-response guard as `WatchStatusLoaded`, keyed by waypoint instead of job.
+    | WaypointMarketLoaded of waypointSymbol: string * Market option
     | LoadWaypointShipyard of string
-    | WaypointShipyardLoaded of Shipyard option
+    | WaypointShipyardLoaded of waypointSymbol: string * Shipyard option
     | MapTick
     | MapWheel of deltaY: float
     | MapDragStart
@@ -651,7 +663,6 @@ type Strings =
       newProgramNamePlaceholder: string
       newProgramButton: string
       noProgramsYet: string
-      closeButton2: string
 
       noProgramOpen: string
       staleWarningsBanner: string
@@ -826,7 +837,6 @@ let private stringsDe: Strings =
       newProgramNamePlaceholder = "Name des neuen Programms"
       newProgramButton = "Neues Programm"
       noProgramsYet = "Noch kein Programm gespeichert."
-      closeButton2 = "Schließen"
 
       noProgramOpen = "Kein Programm geöffnet — wähle oder erstelle eines oben."
       staleWarningsBanner = "Einige eigene Blöcke in diesem Programm haben sich geändert — bitte vor dem Ausführen prüfen."
@@ -999,7 +1009,6 @@ let private stringsEn: Strings =
       newProgramNamePlaceholder = "New program name"
       newProgramButton = "New program"
       noProgramsYet = "No program saved yet."
-      closeButton2 = "Close"
 
       noProgramOpen = "No program open — choose or create one above."
       staleWarningsBanner = "Some custom blocks in this program have changed — please check before running."
@@ -1082,9 +1091,9 @@ let update
 
     | ToggleReadOnly ->
         let next = not model.readOnly
-        model, Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.setReadOnly" [| box model.containerId; box next |]) () (fun () -> ReadOnlyToggled)
-    | ReadOnlyToggled ->
-        { model with readOnly = not model.readOnly; status = s.readOnlyToggled }, Cmd.none
+        model, Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.setReadOnly" [| box model.containerId; box next |]) () (fun () -> ReadOnlyToggled next)
+    | ReadOnlyToggled next ->
+        { model with readOnly = next; status = s.readOnlyToggled }, Cmd.none
 
     | PublishSignature ->
         let existingId: obj = match model.publishedCustomBlockId with
@@ -1147,8 +1156,13 @@ let update
             // the program actually needs one, the server's own upfront check
             // (`JobRemoting.fs`) rejects the start and its message surfaces below via
             // `ProgramStartResult(Error _)` — no separate client-side message needed.
+            // `Cmd.OfAsync.either` (not `.perform`): if `serializeWorkspace` throws
+            // (e.g. the Blockly workspace hasn't finished mounting yet — `OpenProgram`
+            // only dispatches its init asynchronously, not synchronously), the
+            // exception must not vanish silently, leaving `startingJob` stuck `true`
+            // and the Start button permanently disabled (found in review).
             { model with startingJob = true; pilotError = None },
-            Cmd.OfAsync.perform
+            Cmd.OfAsync.either
                 (fun () ->
                     async {
                         let! workspaceJson = call<string> js "spaceKids.serializeWorkspace" [| box model.containerId |]
@@ -1156,6 +1170,7 @@ let update
                     })
                 ()
                 ProgramStartResult
+                (fun ex -> ProgramStartResult(Error ex.Message))
     | ProgramStartResult(Ok _) ->
         { model with startingJob = false }, Cmd.ofMsg LoadPilots
     | ProgramStartResult(Error message) ->
@@ -1314,44 +1329,47 @@ let update
         | Some jobId ->
             if model.logLevel = "trace" then
                 System.Console.WriteLine($"[trace] WatchTick poll (jobId={jobId})")
-            model, Cmd.OfAsync.perform (fun () -> jobRemote.getStatus jobId) () WatchStatusLoaded
-    | WatchStatusLoaded None ->
+            model, Cmd.OfAsync.perform (fun () -> jobRemote.getStatus jobId) () (fun dto -> WatchStatusLoaded(jobId, dto))
+    | WatchStatusLoaded(requestedJobId, dtoOpt) when model.watchedJobId <> Some requestedJobId ->
+        // Stale response for a pilot we're no longer watching (switched, or stopped,
+        // while this request was in flight) — discard it rather than overwriting a
+        // newer, faster watch's highlighted frames or resetting its polling loop.
+        model, Cmd.none
+    | WatchStatusLoaded(_, None) ->
         { model with watchedJobId = None; watchedFrames = [] }, Cmd.none
-    | WatchStatusLoaded(Some dto) ->
+    | WatchStatusLoaded(_, Some dto) ->
         if model.logLevel = "trace" then
             System.Console.WriteLine($"[trace] WatchStatusLoaded: status={dto.status}")
-        match model.watchedJobId with
-        | None -> model, Cmd.none
-        | Some _ ->
-            let frames = dto.blockIdPerFrame
 
-            let programHighlightCmd =
-                match frames |> List.tryFind (fun (scope, _) -> scope = "main") with
-                | Some(_, Some blockId) ->
-                    Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.highlightBlock" [| box model.containerId; box blockId |]) () (fun () -> Highlighted)
-                | Some(_, None)
-                | None -> Cmd.none
+        let frames = dto.blockIdPerFrame
 
-            let workshopHighlightCmd =
-                match model.openCustomBlockId, frames |> List.tryHead with
-                | Some openId, Some(scope, Some blockId) when scope = openId ->
-                    Cmd.OfAsync.perform
-                        (fun () -> callVoid js "spaceKids.highlightBlock" [| box model.workshopContainerId; box blockId |])
-                        ()
-                        (fun () -> Highlighted)
-                | Some _, _ ->
-                    Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.clearHighlight" [| box model.workshopContainerId |]) () (fun () -> Highlighted)
-                | None, _ -> Cmd.none
+        let programHighlightCmd =
+            match frames |> List.tryFind (fun (scope, _) -> scope = "main") with
+            | Some(_, Some blockId) ->
+                Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.highlightBlock" [| box model.containerId; box blockId |]) () (fun () -> Highlighted)
+            | Some(_, None)
+            | None -> Cmd.none
 
-            let terminal = List.contains dto.status terminalPilotStatuses
+        let workshopHighlightCmd =
+            match model.openCustomBlockId, frames |> List.tryHead with
+            | Some openId, Some(scope, Some blockId) when scope = openId ->
+                Cmd.OfAsync.perform
+                    (fun () -> callVoid js "spaceKids.highlightBlock" [| box model.workshopContainerId; box blockId |])
+                    ()
+                    (fun () -> Highlighted)
+            | Some _, _ ->
+                Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.clearHighlight" [| box model.workshopContainerId |]) () (fun () -> Highlighted)
+            | None, _ -> Cmd.none
 
-            let nextTickCmd =
-                if terminal then
-                    Cmd.none
-                else
-                    Cmd.OfAsync.perform (fun () -> async { do! Async.Sleep 1000 }) () (fun () -> WatchTick)
+        let terminal = List.contains dto.status terminalPilotStatuses
 
-            { model with watchedFrames = frames }, Cmd.batch [ programHighlightCmd; workshopHighlightCmd; nextTickCmd ]
+        let nextTickCmd =
+            if terminal then
+                Cmd.none
+            else
+                Cmd.OfAsync.perform (fun () -> async { do! Async.Sleep 1000 }) () (fun () -> WatchTick)
+
+        { model with watchedFrames = frames }, Cmd.batch [ programHighlightCmd; workshopHighlightCmd; nextTickCmd ]
 
     | InspectShip shipSymbol ->
         { model with
@@ -1368,13 +1386,24 @@ let update
     | CloseInspector ->
         { model with inspecting = None; waypointMarket = None; waypointShipyard = None }, Cmd.none
     | LoadWaypointMarket waypointSymbol ->
-        model, Cmd.OfAsync.perform (fun () -> agentRemote.getWaypointMarket waypointSymbol) () WaypointMarketLoaded
-    | WaypointMarketLoaded market ->
-        { model with waypointMarket = market }, Cmd.none
+        model,
+        Cmd.OfAsync.perform
+            (fun () -> agentRemote.getWaypointMarket waypointSymbol)
+            ()
+            (fun market -> WaypointMarketLoaded(waypointSymbol, market))
+    | WaypointMarketLoaded(requestedSymbol, _) when model.inspecting <> Some(InspectedWaypoint requestedSymbol) ->
+        // Stale response for a waypoint the player has since stopped inspecting.
+        model, Cmd.none
+    | WaypointMarketLoaded(_, market) -> { model with waypointMarket = market }, Cmd.none
     | LoadWaypointShipyard waypointSymbol ->
-        model, Cmd.OfAsync.perform (fun () -> agentRemote.getWaypointShipyard waypointSymbol) () WaypointShipyardLoaded
-    | WaypointShipyardLoaded shipyard ->
-        { model with waypointShipyard = shipyard }, Cmd.none
+        model,
+        Cmd.OfAsync.perform
+            (fun () -> agentRemote.getWaypointShipyard waypointSymbol)
+            ()
+            (fun shipyard -> WaypointShipyardLoaded(waypointSymbol, shipyard))
+    | WaypointShipyardLoaded(requestedSymbol, _) when model.inspecting <> Some(InspectedWaypoint requestedSymbol) ->
+        model, Cmd.none
+    | WaypointShipyardLoaded(_, shipyard) -> { model with waypointShipyard = shipyard }, Cmd.none
 
     | MapTick ->
         let count = model.mapTickCount + 1
@@ -1728,12 +1757,12 @@ let private viewInspector (state: DashboardState) model dispatch =
 // JS/TS interop: unlike Blockly, nothing here owns its own mutable object graph —
 // it's just static SVG nodes Bolero already knows how to diff.
 
-let private mapViewSize = 400.0
-let private mapPadding = 30.0
+let internal mapViewSize = 400.0
+let internal mapPadding = 30.0
 
 /// Guards against a degenerate single-point (or empty) range, which would
 /// otherwise divide by zero when scaling.
-let private computeMapBounds (waypoints: Waypoint list) : float * float * float * float =
+let internal computeMapBounds (waypoints: Waypoint list) : float * float * float * float =
     match waypoints with
     | [] -> (0.0, 1.0, 0.0, 1.0)
     | _ ->
@@ -1746,7 +1775,7 @@ let private computeMapBounds (waypoints: Waypoint list) : float * float * float 
         (minX, maxX, minY, maxY)
 
 /// Y is flipped (SVG is Y-down) so the schematic reads with north up.
-let private scaleMapPoint (minX, maxX, minY, maxY) (x: float) (y: float) : float * float =
+let internal scaleMapPoint (minX, maxX, minY, maxY) (x: float) (y: float) : float * float =
     let scale = min ((mapViewSize - 2.0 * mapPadding) / (maxX - minX)) ((mapViewSize - 2.0 * mapPadding) / (maxY - minY))
     let sx = mapPadding + (x - minX) * scale
     let sy = mapViewSize - (mapPadding + (y - minY) * scale)
@@ -1767,7 +1796,7 @@ let private waypointColor (waypointType: string) : string =
 /// in-transit ship whose route timestamps don't parse, or a docked/orbiting ship
 /// at a waypoint outside the loaded system (the known "dashboard only loads the
 /// headquarters system" simplification, same class documented elsewhere).
-let private interpolatedShipPosition (waypoints: Waypoint list) (ship: Ship) : (float * float) option =
+let internal interpolatedShipPosition (waypoints: Waypoint list) (ship: Ship) : (float * float) option =
     if ship.nav.status = "IN_TRANSIT" then
         try
             let departure = System.DateTimeOffset.Parse ship.nav.route.departureTime
@@ -2031,20 +2060,27 @@ let private viewJobRunner model dispatch =
             }
     }
 
+/// The "name input + create button" row is identical between the custom-block and
+/// program libraries below — everything past it (list rendering, the rename row)
+/// differs in real ways (an extra "Save workshop" button, different message types)
+/// and is left as-is rather than forced into a shared abstraction.
+let private viewNameEntryRow (placeholder: string) (value: string) (onChange: string -> Message) (buttonLabel: string) (onCreate: Message) dispatch =
+    div {
+        input {
+            attr.``type`` "text"
+            attr.placeholder placeholder
+            attr.value value
+            on.change (fun e -> dispatch (onChange (string e.Value)))
+        }
+        button { on.click (fun _ -> dispatch onCreate); buttonLabel }
+    }
+
 let private viewCustomBlockLibrary model dispatch =
     let s = stringsFor model.locale
 
     div {
         h2 { s.customBlocksHeading }
-        div {
-            input {
-                attr.``type`` "text"
-                attr.placeholder s.newBlockNamePlaceholder
-                attr.value model.newCustomBlockName
-                on.change (fun e -> dispatch (NewCustomBlockNameChanged(string e.Value)))
-            }
-            button { on.click (fun _ -> dispatch CreateCustomBlock); s.newBlockButton }
-        }
+        viewNameEntryRow s.newBlockNamePlaceholder model.newCustomBlockName NewCustomBlockNameChanged s.newBlockButton CreateCustomBlock dispatch
         if model.customBlocks.IsEmpty then
             p { s.noCustomBlocksYet }
         else
@@ -2077,15 +2113,7 @@ let private viewProgramLibrary model dispatch =
 
     div {
         h2 { s.programsHeading }
-        div {
-            input {
-                attr.``type`` "text"
-                attr.placeholder s.newProgramNamePlaceholder
-                attr.value model.newProgramName
-                on.change (fun e -> dispatch (NewProgramNameChanged(string e.Value)))
-            }
-            button { on.click (fun _ -> dispatch CreateProgram); s.newProgramButton }
-        }
+        viewNameEntryRow s.newProgramNamePlaceholder model.newProgramName NewProgramNameChanged s.newProgramButton CreateProgram dispatch
         if model.programs.IsEmpty then
             p { s.noProgramsYet }
         else
@@ -2107,7 +2135,7 @@ let private viewProgramLibrary model dispatch =
                     on.change (fun e -> dispatch (RenameProgramInputChanged(string e.Value)))
                 }
                 button { on.click (fun _ -> dispatch (RenameProgram id)); s.renameButton }
-                button { on.click (fun _ -> dispatch CloseProgram); s.closeButton2 }
+                button { on.click (fun _ -> dispatch CloseProgram); s.closeButton }
             }
         if model.programStatus <> "" then
             p { model.programStatus }
