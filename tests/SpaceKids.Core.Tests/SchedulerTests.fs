@@ -170,6 +170,70 @@ let ``a repeat loop's counter persists across steps and re-enters its body each 
     Assert.Equal(Completed, job4.status)
     Assert.Contains(JobCompleted "job1", effects4)
 
+// --- Break/Continue (controls_flow_statements) ---------------------------------------
+
+[<Fact>]
+let ``a Break inside a forEach exits the loop early, skipping later items entirely`` () =
+    let clock = fakeClock (ref epoch)
+
+    let instructions =
+        [ ForEach(
+              "loop1",
+              "x",
+              ListLiteral [ Literal(NumberLit 1.0); Literal(NumberLit 2.0); Literal(NumberLit 3.0) ],
+              [ If("if1", [ (Comparison("EQ", VariableRef "x", Literal(NumberLit 2.0)), [ Break "brk1" ]) ], None)
+                ShowMessage("sm1", VariableRef "x") ]
+          ) ]
+
+    let job = mkJob instructions None
+    let job', _ = Step.step clock job WakeTick
+
+    Assert.Equal(Completed, job'.status)
+    Assert.Equal<string list>([ "1" ], job'.log)
+
+[<Fact>]
+let ``a Continue inside a repeat skips the rest of that iteration but still runs the remaining ones`` () =
+    let clock = fakeClock (ref epoch)
+
+    let instructions =
+        [ SetVariable("s1", "i", Literal(NumberLit 0.0))
+          Repeat(
+              "rep2",
+              Literal(NumberLit 3.0),
+              [ ChangeVariable("ch2", "i", Literal(NumberLit 1.0))
+                If("if2", [ (Comparison("EQ", VariableRef "i", Literal(NumberLit 2.0)), [ Continue "cnt1" ]) ], None)
+                ShowMessage("sm2", VariableRef "i") ]
+          ) ]
+
+    let job = mkJob instructions None
+    let job', _ = Step.step clock job WakeTick
+
+    Assert.Equal(Completed, job'.status)
+    // i=1 and i=3 show their message; i=2's Continue skips it. log is newest-first.
+    Assert.Equal<string list>([ "3"; "1" ], job'.log)
+
+[<Fact>]
+let ``a Continue inside a whileUntil re-evaluates the condition instead of crashing or looping forever`` () =
+    let clock = fakeClock (ref epoch)
+
+    let instructions =
+        [ SetVariable("s2", "i", Literal(NumberLit 0.0))
+          WhileUntil(
+              "wu1",
+              While,
+              Comparison("LT", VariableRef "i", Literal(NumberLit 3.0)),
+              [ ChangeVariable("ch3", "i", Literal(NumberLit 1.0))
+                If("if3", [ (Comparison("EQ", VariableRef "i", Literal(NumberLit 1.0)), [ Continue "cnt2" ]) ], None)
+                ShowMessage("sm3", VariableRef "i") ]
+          ) ]
+
+    let job = mkJob instructions None
+    let job', _ = Step.step clock job WakeTick
+
+    Assert.Equal(Completed, job'.status)
+    // i=1's Continue skips its message; i=2 and i=3 still show theirs.
+    Assert.Equal<string list>([ "3"; "2" ], job'.log)
+
 // --- The 6 actions' happy paths -------------------------------------------------------
 
 [<Fact>]

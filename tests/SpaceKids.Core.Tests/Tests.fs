@@ -150,6 +150,55 @@ let ``compiles logic_operation and logic_negate`` () =
         )
 
 [<Fact>]
+let ``compiles controls_flow_statements to Break or Continue depending on FLOW`` () =
+    let json =
+        """
+        { "blocks": { "languageVersion": 0, "blocks": [
+            { "type": "controls_forEach", "id": "loop1", "fields": { "VAR": "x" }, "inputs": {
+                "LIST": { "block": { "type": "lists_create_with", "id": "l1", "extraState": { "itemCount": 0 } } },
+                "DO": { "block": { "type": "controls_flow_statements", "id": "brk1", "fields": { "FLOW": "BREAK" }, "next": {
+                    "block": { "type": "controls_flow_statements", "id": "cnt1", "fields": { "FLOW": "CONTINUE" } }
+                } } }
+            } }
+        ] } }
+        """
+
+    match Compiler.compileWorkspace De noCustomBlocks json with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        Assert.Equal<Instruction list>(
+            [ ForEach("loop1", "x", ListLiteral [], [ Break "brk1"; Continue "cnt1" ]) ],
+            program.instructions
+        )
+
+[<Fact>]
+let ``validate rejects a Break outside any loop, but allows one inside a controls_forEach`` () =
+    let outsideJson =
+        """{ "blocks": { "languageVersion": 0, "blocks": [ { "type": "controls_flow_statements", "id": "brk1", "fields": { "FLOW": "BREAK" } } ] } }"""
+
+    match Compiler.compileWorkspace De noCustomBlocks outsideJson with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        let errors = Validator.validate De program
+        Assert.Contains(errors, fun e -> e.blockId = Some "brk1")
+
+    let insideJson =
+        """
+        { "blocks": { "languageVersion": 0, "blocks": [
+            { "type": "controls_forEach", "id": "loop1", "fields": { "VAR": "x" }, "inputs": {
+                "LIST": { "block": { "type": "lists_create_with", "id": "l1", "extraState": { "itemCount": 0 } } },
+                "DO": { "block": { "type": "controls_flow_statements", "id": "brk2", "fields": { "FLOW": "BREAK" } } }
+            } }
+        ] } }
+        """
+
+    match Compiler.compileWorkspace De noCustomBlocks insideJson with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        let errors = Validator.validate De program
+        Assert.DoesNotContain(errors, fun e -> e.blockId = Some "brk2")
+
+[<Fact>]
 let ``rejects an unknown block type`` () =
     let json = """{ "blocks": { "languageVersion": 0, "blocks": [ { "type": "totally_unknown", "id": "b1" } ] } }"""
 

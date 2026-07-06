@@ -336,15 +336,15 @@ program with a user, not yet planned into a milestone.
       `logic_negate` (NOT), both fully wired (`Types.fs`'s `Expr`, `Eval.fs`
       short-circuiting, `Compiler.fs`, toolbox). See
       `docs/04-block-catalog.md`'s "Additional stock blocks" section.
-- [ ] `controls_flow_statements` (break/continue) — found during the above
-      audit and a real, concretely-felt gap (no way to stop a `forEach`
-      early once a "found" condition is hit, today faked with a boolean
-      flag variable checked at the top of every loop body). Not a quick
-      toolbox add: needs loop-exit semantics threaded through `Step.fs`'s
-      `ForEach`/`WhileUntil`/`Repeat` handling in the pure scheduler core
-      (no `Break`/`Continue` `Instruction` case exists today), so it
-      deserves its own planned pass rather than being folded into a
-      "missing block" audit.
+- [x] `controls_flow_statements` (break/continue) — implemented. New
+      `Break`/`Continue` `Instruction` cases; `Step.fs`'s `advancePosition`
+      refactored so its per-loop-kind "body exhausted" decision
+      (`exhaustLoopEntry`) is shared with a new `breakLoop`/`continueLoop`
+      pair that finds the nearest enclosing loop `PathEntry` and either
+      exits it unconditionally (break) or forces the next-iteration
+      decision immediately (continue); `Validator.fs` rejects a
+      `Break`/`Continue` used outside any loop. Verified live combined
+      with `waypointHasShipyard` (stop scanning once a shipyard is found).
 - [ ] Make the system map (`viewSystemMap`, Galaxie tab) zoomable — currently
       a fixed 400x400 SVG with no pan/zoom controls.
 - [ ] Ship selection is mandatory to run a program in the Piloten tab, even

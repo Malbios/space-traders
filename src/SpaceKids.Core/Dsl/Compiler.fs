@@ -345,6 +345,8 @@ and private compileStatement (state: CompileState) (block: RawBlock) : Instructi
             let list = compileInput state hoisted block "LIST"
             ForEach(block.id, var, list, compileStatementInput state block "DO")
         | "controls_if" -> compileIf state hoisted block
+        | "controls_flow_statements" ->
+            if fieldString block "FLOW" = Some "CONTINUE" then Continue block.id else Break block.id
         | "callCustomBlock" -> compileCustomBlockCall state hoisted block
         | t when ACTION_BLOCKS.ContainsKey t -> ApiAction(block.id, t, compileArgs state hoisted block ACTION_BLOCKS.[t])
         | other ->

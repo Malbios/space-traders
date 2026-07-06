@@ -79,6 +79,7 @@ export function buildCatalogToolbox(customBlockIds: string[], dynamicAccessorTyp
                     { kind: "block", type: "controls_repeat_ext" },
                     { kind: "block", type: "controls_whileUntil" },
                     { kind: "block", type: "controls_forEach" },
+                    { kind: "block", type: "controls_flow_statements" },
                     { kind: "block", type: "logic_compare" },
                     { kind: "block", type: "logic_operation" },
                     { kind: "block", type: "logic_negate" },

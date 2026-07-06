@@ -21,6 +21,8 @@ let private blockIdOf (instr: Instruction) : string =
     | WhileUntil(bid, _, _, _) -> bid
     | ForEach(bid, _, _, _) -> bid
     | CallCustomBlock(bid, _, _, _) -> bid
+    | Break bid -> bid
+    | Continue bid -> bid
 
 let rec private findInstructionByBlockId (instructions: Instruction list) (blockId: string) : Instruction option =
     instructions
@@ -101,22 +103,68 @@ let rec private advancePosition (program: CompiledProgram) (frame: Frame) : Fram
             { frame with
                 position = { top with index = nextIndex } :: rest }
         else
-            match top.bodyRef, top.loopState with
-            | RepeatBody _, Some(RepeatState remaining) when remaining > 1 ->
-                { frame with
-                    position = { top with index = 0; loopState = Some(RepeatState(remaining - 1)) } :: rest }
-            | ForEachBody _, Some(ForEachState(items, idx)) when idx + 1 < List.length items ->
-                let newIdx = idx + 1
-                let varName = forEachVariableName program top.bodyRef
+            exhaustLoopEntry program top rest frame
 
-                { frame with
-                    position = { top with index = 0; loopState = Some(ForEachState(items, newIdx)) } :: rest
-                    locals = frame.locals.Add(varName, items.[newIdx]) }
-            | WhileUntilBody _, _ -> { frame with position = rest }
-            | _ ->
-                match rest with
-                | [] -> { frame with position = [] }
-                | _ -> advancePosition program { frame with position = rest }
+/// The per-loop-kind decision made once a loop's body is treated as exhausted: re-enter
+/// (decrementing `RepeatState`/advancing `ForEachState`'s cursor) if iterations remain,
+/// or pop and advance the parent past the loop otherwise. Shared by `advancePosition`
+/// (a body genuinely ran off the end) and `Continue` (forced early, as if it had).
+and private exhaustLoopEntry
+    (program: CompiledProgram)
+    (top: PathEntry)
+    (rest: PathEntry list)
+    (frame: Frame)
+    : Frame =
+    match top.bodyRef, top.loopState with
+    | RepeatBody _, Some(RepeatState remaining) when remaining > 1 ->
+        { frame with
+            position = { top with index = 0; loopState = Some(RepeatState(remaining - 1)) } :: rest }
+    | ForEachBody _, Some(ForEachState(items, idx)) when idx + 1 < List.length items ->
+        let newIdx = idx + 1
+        let varName = forEachVariableName program top.bodyRef
+
+        { frame with
+            position = { top with index = 0; loopState = Some(ForEachState(items, newIdx)) } :: rest
+            locals = frame.locals.Add(varName, items.[newIdx]) }
+    | WhileUntilBody _, _ -> { frame with position = rest }
+    | _ ->
+        match rest with
+        | [] -> { frame with position = [] }
+        | _ -> advancePosition program { frame with position = rest }
+
+/// Finds the nearest enclosing loop `PathEntry` (head = deepest), if any, plus
+/// everything below it in the position stack — used by `Break`/`Continue` to discard
+/// any nested `If`-branch entries above the loop they act on.
+let rec private findEnclosingLoop (position: PathEntry list) : (PathEntry * PathEntry list) option =
+    match position with
+    | [] -> None
+    | top :: rest ->
+        match top.bodyRef with
+        | RepeatBody _
+        | WhileUntilBody _
+        | ForEachBody _ -> Some(top, rest)
+        | _ -> findEnclosingLoop rest
+
+/// Exits the nearest enclosing loop unconditionally, regardless of iterations left —
+/// the same "loop exhausted, pop and advance the parent" behavior `exhaustLoopEntry`'s
+/// fallback branch already has. `Validator.fs`'s `checkFlowStatements` should have
+/// already ruled out "no enclosing loop"; if it somehow still happens, leave the frame
+/// untouched rather than crash a running job.
+let private breakLoop (program: CompiledProgram) (frame: Frame) : Frame =
+    match findEnclosingLoop frame.position with
+    | None -> frame
+    | Some(_, parentRest) ->
+        match parentRest with
+        | [] -> { frame with position = [] }
+        | _ -> advancePosition program { frame with position = parentRest }
+
+/// Skips straight to the nearest enclosing loop's next iteration (or exits it, if the
+/// current one was its last) by forcing `exhaustLoopEntry`'s decision immediately,
+/// instead of waiting for the body to run off the end naturally.
+let private continueLoop (program: CompiledProgram) (frame: Frame) : Frame =
+    match findEnclosingLoop frame.position with
+    | None -> frame
+    | Some(top, rest) -> exhaustLoopEntry program top rest frame
 
 let private pushBody (bodyRef: BodyRef) (loopState: LoopState option) (frame: Frame) : Frame =
     { frame with
@@ -315,6 +363,8 @@ and private advanceInstruction (clock: Clock) (job: JobState) (instr: Instructio
                 |> setLocal variable first
 
             advance clock job'
+    | Break _ -> advance clock (job |> mapTopFrame (breakLoop job.program))
+    | Continue _ -> advance clock (job |> mapTopFrame (continueLoop job.program))
     | InfoRead(blockId, infoType, args, resultTarget) -> emitInfoRead job blockId infoType args resultTarget
     | CallCustomBlock(_, customBlockId, arguments, resultTarget) ->
         match job.program.customBlocks.TryFind customBlockId with

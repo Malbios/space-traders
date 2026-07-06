@@ -60,6 +60,8 @@ let rec private walk (instr: Instruction) : (string list * string list) =
         let r, c = bodyRefs body
         exprRefs list @ r, c
     | CallCustomBlock(_, customBlockId, args, _) -> exprsOf args, [ customBlockId ]
+    | Break _ -> [], []
+    | Continue _ -> [], []
 
 /// Names "declared" within an instruction list's own scope (SetVariable targets,
 /// ForEach loop variables) — used for the scope check below. Custom-block parameters
@@ -92,6 +94,32 @@ let private checkScope (locale: Locale) (scopeName: string) (declared: Set<strin
                 | En -> $"The variable \"{name}\" is not known in {scopeName}."
 
             { blockId = None; message = message }))
+
+/// A `Break`/`Continue` is only meaningful inside a `Repeat`/`WhileUntil`/`ForEach`
+/// body — Blockly's own `controls_flow_in_loop_check` extension already guards this
+/// client-side, but a stored/hand-crafted program's JSON isn't guaranteed to have gone
+/// through that UI, so this is the server-side backstop.
+let rec private checkFlowStatements (locale: Locale) (insideLoop: bool) (instructions: Instruction list) : DslError list =
+    instructions
+    |> List.collect (fun instr ->
+        match instr with
+        | Break blockId
+        | Continue blockId when not insideLoop ->
+            let message =
+                match locale with
+                | De -> "\"Verlassen\"/\"Weiter\" darf nur innerhalb einer Schleife verwendet werden."
+                | En -> "\"Break\"/\"Continue\" may only be used inside a loop."
+
+            [ { blockId = Some blockId; message = message } ]
+        | Break _
+        | Continue _ -> []
+        | If(_, branches, elseBranch) ->
+            (branches |> List.collect (snd >> checkFlowStatements locale insideLoop))
+            @ (elseBranch |> Option.map (checkFlowStatements locale insideLoop) |> Option.defaultValue [])
+        | Repeat(_, _, body) -> checkFlowStatements locale true body
+        | WhileUntil(_, _, _, body) -> checkFlowStatements locale true body
+        | ForEach(_, _, _, body) -> checkFlowStatements locale true body
+        | _ -> [])
 
 let private literalTypeMismatch (inputType: string) (arg: Expr) : bool =
     match inputType, arg with
@@ -227,7 +255,11 @@ let validate (locale: Locale) (program: CompiledProgram) : DslError list =
 
     let cycleErrors = detectCycles locale program
 
-    startBlockError @ programScopeErrors @ customBlockScopeErrors @ callErrors @ cycleErrors
+    let flowStatementErrors =
+        checkFlowStatements locale false program.instructions
+        @ (program.customBlocks |> Map.toList |> List.collect (fun (_, c) -> checkFlowStatements locale false c.instructions))
+
+    startBlockError @ programScopeErrors @ customBlockScopeErrors @ callErrors @ cycleErrors @ flowStatementErrors
 
 /// The §9 mismatch check: compares each custom block's frozen signature snapshot
 /// against its *current* live definition. Only meaningful when re-checking an

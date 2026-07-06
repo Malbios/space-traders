@@ -54,6 +54,11 @@ type Instruction =
     /// A custom-block call (§9d) — a real call, not inlined. `resultTarget` is set only
     /// when the referenced block's signature has an output.
     | CallCustomBlock of blockId: string * customBlockId: string * arguments: Map<string, Expr> * resultTarget: string option
+    /// Exits the nearest enclosing `Repeat`/`WhileUntil`/`ForEach` immediately.
+    | Break of blockId: string
+    /// Skips straight to the nearest enclosing loop's next iteration (or exits it, if
+    /// the current iteration was its last).
+    | Continue of blockId: string
 
 type CustomBlockSignatureInput = { name: string; inputType: string }
 

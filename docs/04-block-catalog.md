@@ -273,12 +273,19 @@ Wahrheitswert (true/false) -> logic_boolean (Compiler.fs: Literal(BoolLit ...))
 Und/Oder                   -> logic_operation (Compiler.fs: LogicalOp(op, ...); Types.fs's
                                Expr; Eval.fs short-circuits AND/OR like F#'s own &&/||)
 Nicht                      -> logic_negate (Compiler.fs: LogicalNot(...))
+Verlassen/Weiter           -> controls_flow_statements (Compiler.fs: Break/Continue;
+                               Types.fs's Instruction; Step.fs's advancePosition/
+                               breakLoop/continueLoop implement the loop-exit semantics)
 ```
 
 `controls_flow_statements` (break/continue) was also considered in that audit and found
-to be a real, felt gap (no way to stop a `forEach` early) but was **not** added — it
-needs loop-exit semantics threaded through `Step.fs`'s `ForEach`/`WhileUntil`/`Repeat`
-handling in the scheduler core, not just a new `Expr`/toolbox entry. See `TODO.md`.
+to be a real, felt gap (no way to stop a `forEach` early) — unlike `logic_boolean`/
+`logic_operation`/`logic_negate`, it needed loop-exit semantics threaded through
+`Step.fs`'s `ForEach`/`WhileUntil`/`Repeat` handling in the scheduler core, not just a
+new `Expr`/toolbox entry, so it was implemented as its own follow-up. `Validator.fs`
+rejects a `Break`/`Continue` used outside any loop (a server-side backstop for a
+stored/hand-crafted program — Blockly's own `controls_flow_in_loop_check` extension
+already guards this client-side).
 
 ## Datensätze und Zugriffsblöcke (records and accessor blocks, §8, Milestone 9/Part B)
 
