@@ -359,10 +359,11 @@ program with a user, not yet planned into a milestone.
       directly at edit time instead of only failing at runtime.
 - [x] Finished pilot cards can now be dismissed from the live Piloten
       dashboard (`JobRunner.dismiss`) without touching persisted History.
-- [ ] `controls_if`'s condition and other stock Blockly sockets besides
-      `controls_forEach`'s LIST still have no `.setCheck` constraint — not
-      touched this pass (scoped to the one socket that caused the live
-      crash); worth a similar pass later.
+- [x] Checked every other stock control-block socket live: `controls_if`'s
+      IF0/`controls_whileUntil`'s BOOL already check `"Boolean"`,
+      `controls_repeat_ext`'s TIMES already checks `"Number"` — none of
+      these were actually broken. Only `logic_compare`'s A/B operands had
+      no check; now restricted to `["String","Number","Boolean"]`.
 
 ## Later milestones
 
