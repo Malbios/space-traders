@@ -69,13 +69,13 @@ type CustomBlockRemoteHandler(ctx: IRemoteContext) =
             delete =
                 fun id ->
                     async {
-                        let! usages = Persistence.CustomBlockRepository.findUsages dbPath id
+                        let! locale = currentLocale ()
+                        let! usages = Persistence.CustomBlockRepository.findUsages dbPath id locale
 
                         if usages.IsEmpty then
                             do! Persistence.CustomBlockRepository.delete dbPath id
                             return Ok()
                         else
-                            let! locale = currentLocale ()
                             let usageList = usages |> String.concat ", "
 
                             let message =

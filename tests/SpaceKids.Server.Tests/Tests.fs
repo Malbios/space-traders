@@ -163,7 +163,7 @@ let ``findUsages is empty for a custom block nothing references`` () =
         let id = CustomBlockRepository.insert dbPath "Unbenutzt" None |> Async.RunSynchronously
         CustomBlockRepository.saveVersion dbPath id "{}" (aCompiledBlock [] None) |> Async.RunSynchronously |> ignore
 
-        let usages = CustomBlockRepository.findUsages dbPath id |> Async.RunSynchronously
+        let usages = CustomBlockRepository.findUsages dbPath id Locale.De |> Async.RunSynchronously
         Assert.Empty(usages)
     finally
         deleteDbFiles dbPath
@@ -187,7 +187,7 @@ let ``findUsages lists a program that references the custom block`` () =
         |> Async.RunSynchronously
         |> ignore
 
-        let usages = CustomBlockRepository.findUsages dbPath id |> Async.RunSynchronously
+        let usages = CustomBlockRepository.findUsages dbPath id Locale.De |> Async.RunSynchronously
         Assert.Contains(usages, fun u -> u.Contains("Programm") && u.Contains("Mein Programm"))
     finally
         deleteDbFiles dbPath
@@ -217,7 +217,7 @@ let ``findUsages ignores a compiled snapshot whose program no longer exists (leg
         |> Async.RunSynchronously
         |> ignore
 
-        let usages = CustomBlockRepository.findUsages dbPath id |> Async.RunSynchronously
+        let usages = CustomBlockRepository.findUsages dbPath id Locale.De |> Async.RunSynchronously
         Assert.Empty(usages)
     finally
         deleteDbFiles dbPath
@@ -239,7 +239,7 @@ let ``findUsages lists another custom block that calls it`` () =
 
         CustomBlockRepository.saveVersion dbPath outerId "{}" outerCompiled |> Async.RunSynchronously |> ignore
 
-        let usages = CustomBlockRepository.findUsages dbPath innerId |> Async.RunSynchronously
+        let usages = CustomBlockRepository.findUsages dbPath innerId Locale.De |> Async.RunSynchronously
         Assert.Contains(usages, fun u -> u.Contains("Aussen"))
     finally
         deleteDbFiles dbPath
@@ -489,5 +489,95 @@ let ``loadStoredAgent returns the most recently saved agent, not the first ever 
 
         let stored = AgentRepository.loadStoredAgent dbPath |> Async.RunSynchronously
         Assert.Equal(Some("OLD-AGENT", "old-token-refreshed"), stored)
+    finally
+        deleteDbFiles dbPath
+
+// --- ShipLockRepository (found in review: a TOCTOU race in tryAcquire, and a missing
+// ownership check in refreshLease) --------------------------------------------------
+
+/// `ship_locks.job_id REFERENCES jobs(id)`, which itself `REFERENCES programs(id)` —
+/// a fresh `jobs` row (backed by a `programs` snapshot) is needed for each job id a
+/// ship-lock test references, matching how `JobRunner.startJob` always inserts the
+/// `jobs` row before ever calling `tryAcquire`.
+let private insertJobRow (dbPath: string) (programSnapshotId: string) (jobId: string) : unit =
+    JobRepository.insert dbPath jobId programSnapshotId None "Running" "{}" None
+    |> Async.RunSynchronously
+
+[<Fact>]
+let ``tryAcquire: two concurrent calls for the same ship never both succeed`` () =
+    let dbPath = tempDbPath ()
+    try
+        MigrationRunner.run dbPath
+        let programId = ProgramRepository.create dbPath "Lock race test" |> Async.RunSynchronously
+        let programSnapshotId = ProgramRepository.insert dbPath programId "{}" |> Async.RunSynchronously
+
+        for i in 1 .. 8 do
+            insertJobRow dbPath programSnapshotId $"job-{i}"
+
+        let results =
+            [ 1 .. 8 ]
+            |> List.map (fun i -> async { return! ShipLockRepository.tryAcquire dbPath "SHIP-1" $"job-{i}" 90.0 })
+            |> Async.Parallel
+            |> Async.RunSynchronously
+
+        let succeeded = results |> Array.filter (fun r -> match r with Ok None -> true | _ -> false)
+        Assert.Equal(1, succeeded.Length)
+    finally
+        deleteDbFiles dbPath
+
+[<Fact>]
+let ``refreshLease is a no-op once a different job has legitimately reclaimed the ship`` () =
+    let dbPath = tempDbPath ()
+    try
+        MigrationRunner.run dbPath
+        let programId = ProgramRepository.create dbPath "Lock reclaim test" |> Async.RunSynchronously
+        let programSnapshotId = ProgramRepository.insert dbPath programId "{}" |> Async.RunSynchronously
+        insertJobRow dbPath programSnapshotId "job-A"
+        insertJobRow dbPath programSnapshotId "job-B"
+
+        // job-A acquires, then its lease is force-expired (simulating a long-overdue tick).
+        ShipLockRepository.tryAcquire dbPath "SHIP-1" "job-A" 90.0 |> Async.RunSynchronously |> ignore
+        use conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath}")
+        conn.Open()
+        use expireCmd = conn.CreateCommand()
+        expireCmd.CommandText <- "UPDATE ship_locks SET lease_expires_at = $past WHERE ship_symbol = 'SHIP-1';"
+        expireCmd.Parameters.AddWithValue("$past", DateTimeOffset.UtcNow.AddMinutes(-10.0).ToString("o")) |> ignore
+        expireCmd.ExecuteNonQuery() |> ignore
+        conn.Dispose()
+
+        // job-B legitimately reclaims the now-expired lock.
+        let reclaim = ShipLockRepository.tryAcquire dbPath "SHIP-1" "job-B" 90.0 |> Async.RunSynchronously
+        Assert.Equal(Ok(Some "job-A"), reclaim)
+
+        // job-A's own stale in-flight tick then tries to refresh its (no-longer-owned) lease.
+        ShipLockRepository.refreshLease dbPath "SHIP-1" "job-A" 90.0 |> Async.RunSynchronously
+
+        use verifyConn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath}")
+        verifyConn.Open()
+        use verifyCmd = verifyConn.CreateCommand()
+        verifyCmd.CommandText <- "SELECT job_id FROM ship_locks WHERE ship_symbol = 'SHIP-1';"
+        let owner = verifyCmd.ExecuteScalar() :?> string
+        // job-A's refresh must not have resurrected its ownership — job-B still owns it.
+        Assert.Equal("job-B", owner)
+    finally
+        deleteDbFiles dbPath
+
+// --- SettingsRepository (found in review: an uncaught-exception race on first read) -
+
+[<Fact>]
+let ``getLocale and getPollIntervalSeconds racing on a fresh database never throw`` () =
+    let dbPath = tempDbPath ()
+    try
+        MigrationRunner.run dbPath
+
+        let results =
+            [ for _ in 1 .. 6 -> async { let! _ = SettingsRepository.getLocale dbPath in return () }
+              for _ in 1 .. 6 -> async { let! _ = SettingsRepository.getPollIntervalSeconds dbPath in return () } ]
+            |> Async.Parallel
+            |> Async.RunSynchronously
+
+        Assert.Equal(12, results.Length)
+        Assert.Equal("de", SettingsRepository.getLocale dbPath |> Async.RunSynchronously)
+        Assert.Equal(1, SettingsRepository.getPollIntervalSeconds dbPath |> Async.RunSynchronously)
     finally
         deleteDbFiles dbPath

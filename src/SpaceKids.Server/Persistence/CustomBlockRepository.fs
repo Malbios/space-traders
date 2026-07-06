@@ -175,7 +175,7 @@ let list (dbPath: string) : Async<CustomBlockSummary list> =
 /// checked via a plain substring match on the serialized body for the target id — a
 /// pragmatic simplification (ids are GUIDs, so a false-positive substring match is
 /// vanishingly unlikely), not a full instruction-tree walk.
-let findUsages (dbPath: string) (customBlockId: string) : Async<string list> =
+let findUsages (dbPath: string) (customBlockId: string) (locale: Locale) : Async<string list> =
     async {
         use conn = Database.openConnection dbPath
 
@@ -203,11 +203,16 @@ let findUsages (dbPath: string) (customBlockId: string) : Async<string list> =
                 use reader = cmd.ExecuteReader()
                 let names = ResizeArray<string>()
 
+                let programLabel =
+                    match locale with
+                    | De -> "Programm"
+                    | En -> "Program"
+
                 while reader.Read() do
                     if not (reader.IsDBNull(1)) then
                         let program = JobStateJson.deserializeProgram (reader.GetString(1))
                         if program.customBlocks.ContainsKey customBlockId then
-                            names.Add $"Programm \"{reader.GetString(0)}\""
+                            names.Add $"{programLabel} \"{reader.GetString(0)}\""
 
                 // A program run multiple times while referencing the block would
                 // otherwise list its own name once per historical snapshot row.
@@ -231,9 +236,14 @@ let findUsages (dbPath: string) (customBlockId: string) : Async<string list> =
                 use reader = cmd.ExecuteReader()
                 let names = ResizeArray<string>()
 
+                let customBlockLabel =
+                    match locale with
+                    | De -> "Eigener Block"
+                    | En -> "Custom block"
+
                 while reader.Read() do
                     if not (reader.IsDBNull(2)) && reader.GetString(2).Contains(customBlockId) then
-                        names.Add $"Eigener Block \"{reader.GetString(1)}\""
+                        names.Add $"{customBlockLabel} \"{reader.GetString(1)}\""
 
                 return List.ofSeq names
             }
