@@ -4,7 +4,14 @@ open System.IO
 open Microsoft.Data.Sqlite
 
 /// The real, permanent database file (Milestone 0's `spacekids.spike.db` is gone).
-let defaultDbPath = Path.Combine(Directory.GetCurrentDirectory(), "spacekids.db")
+/// Overridable via `SPACEKIDS_DB_PATH` so live/manual verification runs (e.g. a
+/// Playwright script driving the real server binary against the fake API) can
+/// point at a throwaway file instead of silently sharing -- and corrupting --
+/// whatever real agent/token data lives in the default path.
+let defaultDbPath =
+    match System.Environment.GetEnvironmentVariable("SPACEKIDS_DB_PATH") with
+    | null | "" -> Path.Combine(Directory.GetCurrentDirectory(), "spacekids.db")
+    | overridePath -> overridePath
 
 let connectionString (dbPath: string) = $"Data Source={dbPath}"
 

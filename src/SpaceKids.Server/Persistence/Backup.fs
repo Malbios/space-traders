@@ -6,7 +6,14 @@ open System.Threading
 open System.Threading.Tasks
 open Microsoft.Extensions.Hosting
 
-let defaultBackupsDir = Path.Combine(Directory.GetCurrentDirectory(), "backups")
+/// Overridable via `SPACEKIDS_BACKUPS_DIR` for the same reason `Database.defaultDbPath`
+/// is overridable via `SPACEKIDS_DB_PATH` -- a live-verification run against a
+/// throwaway db shouldn't also litter the real backups directory.
+let defaultBackupsDir =
+    match Environment.GetEnvironmentVariable("SPACEKIDS_BACKUPS_DIR") with
+    | null | "" -> Path.Combine(Directory.GetCurrentDirectory(), "backups")
+    | overridePath -> overridePath
+
 let defaultRetainCount = 7
 
 let private backupFileName () =
