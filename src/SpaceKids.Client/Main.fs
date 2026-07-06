@@ -1767,6 +1767,7 @@ let private viewSystemMap (s: Strings) (state: DashboardState) dispatch =
                         "y" => string (sy + 16.0)
                         "font-size" => "8"
                         "text-anchor" => "middle"
+                        "fill" => "currentColor"
                         waypoint.symbol
                     }
                 }
@@ -1793,6 +1794,7 @@ let private viewSystemMap (s: Strings) (state: DashboardState) dispatch =
                             "y" => string (sy - 8.0)
                             "font-size" => "8"
                             "text-anchor" => "middle"
+                            "fill" => "currentColor"
                             ship.symbol
                         }
                     }
