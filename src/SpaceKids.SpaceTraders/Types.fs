@@ -43,7 +43,9 @@ type Cooldown =
     { shipSymbol: string
       totalSeconds: int
       remainingSeconds: int
-      expiration: string }
+      /// Real accounts get `null` here when a ship has no active cooldown, unlike
+      /// the fake server's fixtures which always populate it.
+      expiration: string option }
 
 type Ship =
     { symbol: string

@@ -60,7 +60,7 @@ let private seedShip (symbol: string) : Ship =
         { shipSymbol = symbol
           totalSeconds = 0
           remainingSeconds = 0
-          expiration = (clock ()).ToString("o") } }
+          expiration = Some((clock ()).ToString("o")) } }
 
 /// Milestone 7 (§14): ship-lock rejection/reclaim is only testable with at least two
 /// independently mutable ships (one locked, one free) — a single mutable `ship`
@@ -447,7 +447,7 @@ let configureApp (app: WebApplication) =
                                                         { shipSymbol = current.symbol
                                                           totalSeconds = int (ceil fixedCooldownSeconds)
                                                           remainingSeconds = int (ceil fixedCooldownSeconds)
-                                                          expiration = expiration.ToString("o") } }
+                                                          expiration = Some(expiration.ToString("o")) } }
 
                                             ships <- ships.Add(shipSymbol, updated)
                                             updated)
@@ -605,7 +605,7 @@ let configureApp (app: WebApplication) =
                                                 { shipSymbol = current.symbol
                                                   totalSeconds = int (ceil fixedCooldownSeconds)
                                                   remainingSeconds = int (ceil fixedCooldownSeconds)
-                                                  expiration = expiration.ToString("o") }
+                                                  expiration = Some(expiration.ToString("o")) }
 
                                             ships <- ships.Add(shipSymbol, { current with cooldown = newCooldown })
                                             newCooldown)

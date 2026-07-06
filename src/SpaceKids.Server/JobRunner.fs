@@ -49,7 +49,7 @@ let private initialFrame: Frame =
 /// A cooldown is only meaningful while still counting down — matches how
 /// `ExtractBaseline`/reconciliation treat "no active cooldown" as `None`.
 let private cooldownExpirationOf (cooldown: Cooldown) : string option =
-    if cooldown.remainingSeconds > 0 then Some cooldown.expiration else None
+    if cooldown.remainingSeconds > 0 then cooldown.expiration else None
 
 let private toSnapshot (ship: Ship) : ShipSnapshot =
     { navStatus = ship.nav.status
@@ -142,7 +142,7 @@ let private runAction
 
                     return
                         ExtractOk(
-                            r.cooldown.expiration,
+                            r.cooldown.expiration |> Option.defaultValue (DateTime.UtcNow.ToString("o")),
                             r.cargo.units,
                             inventoryMap r.cargo,
                             r.extraction.``yield``.symbol,
@@ -186,7 +186,7 @@ let private runAction
             (fun () ->
                 async {
                     let! r = client.Survey(token, shipSymbol)
-                    return SurveyOk r.cooldown.expiration
+                    return SurveyOk(r.cooldown.expiration |> Option.defaultValue (DateTime.UtcNow.ToString("o")))
                 })
         | DoDeliverContract(contractId, tradeSymbol, units) ->
             $"deliverContract:{contractId}",
