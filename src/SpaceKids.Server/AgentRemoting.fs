@@ -134,6 +134,11 @@ type AgentRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                                 | Some(_, freshToken) when freshToken <> token ->
                                     try
                                         let! agent = client.GetAgent(freshToken)
+                                        // A stale closure's 401 above already paused the shared
+                                        // Worker via `markServerReset` — proving this fresher
+                                        // token works means the account is fine, so resume it
+                                        // (same as `submitToken`'s own recovery clear).
+                                        RequestQueue.clearServerReset ()
                                         let! state = loadRestOfState client dbPath agent freshToken
                                         return Some state
                                     with _ -> return None
