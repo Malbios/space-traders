@@ -125,6 +125,18 @@ function setTheme(theme: string): void {
     document.documentElement.setAttribute("data-theme", theme);
 }
 
+const LOG_LEVEL_STORAGE_KEY = "spacekids-log-level";
+
+/** Settings tab: gates the routine-activity trace logging (`LoadPilots`/`WatchTick`
+ * polling) -- same per-browser `localStorage` reasoning as `getTheme`/`setTheme`. */
+function getLogLevel(): string {
+    return window.localStorage.getItem(LOG_LEVEL_STORAGE_KEY) ?? "off";
+}
+
+function setLogLevel(level: string): void {
+    window.localStorage.setItem(LOG_LEVEL_STORAGE_KEY, level);
+}
+
 function destroyWorkspace(containerId: string): void {
     const ws = workspaces.get(containerId);
     if (ws) {
@@ -257,6 +269,8 @@ interface SpaceKidsHost {
     setLocale: typeof setLocale;
     getTheme: typeof getTheme;
     setTheme: typeof setTheme;
+    getLogLevel: typeof getLogLevel;
+    setLogLevel: typeof setLogLevel;
 }
 
 declare global {
@@ -280,4 +294,6 @@ window.spaceKids = {
     setLocale,
     getTheme,
     setTheme,
+    getLogLevel,
+    setLogLevel,
 };

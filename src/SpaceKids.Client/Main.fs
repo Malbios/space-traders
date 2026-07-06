@@ -313,6 +313,11 @@ type Model =
         /// unlike locale/poll-interval this is stored in `localStorage`, not the
         /// server, since it has no bearing on shared/server-side state.
         theme: string
+        /// Settings tab: `"off"`/`"info"`/`"trace"`, gates the routine-activity
+        /// trace logging in `LoadPilots`/`WatchTick` (both are cheap, frequent,
+        /// local-only polls whose per-tick console noise should be silent by
+        /// default). Stored in `localStorage`, same reasoning as `theme`.
+        logLevel: string
     }
 
 let private terminalPilotStatuses = [ "Completed"; "Failed"; "Cancelled" ]
@@ -372,8 +377,9 @@ let initModel =
         serverUnreachable = false
         pilotsPollBackoffTicks = 1
         pilotsPollTicksSinceLast = 0
-        pollIntervalSeconds = 5
+        pollIntervalSeconds = 1
         theme = "light"
+        logLevel = "off"
     }
 
 type Message =
@@ -464,6 +470,10 @@ type Message =
     | ThemeLoaded of string
     | SetTheme of string
     | ThemeSet
+    | LoadLogLevel
+    | LogLevelLoaded of string
+    | SetLogLevel of string
+    | LogLevelSet
     /// Shared failure path for every load that previously had none at all (see
     /// `LoadDashboard`'s `DashboardLoadFailed` for the pattern this mirrors) — a
     /// down SpaceKids server should be visible and not spammed, not silent.
@@ -625,7 +635,8 @@ type Strings =
       settingsPollIntervalLabel: string
       settingsThemeLabel: string
       settingsThemeLight: string
-      settingsThemeDark: string }
+      settingsThemeDark: string
+      settingsLogLevelLabel: string }
 
 let private stringsDe: Strings =
     { workshopLoaded = "Werkstatt geladen."
@@ -791,7 +802,8 @@ let private stringsDe: Strings =
       settingsPollIntervalLabel = "Abfrage-Intervall"
       settingsThemeLabel = "Design"
       settingsThemeLight = "Hell"
-      settingsThemeDark = "Dunkel" }
+      settingsThemeDark = "Dunkel"
+      settingsLogLevelLabel = "Protokollstufe" }
 
 let private stringsEn: Strings =
     { workshopLoaded = "Workshop loaded."
@@ -955,7 +967,8 @@ let private stringsEn: Strings =
       settingsPollIntervalLabel = "Poll interval"
       settingsThemeLabel = "Theme"
       settingsThemeLight = "Light"
-      settingsThemeDark = "Dark" }
+      settingsThemeDark = "Dark"
+      settingsLogLevelLabel = "Log level" }
 
 let private stringsFor (locale: string) : Strings = if locale = "en" then stringsEn else stringsDe
 
@@ -1049,10 +1062,11 @@ let update
     | TokenSubmitted(Error message) ->
         { model with dashboardLoading = false; dashboardError = Some message }, Cmd.none
     | LoadDashboard ->
-        // Fires automatically at page load and every few `MapTick`s (a silent
-        // background refresh) -- unlike `SubmitToken`, a real user action, this
-        // shouldn't flash a loading indicator for something the player never asked
-        // for, so `dashboardLoading` is left untouched here. A failure (e.g. a
+        // Event-driven: fires once at page load (`Init`'s batch) and again whenever
+        // `PilotsLoaded` detects a job just transitioned into a terminal state --
+        // never on a timer. Unlike `SubmitToken`, a real user action, this shouldn't
+        // flash a loading indicator for something the player never asked for, so
+        // `dashboardLoading` is left untouched here. A failure (e.g. a
         // deserialization error on unexpected real-account data) must still surface
         // visibly rather than leaving the page stuck with no error and no result.
         model,
@@ -1087,8 +1101,12 @@ let update
     | ProgramStartResult(Error message) ->
         { model with startingJob = false; pilotError = Some message }, Cmd.none
     | LoadPilots ->
+        if model.logLevel = "trace" then
+            System.Console.WriteLine("[trace] LoadPilots poll")
         model, Cmd.OfAsync.either (fun () -> jobRemote.listJobs ()) () PilotsLoaded (fun _ -> RemoteCallFailed)
     | PilotsLoaded pilots ->
+        if model.logLevel = "trace" then
+            System.Console.WriteLine($"[trace] PilotsLoaded: {pilots.Length} pilot(s)")
         // Per-program watch mode (§9/§15/Milestone-11-Part-E): a pilot flying a
         // *different* saved program no longer locks the one currently open here —
         // only a pilot actually flying this program does.
@@ -1231,10 +1249,15 @@ let update
     | WatchTick ->
         match model.watchedJobId with
         | None -> model, Cmd.none
-        | Some jobId -> model, Cmd.OfAsync.perform (fun () -> jobRemote.getStatus jobId) () WatchStatusLoaded
+        | Some jobId ->
+            if model.logLevel = "trace" then
+                System.Console.WriteLine($"[trace] WatchTick poll (jobId={jobId})")
+            model, Cmd.OfAsync.perform (fun () -> jobRemote.getStatus jobId) () WatchStatusLoaded
     | WatchStatusLoaded None ->
         { model with watchedJobId = None; watchedFrames = [] }, Cmd.none
     | WatchStatusLoaded(Some dto) ->
+        if model.logLevel = "trace" then
+            System.Console.WriteLine($"[trace] WatchStatusLoaded: status={dto.status}")
         match model.watchedJobId with
         | None -> model, Cmd.none
         | Some _ ->
@@ -1443,6 +1466,16 @@ let update
         { model with theme = theme },
         Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.setTheme" [| box theme |]) () (fun () -> ThemeSet)
     | ThemeSet -> model, Cmd.none
+
+    | LoadLogLevel ->
+        model, Cmd.OfAsync.perform (fun () -> call<string> js "spaceKids.getLogLevel" [||]) () LogLevelLoaded
+    | LogLevelLoaded logLevel ->
+        { model with logLevel = logLevel },
+        Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.setLogLevel" [| box logLevel |]) () (fun () -> LogLevelSet)
+    | SetLogLevel logLevel ->
+        { model with logLevel = logLevel },
+        Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.setLogLevel" [| box logLevel |]) () (fun () -> LogLevelSet)
+    | LogLevelSet -> model, Cmd.none
 
     | SwitchTab tab -> { model with activeTab = tab }, Cmd.none
     | RemoteCallFailed ->
@@ -1979,6 +2012,7 @@ let private tabButton (model: Model) dispatch (tab: Tab) (label: string) =
     }
 
 let private pollIntervalPresets = [ 1; 5; 10; 30 ]
+let private logLevelPresets = [ "off"; "info"; "trace" ]
 
 let private viewSettings (model: Model) dispatch =
     let s = stringsFor model.locale
@@ -2009,6 +2043,7 @@ let private viewSettings (model: Model) dispatch =
                 }
         }
         div {
+            attr.style "margin-bottom: 1rem"
             p { attr.style "font-weight: bold"; s.settingsThemeLabel }
             button {
                 attr.disabled (model.theme = "light")
@@ -2020,6 +2055,15 @@ let private viewSettings (model: Model) dispatch =
                 on.click (fun _ -> dispatch (SetTheme "dark"))
                 s.settingsThemeDark
             }
+        }
+        div {
+            p { attr.style "font-weight: bold"; s.settingsLogLevelLabel }
+            for level in logLevelPresets do
+                button {
+                    attr.disabled (model.logLevel = level)
+                    on.click (fun _ -> dispatch (SetLogLevel level))
+                    level.Substring(0, 1).ToUpper() + level.Substring(1)
+                }
         }
     }
 
@@ -2141,6 +2185,7 @@ type MyApp() =
                     Cmd.ofMsg LoadLocale
                     Cmd.ofMsg LoadPollInterval
                     Cmd.ofMsg LoadTheme
+                    Cmd.ofMsg LoadLogLevel
                     Cmd.ofMsg MapTick
                 ])
             (update js remote agentRemote queueRemote jobRemote customBlockRemote programRemote settingsRemote)

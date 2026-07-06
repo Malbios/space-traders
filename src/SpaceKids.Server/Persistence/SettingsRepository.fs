@@ -45,9 +45,9 @@ let getPollIntervalSeconds (dbPath: string) : Async<int> =
         match result with
         | null ->
             use insertCmd = conn.CreateCommand()
-            insertCmd.CommandText <- "INSERT INTO app_settings (id, poll_interval_seconds) VALUES (1, 5);"
+            insertCmd.CommandText <- "INSERT INTO app_settings (id, poll_interval_seconds) VALUES (1, 1);"
             insertCmd.ExecuteNonQuery() |> ignore
-            return 5
+            return 1
         | value -> return System.Convert.ToInt32(value)
     }
 
