@@ -4,11 +4,20 @@ open System
 open System.Collections.Generic
 open System.Net.Http
 open System.Text.Json
+open System.Text.Json.Serialization
 open System.Threading
 open System.Threading.Tasks
 open Microsoft.Extensions.Hosting
 open SpaceKids.Server.Persistence
 open SpaceKids.SpaceTraders
+
+/// Mirrors `Persistence/JobStateJson.fs`'s own small private `options` value — same
+/// two-line pattern, kept local here too, since serializing a DU-shaped `'a` (e.g.
+/// `ApiResult`) with vanilla `System.Text.Json` throws without `JsonFSharpConverter`.
+let private jsonOptions =
+    let o = JsonSerializerOptions()
+    o.Converters.Add(JsonFSharpConverter())
+    o
 
 /// Milestone 5 (§13/§19): a real priority queue with aging, replacing the Milestone 2
 /// `SemaphoreSlim` stub. Still exactly one physical call in flight at a time — the real
@@ -34,7 +43,9 @@ type QueueEvent =
       endpoint: string
       status: string
       priority: int
-      attempt: int }
+      attempt: int
+      requestJson: string option
+      responseJson: string option }
 
 type QueueStatus =
     { pendingCount: int
@@ -86,18 +97,21 @@ let private logEvent
     (priority: int)
     (attempt: int)
     (status: string)
+    (requestJson: string option)
     (responseMetadataJson: string option)
     =
     use conn = Database.openConnection dbPath
     use cmd = conn.CreateCommand()
     cmd.CommandText <-
         """
-        INSERT INTO request_queue_events (requested_at, endpoint, status, response_metadata_json, priority, attempt)
-        VALUES ($requestedAt, $endpoint, $status, $responseMetadataJson, $priority, $attempt);
+        INSERT INTO request_queue_events (requested_at, endpoint, status, request_json, response_metadata_json, priority, attempt)
+        VALUES ($requestedAt, $endpoint, $status, $requestJson, $responseMetadataJson, $priority, $attempt);
         """
     cmd.Parameters.AddWithValue("$requestedAt", requestedAt.ToString("o")) |> ignore
     cmd.Parameters.AddWithValue("$endpoint", endpoint) |> ignore
     cmd.Parameters.AddWithValue("$status", status) |> ignore
+    cmd.Parameters.AddWithValue("$requestJson", requestJson |> Option.map box |> Option.defaultValue (box DBNull.Value))
+    |> ignore
     cmd.Parameters.AddWithValue(
         "$responseMetadataJson",
         responseMetadataJson |> Option.map box |> Option.defaultValue (box DBNull.Value)
@@ -129,7 +143,7 @@ let getStatus (dbPath: string) : Async<QueueStatus> =
         use cmd = conn.CreateCommand()
         cmd.CommandText <-
             """
-            SELECT requested_at, endpoint, status, priority, attempt
+            SELECT requested_at, endpoint, status, priority, attempt, request_json, response_metadata_json
             FROM request_queue_events
             ORDER BY id DESC
             LIMIT 20;
@@ -143,7 +157,9 @@ let getStatus (dbPath: string) : Async<QueueStatus> =
                         endpoint = reader.GetString(1)
                         status = reader.GetString(2)
                         priority = reader.GetInt32(3)
-                        attempt = reader.GetInt32(4) } ]
+                        attempt = reader.GetInt32(4)
+                        requestJson = if reader.IsDBNull(5) then None else Some(reader.GetString(5))
+                        responseJson = if reader.IsDBNull(6) then None else Some(reader.GetString(6)) } ]
 
         return
             { pendingCount = pendingCount
@@ -155,7 +171,13 @@ let getStatus (dbPath: string) : Async<QueueStatus> =
 /// Enqueues one logical call. `priority` is 1 (most urgent) through 5 (least), per
 /// §13's levels; a waiting item's *effective* priority improves over time (aging) so a
 /// low-priority item can't starve forever behind a stream of high-priority ones.
-let enqueue (dbPath: string) (priority: int) (endpoint: string) (call: unit -> Async<'a>) : Async<'a> =
+let enqueue
+    (dbPath: string)
+    (priority: int)
+    (endpoint: string)
+    (requestJson: string option)
+    (call: unit -> Async<'a>)
+    : Async<'a> =
     async {
         let tcs = TaskCompletionSource<'a>()
         let enqueuedAt = DateTime.UtcNow
@@ -166,13 +188,14 @@ let enqueue (dbPath: string) (priority: int) (endpoint: string) (call: unit -> A
 
                 try
                     let! result = call ()
-                    logEvent dbPath endpoint requestedAt priority attemptNum "ok" None
+                    let responseJson = try Some(JsonSerializer.Serialize(result, jsonOptions)) with _ -> None
+                    logEvent dbPath endpoint requestedAt priority attemptNum "ok" requestJson responseJson
                     failedProbeCount.Value <- 0
                     unreachableSinceFlag.Value <- None
                     tcs.SetResult result
                 with
                     | SpaceTradersRateLimitException(retryAfterSeconds, _) when attemptNum < maxAttempts ->
-                        logEvent dbPath endpoint requestedAt priority attemptNum "rate-limited" None
+                        logEvent dbPath endpoint requestedAt priority attemptNum "rate-limited" requestJson None
                         do! Async.Sleep(max 0 (int (retryAfterSeconds * 1000.0)))
                         return! attempt (attemptNum + 1)
                     | :? HttpRequestException as ex when attemptNum < maxAttempts ->
@@ -183,6 +206,7 @@ let enqueue (dbPath: string) (priority: int) (endpoint: string) (call: unit -> A
                             priority
                             attemptNum
                             "definite-failure-retry"
+                            requestJson
                             (Some(JsonSerializer.Serialize({| error = ex.Message |})))
                         do! Async.Sleep(backoffMs attemptNum)
                         return! attempt (attemptNum + 1)
@@ -196,6 +220,7 @@ let enqueue (dbPath: string) (priority: int) (endpoint: string) (call: unit -> A
                             priority
                             attemptNum
                             "unreachable"
+                            requestJson
                             (Some(JsonSerializer.Serialize({| error = ex.Message |})))
                         unreachableSinceFlag.Value <- Some(unreachableSinceFlag.Value |> Option.defaultValue DateTime.UtcNow)
                         failedProbeCount.Value <- failedProbeCount.Value + 1
@@ -215,10 +240,11 @@ let enqueue (dbPath: string) (priority: int) (endpoint: string) (call: unit -> A
                             priority
                             attemptNum
                             "ambiguous"
+                            requestJson
                             (Some(JsonSerializer.Serialize({| error = ex.Message |})))
                         tcs.SetException(AmbiguousFailure ex.Message)
                     | SpaceTradersApiException(401, _) ->
-                        logEvent dbPath endpoint requestedAt priority attemptNum "server-reset" None
+                        logEvent dbPath endpoint requestedAt priority attemptNum "server-reset" requestJson None
                         markServerReset dbPath
                         tcs.SetException ServerResetDetected
                     | SpaceTradersApiException(statusCode, body) when statusCode >= 500 && attemptNum < maxAttempts ->
@@ -229,6 +255,7 @@ let enqueue (dbPath: string) (priority: int) (endpoint: string) (call: unit -> A
                             priority
                             attemptNum
                             "server-error-retry"
+                            requestJson
                             (Some(JsonSerializer.Serialize({| error = body |})))
                         do! Async.Sleep(backoffMs attemptNum)
                         return! attempt (attemptNum + 1)
@@ -240,6 +267,7 @@ let enqueue (dbPath: string) (priority: int) (endpoint: string) (call: unit -> A
                             priority
                             attemptNum
                             "unreachable"
+                            requestJson
                             (Some(JsonSerializer.Serialize({| error = body |})))
                         unreachableSinceFlag.Value <- Some(unreachableSinceFlag.Value |> Option.defaultValue DateTime.UtcNow)
                         failedProbeCount.Value <- failedProbeCount.Value + 1
@@ -259,6 +287,7 @@ let enqueue (dbPath: string) (priority: int) (endpoint: string) (call: unit -> A
                             priority
                             attemptNum
                             "error"
+                            requestJson
                             (Some(JsonSerializer.Serialize({| error = ex.Message |})))
                         tcs.SetException ex
             }

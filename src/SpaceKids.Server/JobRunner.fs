@@ -2,10 +2,20 @@ module SpaceKids.Server.JobRunner
 
 open System
 open System.Collections.Concurrent
+open System.Text.Json
+open System.Text.Json.Serialization
 open System.Threading
 open SpaceKids.Core.Dsl
 open SpaceKids.Core.Scheduler
 open SpaceKids.SpaceTraders
+
+/// Mirrors `Persistence/JobStateJson.fs`'s own small private `options` value — used
+/// here only to serialize a call's request payload (a `QueuedAction` DU, or an
+/// info-read's `infoType`/`args`) for `RequestQueue.enqueue`'s debug-view logging.
+let private jsonOptions =
+    let o = JsonSerializerOptions()
+    o.Converters.Add(JsonFSharpConverter())
+    o
 
 /// Milestone 7 (§14): the real persistent shell around the same pure `Step.step`
 /// Milestone 6 built and tested. `jobs` is a write-through cache — the `jobs` table
@@ -217,9 +227,11 @@ let private runAction
                     return RefuelOk r.fuel.current
                 })
 
+    let requestJson = try Some(JsonSerializer.Serialize(action, jsonOptions)) with _ -> None
+
     async {
         try
-            return! RequestQueue.enqueue dbPath priority endpoint call
+            return! RequestQueue.enqueue dbPath priority endpoint requestJson call
         with ex ->
             return classifyException ex
     }
@@ -367,9 +379,15 @@ let private runInfoRead
             | SpaceKids.Core.Dsl.De -> failwith $"Unbekannter Info-Block: {other}"
             | SpaceKids.Core.Dsl.En -> failwith $"Unknown info block: {other}"
 
+    let requestJson =
+        try
+            Some(JsonSerializer.Serialize({| infoType = infoType; args = args |}, jsonOptions))
+        with _ ->
+            None
+
     async {
         try
-            return! RequestQueue.enqueue dbPath priority endpoint call
+            return! RequestQueue.enqueue dbPath priority endpoint requestJson call
         with ex ->
             return classifyException ex
     }
@@ -481,7 +499,7 @@ let rec private applyEffects
                     async {
                         try
                             let! ship =
-                                RequestQueue.enqueue dbPath priority $"getShip:{shipSymbol}" (fun () ->
+                                RequestQueue.enqueue dbPath priority $"getShip:{shipSymbol}" None (fun () ->
                                     client.GetShip(token, shipSymbol))
 
                             return ReconciliationShip(toSnapshot ship)
@@ -495,7 +513,7 @@ let rec private applyEffects
                     async {
                         try
                             let! r =
-                                RequestQueue.enqueue dbPath priority $"getContract:{contractId}" (fun () ->
+                                RequestQueue.enqueue dbPath priority $"getContract:{contractId}" None (fun () ->
                                     client.GetContract(token, contractId))
 
                             return ReconciliationContract r.contract.accepted
@@ -509,7 +527,7 @@ let rec private applyEffects
                     async {
                         try
                             let! ships =
-                                RequestQueue.enqueue dbPath priority "listShips" (fun () -> client.ListShips(token))
+                                RequestQueue.enqueue dbPath priority "listShips" None (fun () -> client.ListShips(token))
 
                             return ReconciliationFleet(List.length ships)
                         with ex ->

@@ -31,6 +31,8 @@ type QueueRemoteHandler(ctx: IRemoteContext) =
                                             status = e.status
                                             priority = e.priority
                                             attempt = e.attempt
+                                            requestJson = e.requestJson
+                                            responseJson = e.responseJson
                                         })
                             }
                     }

@@ -86,10 +86,10 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                             return Error message
                         | Some token ->
                             let! ship =
-                                RequestQueue.enqueue dbPath 1 $"getShip:{shipSymbol}" (fun () ->
+                                RequestQueue.enqueue dbPath 1 $"getShip:{shipSymbol}" None (fun () ->
                                     client.GetShip(token, shipSymbol))
 
-                            let! agent = RequestQueue.enqueue dbPath 1 "getAgent" (fun () -> client.GetAgent(token))
+                            let! agent = RequestQueue.enqueue dbPath 1 "getAgent" None (fun () -> client.GetAgent(token))
 
                             // Milestone 9/Part B: `customBlockLookup` resolves real,
                             // persisted custom-block definitions now. Note:

@@ -1,5 +1,6 @@
 module SpaceKids.Server.AgentRemoting
 
+open System.Text.Json
 open Bolero.Remoting
 open Bolero.Remoting.Server
 open SpaceKids.SpaceTraders
@@ -10,13 +11,13 @@ open SpaceKids.Client.Main
 /// background/job work.
 let private loadRestOfState (client: SpaceTradersClient) (dbPath: string) (agent: Agent) (token: string) : Async<DashboardState> =
     async {
-        let! ships = RequestQueue.enqueue dbPath 1 "GET /my/ships" (fun () -> client.ListShips(token))
-        let! contracts = RequestQueue.enqueue dbPath 1 "GET /my/contracts" (fun () -> client.ListContracts(token))
+        let! ships = RequestQueue.enqueue dbPath 1 "GET /my/ships" None (fun () -> client.ListShips(token))
+        let! contracts = RequestQueue.enqueue dbPath 1 "GET /my/contracts" None (fun () -> client.ListContracts(token))
         let! waypoints =
-            RequestQueue.enqueue dbPath 1 "GET /systems/{system}/waypoints" (fun () ->
+            RequestQueue.enqueue dbPath 1 "GET /systems/{system}/waypoints" None (fun () ->
                 client.ListWaypoints(token, Waypoint.systemSymbolOf agent.headquarters))
         let! market =
-            RequestQueue.enqueue dbPath 1 "GET /systems/{system}/waypoints/{waypoint}/market" (fun () ->
+            RequestQueue.enqueue dbPath 1 "GET /systems/{system}/waypoints/{waypoint}/market" None (fun () ->
                 client.GetMarket(token, Waypoint.systemSymbolOf agent.headquarters, agent.headquarters))
         return
             { agent = agent
@@ -47,8 +48,10 @@ let rec private isNotFound (ex: exn) : bool =
 let fetchWaypointMarket (client: SpaceTradersClient) (dbPath: string) (token: string) (waypointSymbol: string) : Async<Market option> =
     async {
         try
+            let requestJson = Some(JsonSerializer.Serialize({| waypointSymbol = waypointSymbol |}))
+
             let! market =
-                RequestQueue.enqueue dbPath 1 $"GET /systems/{{system}}/waypoints/{waypointSymbol}/market" (fun () ->
+                RequestQueue.enqueue dbPath 1 $"GET /systems/{{system}}/waypoints/{waypointSymbol}/market" requestJson (fun () ->
                     client.GetMarket(token, Waypoint.systemSymbolOf waypointSymbol, waypointSymbol))
 
             return Some market
@@ -59,8 +62,10 @@ let fetchWaypointMarket (client: SpaceTradersClient) (dbPath: string) (token: st
 let fetchWaypointShipyard (client: SpaceTradersClient) (dbPath: string) (token: string) (waypointSymbol: string) : Async<Shipyard option> =
     async {
         try
+            let requestJson = Some(JsonSerializer.Serialize({| waypointSymbol = waypointSymbol |}))
+
             let! result =
-                RequestQueue.enqueue dbPath 1 $"GET /systems/{{system}}/waypoints/{waypointSymbol}/shipyard" (fun () ->
+                RequestQueue.enqueue dbPath 1 $"GET /systems/{{system}}/waypoints/{waypointSymbol}/shipyard" requestJson (fun () ->
                     client.GetShipyard(token, Waypoint.systemSymbolOf waypointSymbol, waypointSymbol))
 
             return Some result.shipyard
@@ -116,7 +121,7 @@ type AgentRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                         | None -> return None
                         | Some(_, token) ->
                             try
-                                let! agent = RequestQueue.enqueue dbPath 1 "GET /my/agent" (fun () -> client.GetAgent(token))
+                                let! agent = RequestQueue.enqueue dbPath 1 "GET /my/agent" None (fun () -> client.GetAgent(token))
                                 let! state = loadRestOfState client dbPath agent token
                                 return Some state
                             with _ ->

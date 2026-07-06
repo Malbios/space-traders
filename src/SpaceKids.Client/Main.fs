@@ -57,6 +57,8 @@ type QueueEventDto =
         status: string
         priority: int
         attempt: int
+        requestJson: string option
+        responseJson: string option
     }
 
 type QueueStatusDto =
@@ -224,7 +226,6 @@ type Tab =
     | ProgrammierenTab
     | PilotenTab
     | GalaxieTab
-    | SystemTab
     | SettingsTab
 
 type Model =
@@ -554,6 +555,8 @@ type Strings =
       shipyardHeading: string
       loadShipyard: string
       shipyardTypeLine: string * int -> string
+      shipTypeNameLine: string -> string
+      pricesHiddenHint: string
       shipNotFound: string -> string
       waypointNotFound: string -> string
       selectMapEntityHint: string
@@ -568,6 +571,9 @@ type Strings =
       apiUnreachableSince: string -> string
       recentEventsHeading: string
       eventLine: string * string * string * int * int -> string
+      requestLabel: string
+      responseLabel: string
+      notCaptured: string
 
       pilotStatus: string -> string
 
@@ -630,7 +636,6 @@ type Strings =
       tabProgrammieren: string
       tabPiloten: string
       tabGalaxie: string
-      tabSystem: string
       tabSettings: string
       serverUnreachableMessage: string
       settingsLocaleLabel: string
@@ -705,6 +710,8 @@ let private stringsDe: Strings =
       shipyardHeading = "Werft"
       loadShipyard = "Werft laden"
       shipyardTypeLine = fun (``type``, price) -> $"{``type``}: {price} Credits"
+      shipTypeNameLine = fun ``type`` -> ``type``
+      pricesHiddenHint = "Preise werden nur angezeigt, wenn eines deiner Schiffe hier ist."
       shipNotFound = fun symbol -> $"Schiff {symbol} nicht gefunden."
       waypointNotFound = fun symbol -> $"Wegpunkt {symbol} nicht gefunden."
       selectMapEntityHint = "Klicke ein Schiff oder einen Wegpunkt auf der Karte an, um Details zu sehen."
@@ -722,6 +729,9 @@ let private stringsDe: Strings =
       recentEventsHeading = "Letzte Ereignisse"
       eventLine =
           fun (time, endpoint, status, priority, attempt) -> $"{time} {endpoint} — {status} (Priorität {priority}, Versuch {attempt})"
+      requestLabel = "Anfrage"
+      responseLabel = "Antwort"
+      notCaptured = "(nicht erfasst)"
 
       pilotStatus =
           fun status ->
@@ -799,7 +809,6 @@ let private stringsDe: Strings =
       tabProgrammieren = "Programmieren"
       tabPiloten = "Piloten"
       tabGalaxie = "Galaxie"
-      tabSystem = "System"
       tabSettings = "Einstellungen"
       serverUnreachableMessage = "Verbindung zum Server unterbrochen — versuche es weiter..."
       settingsLocaleLabel = "Sprache"
@@ -874,6 +883,8 @@ let private stringsEn: Strings =
       shipyardHeading = "Shipyard"
       loadShipyard = "Load shipyard"
       shipyardTypeLine = fun (``type``, price) -> $"{``type``}: {price} credits"
+      shipTypeNameLine = fun ``type`` -> ``type``
+      pricesHiddenHint = "Prices are only shown when one of your ships is here."
       shipNotFound = fun symbol -> $"Ship {symbol} not found."
       waypointNotFound = fun symbol -> $"Waypoint {symbol} not found."
       selectMapEntityHint = "Click a ship or waypoint on the map to see its details."
@@ -889,6 +900,9 @@ let private stringsEn: Strings =
           fun since -> $"Mission control is currently unreachable (since {since}). Your pilots will continue once contact is restored."
       recentEventsHeading = "Recent events"
       eventLine = fun (time, endpoint, status, priority, attempt) -> $"{time} {endpoint} — {status} (priority {priority}, attempt {attempt})"
+      requestLabel = "Request"
+      responseLabel = "Response"
+      notCaptured = "(not captured)"
 
       pilotStatus =
           fun status ->
@@ -966,7 +980,6 @@ let private stringsEn: Strings =
       tabProgrammieren = "Code"
       tabPiloten = "Pilots"
       tabGalaxie = "Galaxy"
-      tabSystem = "System"
       tabSettings = "Settings"
       serverUnreachableMessage = "Lost connection to the server — still retrying..."
       settingsLocaleLabel = "Language"
@@ -1602,20 +1615,38 @@ let private viewWaypointInspector (strings: Strings) (waypoint: Waypoint) (state
             match model.waypointMarket with
             | None -> button { on.click (fun _ -> dispatch (LoadWaypointMarket waypoint.symbol)); strings.loadMarket }
             | Some market ->
-                ul {
-                    for good in market.tradeGoods |> Option.defaultValue [] do
-                        li { strings.tradeGoodLine (good.symbol, good.purchasePrice, good.sellPrice) }
-                }
+                match market.tradeGoods with
+                | Some tradeGoods when not tradeGoods.IsEmpty ->
+                    ul {
+                        for good in tradeGoods do
+                            li { strings.tradeGoodLine (good.symbol, good.purchasePrice, good.sellPrice) }
+                    }
+                | _ ->
+                    // The real API only includes priced `tradeGoods` when one of the
+                    // player's own ships is at this market — fall back to the
+                    // always-visible export/import/exchange names (no price) instead
+                    // of silently showing nothing.
+                    let names = market.exports @ market.imports @ market.exchange
+
+                    if not names.IsEmpty then
+                        p { strings.pricesHiddenHint }
+                        ul { for good in names do li { strings.exportLine good.name } }
 
         if hasTrait "SHIPYARD" then
             h4 { strings.shipyardHeading }
             match model.waypointShipyard with
             | None -> button { on.click (fun _ -> dispatch (LoadWaypointShipyard waypoint.symbol)); strings.loadShipyard }
             | Some shipyard ->
-                ul {
-                    for entry in shipyard.ships do
-                        li { strings.shipyardTypeLine (entry.``type``, entry.purchasePrice) }
-                }
+                if not shipyard.ships.IsEmpty then
+                    ul {
+                        for entry in shipyard.ships do
+                            li { strings.shipyardTypeLine (entry.``type``, entry.purchasePrice) }
+                    }
+                elif not shipyard.shipTypes.IsEmpty then
+                    // Same reasoning as the market fallback above: priced `ships` only
+                    // shows up when one of the player's own ships is docked here.
+                    p { strings.pricesHiddenHint }
+                    ul { for t in shipyard.shipTypes do li { strings.shipTypeNameLine t.``type`` } }
     }
 
 let private viewInspector (state: DashboardState) model dispatch =
@@ -1785,7 +1816,22 @@ let private viewQueueStatus model dispatch =
                 ul {
                     for evt in status.recentEvents do
                         let requestedAtText = evt.requestedAt.ToString("HH:mm:ss")
-                        li { s.eventLine (requestedAtText, evt.endpoint, evt.status, evt.priority, evt.attempt) }
+
+                        li {
+                            elt "details" {
+                                elt "summary" { s.eventLine (requestedAtText, evt.endpoint, evt.status, evt.priority, evt.attempt) }
+                                p { attr.style "font-weight: bold; margin-bottom: 0.2rem"; s.requestLabel }
+                                elt "pre" {
+                                    attr.style "white-space: pre-wrap; word-break: break-all; background: rgba(128,128,128,0.1); padding: 0.4rem; margin: 0 0 0.5rem 0"
+                                    evt.requestJson |> Option.defaultValue s.notCaptured
+                                }
+                                p { attr.style "font-weight: bold; margin-bottom: 0.2rem"; s.responseLabel }
+                                elt "pre" {
+                                    attr.style "white-space: pre-wrap; word-break: break-all; background: rgba(128,128,128,0.1); padding: 0.4rem"
+                                    evt.responseJson |> Option.defaultValue s.notCaptured
+                                }
+                            }
+                        }
                 }
             }
     }
@@ -2061,6 +2107,7 @@ let private viewSettings (model: Model) dispatch =
             }
         }
         div {
+            attr.style "margin-bottom: 1rem"
             p { attr.style "font-weight: bold"; s.settingsLogLevelLabel }
             for level in logLevelPresets do
                 button {
@@ -2069,6 +2116,7 @@ let private viewSettings (model: Model) dispatch =
                     level.Substring(0, 1).ToUpper() + level.Substring(1)
                 }
         }
+        viewQueueStatus model dispatch
     }
 
 let view model dispatch =
@@ -2086,7 +2134,6 @@ let view model dispatch =
             tabButton model dispatch ProgrammierenTab s.tabProgrammieren
             tabButton model dispatch PilotenTab s.tabPiloten
             tabButton model dispatch GalaxieTab s.tabGalaxie
-            tabButton model dispatch SystemTab s.tabSystem
             tabButton model dispatch SettingsTab s.tabSettings
         }
 
@@ -2172,11 +2219,6 @@ let view model dispatch =
                     }
                 }
                 viewDashboard s state dispatch
-        }
-
-        div {
-            attr.style (tabStyle model SystemTab)
-            viewQueueStatus model dispatch
         }
 
         div {

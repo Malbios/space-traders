@@ -149,8 +149,8 @@ let ``a higher-priority item dispatches before a lower-priority one queued first
                     return ()
                 }
 
-        let lowTask = RequestQueue.enqueue dbPath 5 "low" (track "low") |> Async.StartAsTask
-        let highTask = RequestQueue.enqueue dbPath 1 "high" (track "high") |> Async.StartAsTask
+        let lowTask = RequestQueue.enqueue dbPath 5 "low" None (track "low") |> Async.StartAsTask
+        let highTask = RequestQueue.enqueue dbPath 1 "high" None (track "high") |> Async.StartAsTask
         System.Threading.Thread.Sleep(50) // let both land in the pending list
 
         RequestQueue.dispatchNextForTests () |> Async.RunSynchronously |> ignore
@@ -175,9 +175,9 @@ let ``aging lets a long-waiting low-priority item catch up to a newer higher-pri
         // priority 5 waits past one aging interval (5s) so its effective priority
         // becomes 4 by the time "newer" (genuinely priority 4) is enqueued — the tie
         // is then broken by enqueue order (FIFO), proving aging moved it, not luck.
-        let oldTask = RequestQueue.enqueue dbPath 5 "old" (track "old") |> Async.StartAsTask
+        let oldTask = RequestQueue.enqueue dbPath 5 "old" None (track "old") |> Async.StartAsTask
         System.Threading.Thread.Sleep(5500)
-        let newerTask = RequestQueue.enqueue dbPath 4 "newer" (track "newer") |> Async.StartAsTask
+        let newerTask = RequestQueue.enqueue dbPath 4 "newer" None (track "newer") |> Async.StartAsTask
         System.Threading.Thread.Sleep(50) // let it land in the pending list
 
         RequestQueue.dispatchNextForTests () |> Async.RunSynchronously |> ignore
@@ -193,7 +193,7 @@ let ``a 429 is retried automatically once Retry-After has been honored`` () =
     withQueueTest fixture.RawClient (fun dbPath ->
         setFaultMode fixture.RawClient "429"
         let callTask =
-            RequestQueue.enqueue dbPath 1 "GET /my/agent" (fun () -> fixture.Client.GetAgent(App.seededToken))
+            RequestQueue.enqueue dbPath 1 "GET /my/agent" None (fun () -> fixture.Client.GetAgent(App.seededToken))
             |> Async.StartAsTask
 
         System.Threading.Thread.Sleep(50) // let it land in the pending list
@@ -218,7 +218,7 @@ let ``a definite (never-reached-the-server) failure is retried automatically`` (
                 return "ok"
             }
 
-        let callTask = RequestQueue.enqueue dbPath 1 "synthetic" call |> Async.StartAsTask
+        let callTask = RequestQueue.enqueue dbPath 1 "synthetic" None call |> Async.StartAsTask
         System.Threading.Thread.Sleep(50) // let it land in the pending list
         RequestQueue.dispatchNextForTests () |> Async.RunSynchronously |> ignore
         let result = Async.RunSynchronously (Async.AwaitTask callTask)
@@ -235,7 +235,7 @@ let ``drop-after-processing surfaces as AmbiguousFailure and is not retried`` ()
         let client = SpaceTradersClient(shortTimeoutClient)
 
         let callTask =
-            RequestQueue.enqueue dbPath 1 "GET /my/agent" (fun () -> client.GetAgent(App.seededToken))
+            RequestQueue.enqueue dbPath 1 "GET /my/agent" None (fun () -> client.GetAgent(App.seededToken))
             |> Async.StartAsTask
 
         System.Threading.Thread.Sleep(50) // let it land in the pending list
@@ -256,7 +256,7 @@ let ``a 401 marks the queue's server-reset state and further dispatch stops`` ()
     withQueueTest fixture.RawClient (fun dbPath ->
         setFaultMode fixture.RawClient "reset"
         let callTask =
-            RequestQueue.enqueue dbPath 1 "GET /my/agent" (fun () -> fixture.Client.GetAgent(App.seededToken))
+            RequestQueue.enqueue dbPath 1 "GET /my/agent" None (fun () -> fixture.Client.GetAgent(App.seededToken))
             |> Async.StartAsTask
 
         System.Threading.Thread.Sleep(50) // let it land in the pending list
@@ -280,7 +280,7 @@ let ``repeated 5xx marks the queue unreachable without failing the caller, then 
         setFaultMode fixture.RawClient "5xx"
 
         let callTask =
-            RequestQueue.enqueue dbPath 3 "GET /my/agent" (fun () -> fixture.Client.GetAgent(App.seededToken))
+            RequestQueue.enqueue dbPath 3 "GET /my/agent" None (fun () -> fixture.Client.GetAgent(App.seededToken))
             |> Async.StartAsTask
 
         System.Threading.Thread.Sleep(50) // let it land in the pending list
