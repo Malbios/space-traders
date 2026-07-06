@@ -60,7 +60,18 @@ let tickOnce (client: SpaceTradersClient) (dbPath: string) : Async<unit> =
             for job in JobRunner.listJobs () do
                 if not (isTerminal job.status) then
                     do! JobRunner.stepOnce client dbPath JobRunner.backgroundPriority token job.jobId
-                    do! Persistence.ShipLockRepository.refreshLease dbPath job.shipSymbol job.jobId JobRunner.leaseSeconds
+
+                    // `stepOnce` may have just made this job terminal — and, in doing
+                    // so, already released its ship lock (`JobRunner.fs`'s `JobFailed`/
+                    // `JobCompleted`/`JobCancelled` effect handling). Re-check the
+                    // *current* status rather than trusting the pre-step `job` snapshot
+                    // above: refreshing the lease unconditionally here would resurrect
+                    // a lock this same tick just correctly released, permanently
+                    // wedging that ship until the next lease-expiry sweep/reclaim.
+                    match JobRunner.getStatus job.jobId with
+                    | Some current when not (isTerminal current.status) ->
+                        do! Persistence.ShipLockRepository.refreshLease dbPath job.shipSymbol job.jobId JobRunner.leaseSeconds
+                    | _ -> ()
     }
 
 /// §14: an expired lease with no competing acquirer still gets its job paused

@@ -126,6 +126,15 @@ let private latestPriorityFor (dbPath: string) (endpointPrefix: string) : int =
     | null -> failwith $"no request_queue_events row for endpoint prefix \"{endpointPrefix}\""
     | v -> Convert.ToInt32(v)
 
+/// Reads whether `ship_locks` currently holds a row for `shipSymbol` — used to
+/// prove a lock was actually released, not just that the owning job went terminal.
+let private shipLockExists (dbPath: string) (shipSymbol: string) : bool =
+    use conn = Database.openConnection dbPath
+    use cmd = conn.CreateCommand()
+    cmd.CommandText <- "SELECT COUNT(*) FROM ship_locks WHERE ship_symbol = $shipSymbol;"
+    cmd.Parameters.AddWithValue("$shipSymbol", shipSymbol) |> ignore
+    Convert.ToInt32(cmd.ExecuteScalar()) > 0
+
 /// Milestone 7: `JobRunner.startJob` now persists (`programs`/`jobs` rows) and
 /// acquires the ship's lock, so it needs `client`/`dbPath`/`token` and returns a
 /// `Result` (rejected if the ship is already locked). Tests always expect success
@@ -782,6 +791,40 @@ let ``a background scheduler tick dispatches at priority 3 while a player-trigge
 
         Assert.Equal(3, latestPriorityFor dbPath "orbit:FAKE-AGENT-1")
         Assert.Equal(1, latestPriorityFor dbPath "orbit:FAKE-AGENT-2"))
+
+/// Regression test: a real bug found live — `tickOnce` used to refresh a job's
+/// ship-lock lease unconditionally after stepping it, using the *pre-step*
+/// "was it terminal" check. A job that failed during that very step had already
+/// had its lock correctly released (`JobRunner.fs`'s `JobFailed` effect), only for
+/// the very next line to resurrect it — permanently wedging that ship until the
+/// next lease-expiry sweep/reclaim. Fixed by re-checking the job's *current*
+/// status via `JobRunner.getStatus` before refreshing.
+[<Fact>]
+let ``tickOnce doesn't resurrect a ship lock the same step just released on failure`` () =
+    use fixture = new JobFixture()
+
+    withJobTest fixture.RawClient (fun dbPath ->
+        Persistence.AgentRepository.saveAgent dbPath "FAKE-AGENT" App.seededToken
+        |> Async.RunSynchronously
+
+        let ship1 = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+
+        // A waypoint that doesn't exist in the fake's fixture 404s immediately, on
+        // the very first attempt — a deterministic, single-tick failure, exactly
+        // like the real "System X1-AB12 not found" case this was found from.
+        let instructions =
+            [ InfoRead("b1", "getShipyard", Map [ "waypointSymbol", Literal(StringLit "X1-BOGUS-A1") ], "result") ]
+
+        let jobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" (program instructions) ship1
+
+        withPumpedQueue 20.0 (fun () -> JobScheduler.tickOnce fixture.Client dbPath |> Async.RunSynchronously)
+
+        match JobRunner.getStatus jobId with
+        | Some { status = Failed _ } -> ()
+        | Some other -> Assert.Fail($"expected the job to have failed, got {other.status}")
+        | None -> Assert.Fail("job not found")
+
+        Assert.False(shipLockExists dbPath "FAKE-AGENT-1"))
 
 [<Fact>]
 let ``a concurrent trade on another ship doesn't corrupt an in-flight ambiguous-failure reconciliation`` () =
