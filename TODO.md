@@ -317,6 +317,26 @@ a time.
       actual `SpaceKids.Server` process restart; Part D — the same ship
       showed the same name across a page reload.
 
+## Backlog / known gaps (not yet scheduled)
+
+Surfaced while building an example "scan all shipyards for a mining drone"
+program with a user, not yet planned into a milestone.
+
+- [ ] `getShipyard` (and likely `getMarket`) hard-fails the whole job with
+      `ApiFailed` when called on a waypoint that has no shipyard/market
+      (a real 404 from the API, `Step.fs:716-717` has no per-step
+      skip-and-continue path for info reads) — makes "check every waypoint"
+      style programs unsafe to write today. Needs either a non-fatal
+      "not found" info result the DSL can branch on, or exposing enough
+      waypoint data (traits) up front to filter safely before calling.
+- [ ] No `true`/`false` (`logic_boolean`) block in the toolbox
+      (`toolbox-de.ts`'s "Programmierung" category) — a program needing a
+      boolean flag has to fake it with a Number variable (0/1) compared via
+      `logic_compare`. Add the stock `logic_boolean` block.
+- [ ] Do a pass over the rest of the stock-Blockly/programming category for
+      other obviously-missing block kinds (found while looking for
+      `logic_boolean`) — no such audit has been done since Milestone 3.
+
 ## Later milestones
 
 Milestone 8 ("first missions") was removed from the roadmap entirely — not deferred,

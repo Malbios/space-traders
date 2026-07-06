@@ -556,6 +556,7 @@ type Strings =
       shipyardTypeLine: string * int -> string
       shipNotFound: string -> string
       waypointNotFound: string -> string
+      selectMapEntityHint: string
 
       systemMapHeading: string
 
@@ -706,6 +707,7 @@ let private stringsDe: Strings =
       shipyardTypeLine = fun (``type``, price) -> $"{``type``}: {price} Credits"
       shipNotFound = fun symbol -> $"Schiff {symbol} nicht gefunden."
       waypointNotFound = fun symbol -> $"Wegpunkt {symbol} nicht gefunden."
+      selectMapEntityHint = "Klicke ein Schiff oder einen Wegpunkt auf der Karte an, um Details zu sehen."
 
       systemMapHeading = "Systemkarte"
 
@@ -874,6 +876,7 @@ let private stringsEn: Strings =
       shipyardTypeLine = fun (``type``, price) -> $"{``type``}: {price} credits"
       shipNotFound = fun symbol -> $"Ship {symbol} not found."
       waypointNotFound = fun symbol -> $"Waypoint {symbol} not found."
+      selectMapEntityHint = "Click a ship or waypoint on the map to see its details."
 
       systemMapHeading = "System map"
 
@@ -1619,7 +1622,7 @@ let private viewInspector (state: DashboardState) model dispatch =
     let s = stringsFor model.locale
 
     match model.inspecting with
-    | None -> Node.Empty()
+    | None -> p { s.selectMapEntityHint }
     | Some(InspectedShip shipSymbol) ->
         match state.ships |> List.tryFind (fun sh -> sh.symbol = shipSymbol) with
         | Some ship -> viewShipInspector s ship dispatch
@@ -2144,22 +2147,31 @@ let view model dispatch =
             match model.dashboard with
             | None -> p { s.loginInSettingsHint }
             | Some state ->
-                viewSystemMap s state dispatch
                 div {
-                    attr.style "margin: 0.5rem 0"
-                    button {
-                        attr.style "font-size: 0.8em; padding: 0.2em 0.6em"
-                        on.click (fun _ -> dispatch LoadDashboard)
-                        s.refresh
+                    attr.style "display: flex; gap: 1rem; align-items: flex-start; flex-wrap: wrap"
+                    div {
+                        attr.style "flex: 0 0 auto"
+                        viewSystemMap s state dispatch
+                        div {
+                            attr.style "margin: 0.5rem 0"
+                            button {
+                                attr.style "font-size: 0.8em; padding: 0.2em 0.6em"
+                                on.click (fun _ -> dispatch LoadDashboard)
+                                s.refresh
+                            }
+                            if model.dashboardLoading then
+                                p { s.loadingEllipsis }
+                            match model.dashboardError with
+                            | Some err -> p { s.errorPrefix err }
+                            | None -> ()
+                        }
                     }
-                    if model.dashboardLoading then
-                        p { s.loadingEllipsis }
-                    match model.dashboardError with
-                    | Some err -> p { s.errorPrefix err }
-                    | None -> ()
+                    div {
+                        attr.style "flex: 1 1 300px; min-width: 250px"
+                        viewInspector state model dispatch
+                    }
                 }
                 viewDashboard s state dispatch
-                viewInspector state model dispatch
         }
 
         div {
