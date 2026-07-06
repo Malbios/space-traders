@@ -335,7 +335,7 @@ let configureApp (app: WebApplication) =
                                 let waypointSymbol = routeWaypointSymbol ctx
 
                                 if hasTrait waypointSymbol "SHIPYARD" then
-                                    return ok {| shipyard = shipyardFixture waypointSymbol |}
+                                    return ok (shipyardFixture waypointSymbol)
                                 else
                                     return Results.NotFound()
                             })))

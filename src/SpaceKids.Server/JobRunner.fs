@@ -320,12 +320,12 @@ let private runInfoRead
                     let! r = client.GetShipyard(token, systemSymbol, waypointSymbol)
 
                     let types =
-                        if not r.shipyard.ships.IsEmpty then
-                            r.shipyard.ships
+                        if not r.ships.IsEmpty then
+                            r.ships
                             |> List.map (fun s ->
                                 VRecord(Map.ofList [ "Type", VString s.``type``; "Price", VNumber(float s.purchasePrice) ]))
                         else
-                            r.shipyard.shipTypes
+                            r.shipTypes
                             |> List.map (fun t -> VRecord(Map.ofList [ "Type", VString t.``type``; "Price", VNumber 0.0 ]))
 
                     return InfoOk(VRecord(Map.ofList [ "Waypoint", VString waypointSymbol; "Types", VList types ]))

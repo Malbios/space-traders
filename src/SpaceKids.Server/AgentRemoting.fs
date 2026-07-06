@@ -68,7 +68,7 @@ let fetchWaypointShipyard (client: SpaceTradersClient) (dbPath: string) (token: 
                 RequestQueue.enqueue dbPath 1 $"GET /systems/{{system}}/waypoints/{waypointSymbol}/shipyard" requestJson (fun () ->
                     client.GetShipyard(token, Waypoint.systemSymbolOf waypointSymbol, waypointSymbol))
 
-            return Some result.shipyard
+            return Some result
         with ex when isNotFound ex ->
             return None
     }

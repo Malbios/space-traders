@@ -158,5 +158,5 @@ type SpaceTradersClient(httpClient: HttpClient) =
     member this.GetContract(token: string, contractId: string) : Async<GetContractResult> =
         this.GetData(token, $"my/contracts/{contractId}")
 
-    member this.GetShipyard(token: string, systemSymbol: string, waypointSymbol: string) : Async<GetShipyardResult> =
+    member this.GetShipyard(token: string, systemSymbol: string, waypointSymbol: string) : Async<Shipyard> =
         this.GetData(token, $"systems/{systemSymbol}/waypoints/{waypointSymbol}/shipyard")

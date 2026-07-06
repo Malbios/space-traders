@@ -210,14 +210,15 @@ type ShipyardShipType = { ``type``: string }
 /// `shipTypes` with a price of 0 when `ships` is empty.
 type ShipyardShipEntry = { ``type``: string; purchasePrice: int }
 
+/// `GET /systems/{systemSymbol}/waypoints/{waypointSymbol}/shipyard` response —
+/// flat under `data`, same as `Market`; there is no extra `shipyard` nesting
+/// level (a prior version of this type wrongly assumed one, which only ever
+/// looked correct against the fake server's own matching mistake — the real
+/// API's `data` is this record's fields directly).
 type Shipyard =
     { symbol: string
       shipTypes: ShipyardShipType list
       ships: ShipyardShipEntry list }
-
-/// `GET /systems/{systemSymbol}/waypoints/{waypointSymbol}/shipyard` response —
-/// nested under `shipyard`.
-type GetShipyardResult = { shipyard: Shipyard }
 
 type DataEnvelope<'a> = { data: 'a }
 
