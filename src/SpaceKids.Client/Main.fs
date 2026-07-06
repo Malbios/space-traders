@@ -1458,7 +1458,7 @@ let private viewWaypointInspector (strings: Strings) (waypoint: Waypoint) (state
             | None -> button { on.click (fun _ -> dispatch (LoadWaypointMarket waypoint.symbol)); strings.loadMarket }
             | Some market ->
                 ul {
-                    for good in market.tradeGoods do
+                    for good in market.tradeGoods |> Option.defaultValue [] do
                         li { strings.tradeGoodLine (good.symbol, good.purchasePrice, good.sellPrice) }
                 }
 

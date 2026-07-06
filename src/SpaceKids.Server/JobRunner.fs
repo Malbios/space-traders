@@ -281,8 +281,9 @@ let private runInfoRead
                     // a documented simplification (§8), same class as elsewhere in
                     // this project.
                     let goods =
-                        if not market.tradeGoods.IsEmpty then
-                            market.tradeGoods
+                        match market.tradeGoods with
+                        | Some tradeGoods when not tradeGoods.IsEmpty ->
+                            tradeGoods
                             |> List.map (fun g ->
                                 VRecord(
                                     Map.ofList
@@ -290,7 +291,7 @@ let private runInfoRead
                                           "BuyPrice", VNumber(float g.purchasePrice)
                                           "SellPrice", VNumber(float g.sellPrice) ]
                                 ))
-                        else
+                        | _ ->
                             (market.exports @ market.imports @ market.exchange)
                             |> List.map (fun g ->
                                 VRecord(Map.ofList [ "Name", VString g.name; "BuyPrice", VNumber 0.0; "SellPrice", VNumber 0.0 ]))

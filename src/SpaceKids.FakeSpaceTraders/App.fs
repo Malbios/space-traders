@@ -144,9 +144,10 @@ let private market =
       imports = [ { symbol = "FUEL"; name = "Fuel" } ]
       exchange = [ { symbol = "IRON"; name = "Iron" } ]
       tradeGoods =
-        [ { symbol = "FOOD"; purchasePrice = 8; sellPrice = 12 }
-          { symbol = "FUEL"; purchasePrice = 5; sellPrice = 9 }
-          { symbol = "IRON"; purchasePrice = 10; sellPrice = 10 } ] }
+        Some
+            [ { symbol = "FOOD"; purchasePrice = 8; sellPrice = 12 }
+              { symbol = "FUEL"; purchasePrice = 5; sellPrice = 9 }
+              { symbol = "IRON"; purchasePrice = 10; sellPrice = 10 } ] }
 
 let private authorized (ctx: HttpContext) : bool =
     let header = ctx.Request.Headers.Authorization.ToString()

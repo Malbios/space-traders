@@ -156,7 +156,10 @@ type Market =
       exports: TradeGood list
       imports: TradeGood list
       exchange: TradeGood list
-      tradeGoods: MarketTradeGood list }
+      /// The real API omits this key entirely (not an empty array) when no ship is
+      /// present at the market — the OpenAPI spec confirms it's genuinely optional,
+      /// unlike `exports`/`imports`/`exchange`.
+      tradeGoods: MarketTradeGood list option }
 
 type SurveyDeposit = { symbol: string }
 
