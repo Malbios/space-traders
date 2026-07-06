@@ -16,7 +16,7 @@ let private ACTION_BLOCKS: Map<string, (string * string) list> =
         "sellGood", [ "TRADE_SYMBOL", "tradeSymbol"; "UNITS", "units" ]
         "deliverContract", [ "CONTRACT_ID", "contractId"; "TRADE_SYMBOL", "tradeSymbol"; "UNITS", "units" ]
         "acceptContract", [ "CONTRACT_ID", "contractId" ]
-        "purchaseShip", [ "SHIP_TYPE", "shipType"; "WAYPOINT", "waypoint" ]
+        "purchaseShip", [ "SHIP_TYPE", "shipType"; "WAYPOINT", "waypointSymbol" ]
         "refuel", []
     ]
 

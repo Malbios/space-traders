@@ -498,7 +498,6 @@ type Strings =
     { workshopLoaded: string
       savedToDb: string
       nothingToLoad: string
-      loadedFromDb: string
       blockHighlighted: string
       readOnlyToggled: string
       signaturePublished: string
@@ -654,7 +653,6 @@ let private stringsDe: Strings =
     { workshopLoaded = "Werkstatt geladen."
       savedToDb = "In SQLite gespeichert."
       nothingToLoad = "Nichts zum Laden."
-      loadedFromDb = "Aus SQLite geladen."
       blockHighlighted = "Block hervorgehoben (falls vorhanden)."
       readOnlyToggled = "Lesemodus umgeschaltet."
       signaturePublished = "Signatur an Programm-Werkstatt übergeben."
@@ -828,7 +826,6 @@ let private stringsEn: Strings =
     { workshopLoaded = "Workshop loaded."
       savedToDb = "Saved to SQLite."
       nothingToLoad = "Nothing to load."
-      loadedFromDb = "Loaded from SQLite."
       blockHighlighted = "Block highlighted (if any)."
       readOnlyToggled = "Read-only mode toggled."
       signaturePublished = "Signature handed off to the program workshop."
@@ -1036,8 +1033,7 @@ let update
         { model with status = s.nothingToLoad }, Cmd.none
     | LoadedFromDb(Some json) ->
         model, Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.loadWorkspace" [| box model.containerId; box json |]) () (fun () -> Loaded)
-    | Loaded ->
-        { model with status = s.loadedFromDb }, Cmd.none
+    | Loaded -> model, Cmd.none
 
     | HighlightFirstBlock ->
         let highlightFirst = async {
@@ -2135,7 +2131,6 @@ let view model dispatch =
 
     div {
         attr.style "font-family: sans-serif; padding: 1rem"
-        h1 { "SpaceKids" }
         p { model.status }
         if model.serverUnreachable then
             p { attr.style "color: #cc0000"; s.serverUnreachableMessage }

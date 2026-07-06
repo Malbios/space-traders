@@ -30,6 +30,37 @@ let ``compiles a simple action-only program`` () =
             program.instructions
         )
 
+/// Regression test: a real bug found live — `purchaseShip`'s "WAYPOINT" input
+/// compiled to the DSL arg key "waypoint", but `Step.fs`'s `emitApiAction`
+/// looks up "waypointSymbol" — the two names never matched, so every
+/// `purchaseShip` block failed with "Fehlendes Argument \"waypointSymbol\""
+/// regardless of how it was wired. `SchedulerTests.fs`'s own `purchaseShip`
+/// tests never caught this because they construct `ApiAction` instructions
+/// directly, bypassing this exact compiler seam.
+[<Fact>]
+let ``compiles purchaseShip's WAYPOINT input to the "waypointSymbol" arg key`` () =
+    let json =
+        """
+        { "blocks": { "languageVersion": 0, "blocks": [
+            { "type": "purchaseShip", "id": "b1", "inputs": {
+                "SHIP_TYPE": { "block": """ + textBlock "b1a" "SHIP_MINING_DRONE" + """ },
+                "WAYPOINT": { "block": """ + textBlock "b1b" "X1-DF55-A1" + """ }
+            } }
+        ] } }
+        """
+
+    match Compiler.compileWorkspace De noCustomBlocks json with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        Assert.Equal<Instruction list>(
+            [ ApiAction(
+                  "b1",
+                  "purchaseShip",
+                  Map [ "shipType", Literal(StringLit "SHIP_MINING_DRONE"); "waypointSymbol", Literal(StringLit "X1-DF55-A1") ]
+              ) ],
+            program.instructions
+        )
+
 [<Fact>]
 let ``an information block used inside an expression compiles to a hoisted temp (the §10 example)`` () =
     let json =
