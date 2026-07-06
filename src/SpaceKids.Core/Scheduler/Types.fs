@@ -131,7 +131,11 @@ type JobState =
       /// mode filters pilots by this, not by "any pilot anywhere."
       programId: string
       program: CompiledProgram
-      shipSymbol: string
+      /// `None` for a ship-agnostic job (§14 follow-up: a program that never
+      /// references a ship-scoped block, e.g. only scans waypoints or purchases a
+      /// ship, doesn't need one and never takes a `ship_locks` lease) — a player may
+      /// still pick a spare ship for one anyway, harmlessly ignored.
+      shipSymbol: string option
       status: JobStatus
       /// Head = top frame; length 1 for the whole of Milestone 6 (no real
       /// custom-block calls yet).
@@ -208,8 +212,8 @@ type WaitReason =
 /// event back in. No direct DB/HTTP/sleep call ever appears in `Step.fs` — only these
 /// values.
 type Effect =
-    | QueueApiCall of jobId: JobId * shipSymbol: string * action: QueuedAction * attemptNumber: int
-    | ReconcileShipState of jobId: JobId * shipSymbol: string * attemptNumber: int
+    | QueueApiCall of jobId: JobId * shipSymbol: string option * action: QueuedAction * attemptNumber: int
+    | ReconcileShipState of jobId: JobId * shipSymbol: string option * attemptNumber: int
     /// Milestone 9/Part A — reconciliation via a contract/fleet fetch rather than a
     /// ship fetch, for `acceptContract`/`purchaseShip` (see `ActionBaseline`).
     | ReconcileContractState of jobId: JobId * contractId: string * attemptNumber: int
@@ -218,7 +222,7 @@ type Effect =
     /// retry (a GET), so unlike `QueueApiCall` there is no baseline to carry.
     | QueueInfoRead of
         jobId: JobId *
-        shipSymbol: string *
+        shipSymbol: string option *
         infoType: string *
         args: Map<string, string> *
         attemptNumber: int *

@@ -85,12 +85,6 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
 
                             return Error message
                         | Some token ->
-                            let! ship =
-                                RequestQueue.enqueue dbPath 1 $"getShip:{shipSymbol}" None (fun () ->
-                                    client.GetShip(token, shipSymbol))
-
-                            let! agent = RequestQueue.enqueue dbPath 1 "getAgent" None (fun () -> client.GetAgent(token))
-
                             // Milestone 9/Part B: `customBlockLookup` resolves real,
                             // persisted custom-block definitions now. Note:
                             // `Validator.revalidateAgainstCurrentDefinitions` (the §9
@@ -103,6 +97,12 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                             // Its real call site is `ProgramRemoting.fs`'s
                             // `loadDefinition` — opening a *saved* program is where
                             // staleness can actually be observed.
+                            //
+                            // Compiling/validating happens *before* fetching a ship
+                            // snapshot (§14 follow-up: ship-agnostic programs) — the
+                            // compiled program is what tells us whether a ship is
+                            // even needed, so nothing ship-related should happen
+                            // ahead of knowing that.
                             let compiled =
                                 SpaceKids.Core.Dsl.Compiler.compileWorkspace locale customBlockLookup workspaceJson
                                 |> Result.bind (fun program ->
@@ -114,7 +114,27 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                             | Error errors ->
                                 let message = errors |> List.map (fun e -> e.message) |> String.concat "; "
                                 return Error message
+                            | Ok program when SpaceKids.Core.Dsl.Validator.programRequiresShip program && shipSymbol.IsNone ->
+                                let message =
+                                    match locale with
+                                    | SpaceKids.Core.Dsl.De -> "Dieses Programm braucht ein Schiff. Bitte zuerst eins auswählen."
+                                    | SpaceKids.Core.Dsl.En -> "This program needs a ship. Please select one first."
+
+                                return Error message
                             | Ok program ->
+                                let! shipOpt =
+                                    async {
+                                        match shipSymbol with
+                                        | Some sym ->
+                                            let! ship =
+                                                RequestQueue.enqueue dbPath 1 $"getShip:{sym}" None (fun () -> client.GetShip(token, sym))
+
+                                            return Some ship
+                                        | None -> return None
+                                    }
+
+                                let! agent = RequestQueue.enqueue dbPath 1 "getAgent" None (fun () -> client.GetAgent(token))
+
                                 // `programs.workspace_id` references `workspaces(id)`
                                 // — ensure that row exists regardless of whether the
                                 // player has clicked "Speichern" yet; the program
@@ -130,7 +150,7 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                                         compiledDslJson
                                         program
                                         shipSymbol
-                                        ship
+                                        shipOpt
                                         agent.shipCount
                     }
             step =

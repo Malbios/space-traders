@@ -401,8 +401,15 @@ and private emitInfoRead
     let locals = currentLocals job
     let stringArgs = args |> Map.map (fun _ expr -> Eval.eval locals expr |> Eval.asString)
 
-    { job with status = AwaitingInfoResponse(0, infoType, stringArgs, resultTarget) },
-    [ QueueInfoRead(job.jobId, job.shipSymbol, infoType, stringArgs, 0, resultTarget) ]
+    // Ship-agnostic info types (getFleetInfo/getWaypoints/getMarket/getShipyard/
+    // getContracts/getCredits) never read `job.shipSymbol` server-side, but
+    // getShipInfo/getCargo/getFuel do — same gate shape as `emitApiAction`'s.
+    if Validator.shipScopedInfoTypes.Contains infoType && job.shipSymbol.IsNone then
+        let msg = "Kein Schiff ausgewählt."
+        { job with status = Failed msg }, [ JobFailed(job.jobId, msg) ]
+    else
+        { job with status = AwaitingInfoResponse(0, infoType, stringArgs, resultTarget) },
+        [ QueueInfoRead(job.jobId, job.shipSymbol, infoType, stringArgs, 0, resultTarget) ]
 
 /// Stops the free-transition walk: captures the pre-call baseline from
 /// `job.lastKnownShip` (data already in hand, §13), emits exactly one `QueueApiCall`.
@@ -419,65 +426,72 @@ and private emitApiAction
         | Some expr -> Eval.eval locals expr
         | None -> failwith $"Fehlendes Argument \"{name}\" für Block {blockId}."
 
-    match job.lastKnownShip with
-    | None ->
-        let msg = "Kein Schiff ausgewählt."
-        { job with status = Failed msg }, [ JobFailed(job.jobId, msg) ]
-    | Some ship ->
-        let awaiting (baseline: ActionBaseline) (action: QueuedAction) (logText: string) =
-            // `LogMessage` must run *before* `QueueApiCall` in this list: the shell
-            // (`JobRunner.applyEffects`) applies effects strictly in order, and
-            // `QueueApiCall` recursively drives the job all the way to its next
-            // settled state (persisting any further log lines) before this function
-            // returns — if `LogMessage` ran second, this action's *start* message
-            // would always end up prepended on top of whatever the action already
-            // logged as its outcome, corrupting "latest log line" displays (a real
-            // bug found via live verification, Milestone 9/Part A).
-            { job with status = AwaitingApiResponse(0, action, baseline) },
-            [ LogMessage(job.jobId, logText); QueueApiCall(job.jobId, job.shipSymbol, action, 0) ]
+    let awaiting (baseline: ActionBaseline) (action: QueuedAction) (logText: string) =
+        // `LogMessage` must run *before* `QueueApiCall` in this list: the shell
+        // (`JobRunner.applyEffects`) applies effects strictly in order, and
+        // `QueueApiCall` recursively drives the job all the way to its next
+        // settled state (persisting any further log lines) before this function
+        // returns — if `LogMessage` ran second, this action's *start* message
+        // would always end up prepended on top of whatever the action already
+        // logged as its outcome, corrupting "latest log line" displays (a real
+        // bug found via live verification, Milestone 9/Part A).
+        { job with status = AwaitingApiResponse(0, action, baseline) },
+        [ LogMessage(job.jobId, logText); QueueApiCall(job.jobId, job.shipSymbol, action, 0) ]
 
-        match actionType with
-        | "navigate" ->
-            let dest = requireArg "destination" |> Eval.asString
-            awaiting (NavigateBaseline dest) (DoNavigate dest) $"Fliege zu {dest}..."
-        | "orbit" -> awaiting (DockOrbitBaseline "IN_ORBIT") DoOrbit "Verlasse den Andockplatz..."
-        | "dock" -> awaiting (DockOrbitBaseline "DOCKED") DoDock "Docke an..."
-        | "extract" ->
-            awaiting (ExtractBaseline(ship.cooldownExpiration, ship.cargoUnits)) DoExtract "Baue Rohstoffe ab..."
-        | "buyGood" ->
-            let tradeSymbol = requireArg "tradeSymbol" |> Eval.asString
-            let units = requireArg "units" |> Eval.asInt
-            awaiting (CargoBaseline ship.cargoUnits) (DoBuy(tradeSymbol, units)) $"Kaufe {units}x {tradeSymbol}..."
-        | "sellGood" ->
-            let tradeSymbol = requireArg "tradeSymbol" |> Eval.asString
-            let units = requireArg "units" |> Eval.asInt
-            awaiting (CargoBaseline ship.cargoUnits) (DoSell(tradeSymbol, units)) $"Verkaufe {units}x {tradeSymbol}..."
-        | "survey" -> awaiting (SurveyBaseline ship.cooldownExpiration) DoSurvey "Führe eine Vermessung durch..."
-        | "deliverContract" ->
-            let contractId = requireArg "contractId" |> Eval.asString
-            let tradeSymbol = requireArg "tradeSymbol" |> Eval.asString
-            let units = requireArg "units" |> Eval.asInt
+    // `acceptContract`/`purchaseShip` never read a ship snapshot (they reconcile via
+    // `AcceptContractBaseline`/`FleetBaseline` instead, §13's explicit allowance) — so
+    // unlike every other action type, they must not be gated behind `lastKnownShip`.
+    // A ship-agnostic job (§14 follow-up) can reach either of these with
+    // `lastKnownShip = None`, and that's fine.
+    match actionType with
+    | "acceptContract" ->
+        let contractId = requireArg "contractId" |> Eval.asString
+        awaiting (AcceptContractBaseline contractId) (DoAcceptContract contractId) $"Nehme Auftrag {contractId} an..."
+    | "purchaseShip" ->
+        let shipType = requireArg "shipType" |> Eval.asString
+        let waypointSymbol = requireArg "waypointSymbol" |> Eval.asString
+        let shipCountBefore = job.lastKnownFleetShipCount |> Option.defaultValue 0
 
-            awaiting
-                (CargoBaseline ship.cargoUnits)
-                (DoDeliverContract(contractId, tradeSymbol, units))
-                $"Liefere {units}x {tradeSymbol} für Auftrag {contractId}..."
-        | "acceptContract" ->
-            let contractId = requireArg "contractId" |> Eval.asString
-            awaiting (AcceptContractBaseline contractId) (DoAcceptContract contractId) $"Nehme Auftrag {contractId} an..."
-        | "purchaseShip" ->
-            let shipType = requireArg "shipType" |> Eval.asString
-            let waypointSymbol = requireArg "waypointSymbol" |> Eval.asString
-            let shipCountBefore = job.lastKnownFleetShipCount |> Option.defaultValue 0
-
-            awaiting
-                (FleetBaseline shipCountBefore)
-                (DoPurchaseShip(shipType, waypointSymbol))
-                $"Kaufe ein Schiff vom Typ {shipType}..."
-        | "refuel" -> awaiting (FuelBaseline ship.fuelCurrent) DoRefuel "Tanke auf..."
-        | other ->
-            let msg = $"Unbekannte Aktion: {other}"
+        awaiting
+            (FleetBaseline shipCountBefore)
+            (DoPurchaseShip(shipType, waypointSymbol))
+            $"Kaufe ein Schiff vom Typ {shipType}..."
+    | shipScopedActionType ->
+        match job.lastKnownShip with
+        | None ->
+            let msg = "Kein Schiff ausgewählt."
             { job with status = Failed msg }, [ JobFailed(job.jobId, msg) ]
+        | Some ship ->
+            match shipScopedActionType with
+            | "navigate" ->
+                let dest = requireArg "destination" |> Eval.asString
+                awaiting (NavigateBaseline dest) (DoNavigate dest) $"Fliege zu {dest}..."
+            | "orbit" -> awaiting (DockOrbitBaseline "IN_ORBIT") DoOrbit "Verlasse den Andockplatz..."
+            | "dock" -> awaiting (DockOrbitBaseline "DOCKED") DoDock "Docke an..."
+            | "extract" ->
+                awaiting (ExtractBaseline(ship.cooldownExpiration, ship.cargoUnits)) DoExtract "Baue Rohstoffe ab..."
+            | "buyGood" ->
+                let tradeSymbol = requireArg "tradeSymbol" |> Eval.asString
+                let units = requireArg "units" |> Eval.asInt
+                awaiting (CargoBaseline ship.cargoUnits) (DoBuy(tradeSymbol, units)) $"Kaufe {units}x {tradeSymbol}..."
+            | "sellGood" ->
+                let tradeSymbol = requireArg "tradeSymbol" |> Eval.asString
+                let units = requireArg "units" |> Eval.asInt
+                awaiting (CargoBaseline ship.cargoUnits) (DoSell(tradeSymbol, units)) $"Verkaufe {units}x {tradeSymbol}..."
+            | "survey" -> awaiting (SurveyBaseline ship.cooldownExpiration) DoSurvey "Führe eine Vermessung durch..."
+            | "deliverContract" ->
+                let contractId = requireArg "contractId" |> Eval.asString
+                let tradeSymbol = requireArg "tradeSymbol" |> Eval.asString
+                let units = requireArg "units" |> Eval.asInt
+
+                awaiting
+                    (CargoBaseline ship.cargoUnits)
+                    (DoDeliverContract(contractId, tradeSymbol, units))
+                    $"Liefere {units}x {tradeSymbol} für Auftrag {contractId}..."
+            | "refuel" -> awaiting (FuelBaseline ship.fuelCurrent) DoRefuel "Tanke auf..."
+            | other ->
+                let msg = $"Unbekannte Aktion: {other}"
+                { job with status = Failed msg }, [ JobFailed(job.jobId, msg) ]
 
 /// Handles a response to an in-flight API call or a reconciliation fetch. Ambiguous
 /// failures are modeled as two explicit hops matching §13's own 3-step recipe:

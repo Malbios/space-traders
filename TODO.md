@@ -347,20 +347,24 @@ program with a user, not yet planned into a milestone.
       with `waypointHasShipyard` (stop scanning once a shipyard is found).
 - [ ] Make the system map (`viewSystemMap`, Galaxie tab) zoomable — currently
       a fixed 400x400 SVG with no pan/zoom controls.
-- [ ] Ship selection is mandatory to run a program in the Piloten tab, even
-      for programs that never touch any ship (e.g. a shipyard-scanning/
-      ship-purchasing program). `JobState`'s `shipSymbol` is a required
-      field, `startJob` always takes an exclusive `ship_locks` lease for it
-      (`JobRunner.fs:700`), and the whole pilot dashboard/watch mode is
-      keyed by ship — there's no "job with no ship" concept anywhere today.
-      Making ship-agnostic programs skip this would mean: an optional
-      `shipSymbol` on `JobState`, ship-lock acquire/release skipped when
-      absent, a `ship_locks`/migration change, reworking the pilot
-      dashboard's per-ship grouping, and the compiler/validator knowing
-      whether a given program references any ship-scoped block at all.
-      Cross-cutting, needs a real design pass, not a quick fix. Workaround
-      today: just pick any spare ship — a ship-agnostic program ignores it
-      harmlessly.
+- [x] Ship selection is now optional for ship-agnostic programs (one that
+      never references a ship-scoped block — a shipyard-scanning/
+      ship-purchasing program, say). `JobState.shipSymbol` and the
+      ship-carrying `Effect` cases are `option`; `startJob` skips the
+      `ship_locks` lease entirely when none is given. `Validator.
+      programRequiresShip` (walking `ApiAction`/`InfoRead` against a
+      canonical ship-scoped-type set, also used by `Step.fs`'s runtime
+      gates) is the single source of truth for "does this program need a
+      ship" — `JobRemoting.fs` checks it upfront and refuses to start a
+      ship-requiring program with none picked, with a clear message,
+      before any job/lock is created. Also fixed a real latent bug found
+      while tracing this: `emitApiAction` previously gated *every* action
+      (including the already-ship-agnostic `acceptContract`/
+      `purchaseShip`) behind having a ship snapshot, silently masked
+      because every job always had one until now. Verified live: a
+      "purchase a ship" program runs to completion with no ship selected;
+      a `navigate`-based program with no ship shows the new clear error
+      instead of silently failing partway through.
 - [x] Dark mode now covers buttons/inputs/selects (CSS) and the Blockly
       workspace (a real dark `Blockly.Theme` wired through `setTheme`).
 - [x] `controls_forEach`'s LIST input now has a `.setCheck("List")`

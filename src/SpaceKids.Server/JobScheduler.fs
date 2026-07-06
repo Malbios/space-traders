@@ -42,12 +42,17 @@ let resumeAll (client: SpaceTradersClient) (dbPath: string) : Async<unit> =
         | None -> ()
         | Some token ->
             for row in rows do
-                let! lockResult =
-                    Persistence.ShipLockRepository.tryAcquire dbPath row.assignedShipSymbol row.id JobRunner.leaseSeconds
+                // A ship-agnostic job (§14 follow-up) never took a lock in the first
+                // place — nothing to re-acquire, just recover it directly.
+                match row.assignedShipSymbol with
+                | None -> do! JobRunner.recoverJob client dbPath token row.id
+                | Some shipSymbol ->
+                    let! lockResult =
+                        Persistence.ShipLockRepository.tryAcquire dbPath shipSymbol row.id JobRunner.leaseSeconds
 
-                match lockResult with
-                | Ok _ -> do! JobRunner.recoverJob client dbPath token row.id
-                | Error _ -> do! JobRunner.pause client dbPath token row.id
+                    match lockResult with
+                    | Ok _ -> do! JobRunner.recoverJob client dbPath token row.id
+                    | Error _ -> do! JobRunner.pause client dbPath token row.id
     }
 
 let tickOnce (client: SpaceTradersClient) (dbPath: string) : Async<unit> =
@@ -68,9 +73,9 @@ let tickOnce (client: SpaceTradersClient) (dbPath: string) : Async<unit> =
                     // above: refreshing the lease unconditionally here would resurrect
                     // a lock this same tick just correctly released, permanently
                     // wedging that ship until the next lease-expiry sweep/reclaim.
-                    match JobRunner.getStatus job.jobId with
-                    | Some current when not (isTerminal current.status) ->
-                        do! Persistence.ShipLockRepository.refreshLease dbPath job.shipSymbol job.jobId JobRunner.leaseSeconds
+                    match JobRunner.getStatus job.jobId, job.shipSymbol with
+                    | Some current, Some sym when not (isTerminal current.status) ->
+                        do! Persistence.ShipLockRepository.refreshLease dbPath sym job.jobId JobRunner.leaseSeconds
                     | _ -> ()
     }
 

@@ -152,11 +152,64 @@ let private startJobSync
     WorkspaceRepository.save dbPath "test-workspace" "{}" |> Async.RunSynchronously
 
     match
-        JobRunner.startJob client dbPath App.seededToken "test-workspace" (JobStateJson.serializeProgram compiled) compiled shipSymbol initialShip 2
+        JobRunner.startJob
+            client
+            dbPath
+            App.seededToken
+            "test-workspace"
+            (JobStateJson.serializeProgram compiled)
+            compiled
+            (Some shipSymbol)
+            (Some initialShip)
+            2
         |> Async.RunSynchronously
     with
     | Ok jobId -> jobId
     | Error message -> failwith message
+
+/// §14 follow-up: a ship-agnostic program (only `purchaseShip`/`acceptContract`-style
+/// actions, no ship-scoped ones) can start with no ship at all — no `ship_locks` row
+/// is ever created, and the job still runs to completion.
+[<Fact>]
+let ``a ship-agnostic program starts and completes with no ship selected, taking no lock`` () =
+    use fixture = new JobFixture()
+
+    withJobTest fixture.RawClient (fun dbPath ->
+        let instructions =
+            [ ApiAction(
+                  "b1",
+                  "purchaseShip",
+                  Map [ "shipType", Literal(StringLit "SHIP_MINING_DRONE"); "waypointSymbol", Literal(StringLit "X1-TEST-A1") ]
+              ) ]
+
+        WorkspaceRepository.save dbPath "test-workspace" "{}" |> Async.RunSynchronously
+
+        let jobId =
+            match
+                JobRunner.startJob
+                    fixture.Client
+                    dbPath
+                    App.seededToken
+                    "test-workspace"
+                    (JobStateJson.serializeProgram (program instructions))
+                    (program instructions)
+                    None
+                    None
+                    2
+                |> Async.RunSynchronously
+            with
+            | Ok jobId -> jobId
+            | Error message -> failwith message
+
+        withPumpedQueue 20.0 (fun () ->
+            JobRunner.runToCompletion fixture.Client dbPath 1 App.seededToken jobId
+            |> Async.RunSynchronously)
+
+        match JobRunner.getStatus jobId with
+        | Some job -> Assert.Equal(Completed, job.status)
+        | None -> Assert.Fail("job not found")
+
+        Assert.False(shipLockExists dbPath "FAKE-AGENT-1"))
 
 [<Fact>]
 let ``happy path runs orbit, navigate, dock, extract, and sell to completion`` () =
@@ -333,8 +386,8 @@ let ``a second job on the same ship is rejected while the first is still active`
                 "test-workspace"
                 (JobStateJson.serializeProgram (program []))
                 (program [])
-                "FAKE-AGENT-1"
-                initialShip
+                (Some "FAKE-AGENT-1")
+                (Some initialShip)
                 2
             |> Async.RunSynchronously
 
@@ -449,8 +502,8 @@ let ``the sweep pauses a job whose lease expired without a competing acquirer, f
                 "test-workspace"
                 (JobStateJson.serializeProgram (program []))
                 (program [])
-                "FAKE-AGENT-1"
-                initialShip
+                (Some "FAKE-AGENT-1")
+                (Some initialShip)
                 2
             |> Async.RunSynchronously
 

@@ -198,6 +198,63 @@ let ``validate rejects a Break outside any loop, but allows one inside a control
         let errors = Validator.validate De program
         Assert.DoesNotContain(errors, fun e -> e.blockId = Some "brk2")
 
+// --- programRequiresShip (§14 follow-up: ship-agnostic programs) ----------------------
+
+let private aProgram (instructions: Instruction list) : CompiledProgram =
+    { version = 1; customBlocks = Map.empty; instructions = instructions }
+
+[<Fact>]
+let ``programRequiresShip is false for a program using only ship-agnostic blocks`` () =
+    let program =
+        aProgram
+            [ InfoRead("b1", "getWaypoints", Map.empty, "$t1")
+              InfoRead("b2", "getShipyard", Map.empty, "$t2")
+              ApiAction(
+                  "b3",
+                  "purchaseShip",
+                  Map [ "shipType", Literal(StringLit "SHIP_MINING_DRONE"); "waypointSymbol", Literal(StringLit "X1-TEST-A1") ]
+              )
+              ApiAction("b4", "acceptContract", Map [ "contractId", Literal(StringLit "contract-1") ]) ]
+
+    Assert.False(Validator.programRequiresShip program)
+
+[<Fact>]
+let ``programRequiresShip is true for a program using a ship-scoped action`` () =
+    let program = aProgram [ ApiAction("b1", "navigate", Map [ "destination", Literal(StringLit "X1-TEST-B2") ]) ]
+    Assert.True(Validator.programRequiresShip program)
+
+[<Fact>]
+let ``programRequiresShip is true for a program using a ship-scoped info read`` () =
+    let program = aProgram [ InfoRead("b1", "getFuel", Map.empty, "$t1") ]
+    Assert.True(Validator.programRequiresShip program)
+
+[<Fact>]
+let ``programRequiresShip detects a ship-scoped block nested inside If/loop bodies`` () =
+    let program =
+        aProgram
+            [ ForEach(
+                  "loop1",
+                  "x",
+                  ListLiteral [],
+                  [ If("if1", [ (Literal(BoolLit true), [ ApiAction("b1", "dock", Map.empty) ]) ], None) ]
+              ) ]
+
+    Assert.True(Validator.programRequiresShip program)
+
+[<Fact>]
+let ``programRequiresShip detects a ship-scoped block inside a called custom block`` () =
+    let shipScopedBlock: CompiledCustomBlock =
+        { signature = { inputs = []; output = None; outputFields = None }
+          instructions = [ ApiAction("b1", "orbit", Map.empty) ]
+          returnExpr = None }
+
+    let program =
+        { version = 1
+          customBlocks = Map [ "custom-1", shipScopedBlock ]
+          instructions = [ CallCustomBlock("b2", "custom-1", Map.empty, None) ] }
+
+    Assert.True(Validator.programRequiresShip program)
+
 [<Fact>]
 let ``rejects an unknown block type`` () =
     let json = """{ "blocks": { "languageVersion": 0, "blocks": [ { "type": "totally_unknown", "id": "b1" } ] } }"""

@@ -10,7 +10,7 @@ type JobRow =
     { id: string
       state: string
       executionStateJson: string
-      assignedShipSymbol: string }
+      assignedShipSymbol: string option }
 
 /// Job statuses the scheduler no longer needs to act on — matches §14's job model
 /// (a job here has genuinely finished, one way or another).
@@ -20,7 +20,7 @@ let insert
     (dbPath: string)
     (jobId: string)
     (programId: string)
-    (shipSymbol: string)
+    (shipSymbol: string option)
     (state: string)
     (executionStateJson: string)
     (currentBlockId: string option)
@@ -45,7 +45,9 @@ let insert
         cmd.Parameters.AddWithValue("$state", state) |> ignore
         cmd.Parameters.AddWithValue("$json", executionStateJson) |> ignore
         cmd.Parameters.AddWithValue("$now", now) |> ignore
-        cmd.Parameters.AddWithValue("$shipSymbol", shipSymbol) |> ignore
+
+        cmd.Parameters.AddWithValue("$shipSymbol", shipSymbol |> Option.map box |> Option.defaultValue (box DBNull.Value))
+        |> ignore
 
         cmd.Parameters.AddWithValue(
             "$currentBlockId",
@@ -114,7 +116,7 @@ let private readRow (reader: Microsoft.Data.Sqlite.SqliteDataReader) : JobRow =
     { id = reader.GetString(0)
       state = reader.GetString(1)
       executionStateJson = reader.GetString(2)
-      assignedShipSymbol = reader.GetString(3) }
+      assignedShipSymbol = if reader.IsDBNull(3) then None else Some(reader.GetString(3)) }
 
 let loadById (dbPath: string) (jobId: string) : Async<JobRow option> =
     async {
@@ -153,7 +155,7 @@ let loadNonTerminal (dbPath: string) : Async<JobRow list> =
 type JobHistoryRow =
     { jobId: string
       programName: string
-      shipSymbol: string
+      shipSymbol: string option
       state: string
       updatedAt: DateTime }
 
@@ -182,7 +184,7 @@ let listHistory (dbPath: string) : Async<JobHistoryRow list> =
                   yield
                       { jobId = reader.GetString(0)
                         programName = reader.GetString(1)
-                        shipSymbol = reader.GetString(2)
+                        shipSymbol = if reader.IsDBNull(2) then None else Some(reader.GetString(2))
                         state = reader.GetString(3)
                         updatedAt =
                             DateTime.Parse(reader.GetString(4), null, System.Globalization.DateTimeStyles.RoundtripKind) } ]

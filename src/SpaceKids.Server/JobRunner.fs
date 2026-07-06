@@ -490,7 +490,8 @@ let rec private applyEffects
                 // lock so another program can take the ship over immediately,
                 // rather than waiting for the lease to expire.
                 match jobs.TryGetValue jobId with
-                | true, job -> do! Persistence.ShipLockRepository.release dbPath job.shipSymbol
+                | true, { shipSymbol = Some sym } -> do! Persistence.ShipLockRepository.release dbPath sym
+                | true, { shipSymbol = None } -> ()
                 | false, _ -> ()
             | StartWait _ ->
                 // Nothing to do here — `job.status`/`next_wake_at` already record
@@ -500,9 +501,15 @@ let rec private applyEffects
                 // description ("reads jobs due to wake, calls step...").
                 ()
             | QueueApiCall(jobId, shipSymbol, action, attemptNumber) ->
-                let! result = runAction client dbPath token priority shipSymbol action
+                // Ship-scoped actions always have `Some` here by the time execution
+                // reaches this point (`JobRemoting.fs`'s upfront `programRequiresShip`
+                // gate refuses to start such a job without one); agnostic actions
+                // (`acceptContract`/`purchaseShip`) ignore this value entirely.
+                let! result = runAction client dbPath token priority (shipSymbol |> Option.defaultValue "") action
                 do! tick client dbPath token priority jobId (ApiResponseReceived(jobId, attemptNumber, result))
             | ReconcileShipState(jobId, shipSymbol, attemptNumber) ->
+                let shipSymbol = shipSymbol |> Option.defaultValue ""
+
                 let! result =
                     async {
                         try
@@ -544,7 +551,7 @@ let rec private applyEffects
 
                 do! tick client dbPath token priority jobId (ApiResponseReceived(jobId, attemptNumber, result))
             | QueueInfoRead(jobId, shipSymbol, infoType, args, attemptNumber, _resultTarget) ->
-                let! result = runInfoRead client dbPath token priority shipSymbol infoType args
+                let! result = runInfoRead client dbPath token priority (shipSymbol |> Option.defaultValue "") infoType args
                 do! tick client dbPath token priority jobId (ApiResponseReceived(jobId, attemptNumber, result))
     }
 
@@ -684,8 +691,8 @@ let startJob
     (workspaceId: string)
     (compiledDslJson: string)
     (program: CompiledProgram)
-    (shipSymbol: string)
-    (initialShip: Ship)
+    (shipSymbol: string option)
+    (initialShip: Ship option)
     (initialFleetShipCount: int)
     : Async<Result<JobId, string>> =
     async {
@@ -698,7 +705,7 @@ let startJob
               shipSymbol = shipSymbol
               status = Running
               stack = [ initialFrame ]
-              lastKnownShip = Some(toSnapshot initialShip)
+              lastKnownShip = initialShip |> Option.map toSnapshot
               lastKnownFleetShipCount = Some initialFleetShipCount
               log = []
               pausePending = false
@@ -720,20 +727,25 @@ let startJob
                 (Persistence.JobStateJson.serializeJobState job)
                 (Step.currentBlockId job)
 
-        let! lockResult = Persistence.ShipLockRepository.tryAcquire dbPath shipSymbol jobId leaseSeconds
+        // A ship-agnostic job (§14 follow-up) never takes a `ship_locks` lease at
+        // all — nothing to acquire, nothing to roll back.
+        match shipSymbol with
+        | None -> return Ok jobId
+        | Some sym ->
+            let! lockResult = Persistence.ShipLockRepository.tryAcquire dbPath sym jobId leaseSeconds
 
-        match lockResult with
-        | Error _ ->
-            jobs.TryRemove(jobId) |> ignore
-            let cancelledJob = { job with status = Cancelled }
-            do! persist dbPath cancelledJob
-            return Error $"Schiff {shipSymbol} wird bereits von einem anderen Programm gesteuert."
-        | Ok orphanedJobIdOpt ->
-            match orphanedJobIdOpt with
-            | Some orphanId -> do! pauseOrphan client dbPath token orphanId
-            | None -> ()
+            match lockResult with
+            | Error _ ->
+                jobs.TryRemove(jobId) |> ignore
+                let cancelledJob = { job with status = Cancelled }
+                do! persist dbPath cancelledJob
+                return Error $"Schiff {sym} wird bereits von einem anderen Programm gesteuert."
+            | Ok orphanedJobIdOpt ->
+                match orphanedJobIdOpt with
+                | Some orphanId -> do! pauseOrphan client dbPath token orphanId
+                | None -> ()
 
-            return Ok jobId
+                return Ok jobId
     }
 
 /// Drives the job through exactly one scheduler tick (one `WakeTick`) — step mode.

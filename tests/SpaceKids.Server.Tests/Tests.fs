@@ -314,7 +314,7 @@ let ``delete succeeds for a program whose only job history is terminal`` () =
         let id = ProgramRepository.create dbPath "Fertig geflogen" |> Async.RunSynchronously
         let programSnapshotId = ProgramRepository.insert dbPath id "{}" |> Async.RunSynchronously
 
-        JobRepository.insert dbPath "job-1" programSnapshotId "FAKE-AGENT-1" "Completed" "{}" None
+        JobRepository.insert dbPath "job-1" programSnapshotId (Some "FAKE-AGENT-1") "Completed" "{}" None
         |> Async.RunSynchronously
 
         match ProgramRepository.delete dbPath Locale.De id |> Async.RunSynchronously with
@@ -331,7 +331,7 @@ let ``delete is refused while a non-terminal job is flying the program`` () =
         let id = ProgramRepository.create dbPath "Gerade aktiv" |> Async.RunSynchronously
         let programSnapshotId = ProgramRepository.insert dbPath id "{}" |> Async.RunSynchronously
 
-        JobRepository.insert dbPath "job-2" programSnapshotId "FAKE-AGENT-1" "Running" "{}" None
+        JobRepository.insert dbPath "job-2" programSnapshotId (Some "FAKE-AGENT-1") "Running" "{}" None
         |> Async.RunSynchronously
 
         match ProgramRepository.delete dbPath Locale.De id |> Async.RunSynchronously with
@@ -350,19 +350,19 @@ let ``listHistory returns only terminal jobs, newest first, with resolved progra
         MigrationRunner.run dbPath
         let firstId = ProgramRepository.create dbPath "Zuerst geflogen" |> Async.RunSynchronously
         let firstSnapshotId = ProgramRepository.insert dbPath firstId "{}" |> Async.RunSynchronously
-        JobRepository.insert dbPath "job-old" firstSnapshotId "FAKE-AGENT-1" "Completed" "{}" None
+        JobRepository.insert dbPath "job-old" firstSnapshotId (Some "FAKE-AGENT-1") "Completed" "{}" None
         |> Async.RunSynchronously
 
         System.Threading.Thread.Sleep(50)
 
         let secondId = ProgramRepository.create dbPath "Zuletzt geflogen" |> Async.RunSynchronously
         let secondSnapshotId = ProgramRepository.insert dbPath secondId "{}" |> Async.RunSynchronously
-        JobRepository.insert dbPath "job-new" secondSnapshotId "FAKE-AGENT-2" "Failed" "{}" None
+        JobRepository.insert dbPath "job-new" secondSnapshotId (Some "FAKE-AGENT-2") "Failed" "{}" None
         |> Async.RunSynchronously
 
         let thirdId = ProgramRepository.create dbPath "Fliegt noch" |> Async.RunSynchronously
         let thirdSnapshotId = ProgramRepository.insert dbPath thirdId "{}" |> Async.RunSynchronously
-        JobRepository.insert dbPath "job-active" thirdSnapshotId "FAKE-AGENT-3" "Running" "{}" None
+        JobRepository.insert dbPath "job-active" thirdSnapshotId (Some "FAKE-AGENT-3") "Running" "{}" None
         |> Async.RunSynchronously
 
         let history = JobRepository.listHistory dbPath |> Async.RunSynchronously
@@ -370,7 +370,7 @@ let ``listHistory returns only terminal jobs, newest first, with resolved progra
         Assert.Equal(2, history.Length)
         Assert.Equal("job-new", history.[0].jobId)
         Assert.Equal("Zuletzt geflogen", history.[0].programName)
-        Assert.Equal("FAKE-AGENT-2", history.[0].shipSymbol)
+        Assert.Equal(Some "FAKE-AGENT-2", history.[0].shipSymbol)
         Assert.Equal("Failed", history.[0].state)
         Assert.Equal("job-old", history.[1].jobId)
         Assert.Equal("Zuerst geflogen", history.[1].programName)
@@ -385,7 +385,7 @@ let ``delete refusal message is English when the locale is English (Milestone 12
         let id = ProgramRepository.create dbPath "Active" |> Async.RunSynchronously
         let programSnapshotId = ProgramRepository.insert dbPath id "{}" |> Async.RunSynchronously
 
-        JobRepository.insert dbPath "job-3" programSnapshotId "FAKE-AGENT-1" "Running" "{}" None
+        JobRepository.insert dbPath "job-3" programSnapshotId (Some "FAKE-AGENT-1") "Running" "{}" None
         |> Async.RunSynchronously
 
         match ProgramRepository.delete dbPath Locale.En id |> Async.RunSynchronously with

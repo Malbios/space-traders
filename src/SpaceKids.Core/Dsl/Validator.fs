@@ -121,6 +121,37 @@ let rec private checkFlowStatements (locale: Locale) (insideLoop: bool) (instruc
         | ForEach(_, _, _, body) -> checkFlowStatements locale true body
         | _ -> [])
 
+/// The canonical list of ship-scoped action/info types (§14 follow-up: making ship
+/// selection optional for ship-agnostic programs) — exported so `Step.fs`'s runtime
+/// gates (`emitApiAction`/`emitInfoRead`) and this module's own `programRequiresShip`
+/// share one source of truth instead of two independently-hardcoded lists drifting
+/// apart. Derived from which `QueuedAction`/info-read handlers actually read a ship
+/// symbol server-side (`JobRunner.fs`'s `runAction`/`runInfoRead`).
+let shipScopedActionTypes =
+    set [ "navigate"; "orbit"; "dock"; "extract"; "buyGood"; "sellGood"; "survey"; "refuel"; "deliverContract" ]
+
+let shipScopedInfoTypes = set [ "getShipInfo"; "getCargo"; "getFuel" ]
+
+let rec private instructionNeedsShip (instr: Instruction) : bool =
+    match instr with
+    | ApiAction(_, actionType, _) -> shipScopedActionTypes.Contains actionType
+    | InfoRead(_, infoType, _, _) -> shipScopedInfoTypes.Contains infoType
+    | If(_, branches, elseBranch) ->
+        (branches |> List.exists (snd >> List.exists instructionNeedsShip))
+        || (elseBranch |> Option.map (List.exists instructionNeedsShip) |> Option.defaultValue false)
+    | Repeat(_, _, body)
+    | WhileUntil(_, _, _, body)
+    | ForEach(_, _, _, body) -> body |> List.exists instructionNeedsShip
+    | _ -> false
+
+/// Whether a compiled program touches any ship-scoped block anywhere — in the main
+/// program or in any custom block it references (the latter's own body isn't walked
+/// per call site; `program.customBlocks` is already exactly the transitive closure of
+/// blocks actually called, so checking it flatly is correct and simpler).
+let programRequiresShip (program: CompiledProgram) : bool =
+    (program.instructions |> List.exists instructionNeedsShip)
+    || (program.customBlocks |> Map.exists (fun _ cb -> cb.instructions |> List.exists instructionNeedsShip))
+
 let private literalTypeMismatch (inputType: string) (arg: Expr) : bool =
     match inputType, arg with
     | "Zahl", Literal(StringLit _) -> true

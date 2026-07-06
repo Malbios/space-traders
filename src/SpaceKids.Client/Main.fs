@@ -116,7 +116,9 @@ type JobSummaryDto =
         /// Saved/named multiple-program library: which program this pilot is
         /// flying — per-program watch mode filters pilots by this.
         programId: string
-        shipSymbol: string
+        /// `None` for a ship-agnostic job (§14 follow-up) — one that never
+        /// references a ship-scoped block, so it was never assigned one.
+        shipSymbol: string option
         status: string
         statusDetail: string option
         lastLogLine: string option
@@ -132,7 +134,7 @@ type JobHistoryDto =
     {
         jobId: string
         programName: string
-        shipSymbol: string
+        shipSymbol: string option
         status: string
         finishedAt: System.DateTime
     }
@@ -144,7 +146,7 @@ type JobService =
         /// program). `programId` (saved/named multiple-program library) is what
         /// `JobState.programId` gets tagged with — per-program watch mode filters
         /// pilots by it.
-        startJob: string * string * string * string -> Async<Result<string, string>>
+        startJob: string * string * string option * string -> Async<Result<string, string>>
         step: string -> Async<JobStatusDto option>
         run: string -> Async<JobStatusDto option>
         getStatus: string -> Async<JobStatusDto option>
@@ -333,11 +335,13 @@ let private terminalPilotStatuses = [ "Completed"; "Failed"; "Cancelled" ]
 let private pilotNamePool =
     [| "Max"; "Lina"; "Tom"; "Mia"; "Ben"; "Ella"; "Finn"; "Nora"; "Leo"; "Zoe"; "Emil"; "Ida" |]
 
-/// A stable hash of `shipSymbol` (not `System.String.GetHashCode`, which is
-/// randomized per process in .NET) so the same ship always shows the same name
-/// across restarts and re-runs — continuity, not randomness.
-let private pilotName (shipSymbol: string) : string =
-    let hash = shipSymbol |> Seq.sumBy int
+/// A stable hash of `key` (not `System.String.GetHashCode`, which is randomized per
+/// process in .NET) so the same pilot always shows the same name across restarts and
+/// re-runs — continuity, not randomness. Keyed by ship symbol normally, or by job id
+/// for a ship-agnostic job (§14 follow-up) that was never assigned one — either way,
+/// a stable key yields a stable, flavorful name.
+let private pilotName (key: string) : string =
+    let hash = key |> Seq.sumBy int
     pilotNamePool.[hash % pilotNamePool.Length]
 
 let initModel =
@@ -504,7 +508,6 @@ type Strings =
       simulating: string
       simulationDone: string
       pleaseOpenProgramFirst: string
-      pleaseSelectShipFirst: string
       creating: string
       blockCreated: string
       workshopLoading: string
@@ -589,6 +592,12 @@ type Strings =
       pilotsHeading: string
       noPilotsYet: string
       pilotNameLine: string * string -> string
+      /// Ship-agnostic job (§14 follow-up) variant of `pilotNameLine` — no ship to
+      /// mention, so a different sentence shape rather than an empty/dangling ship.
+      pilotNameLineNoShip: string -> string
+      /// Fallback label for `historyLine`'s ship slot when a ship-agnostic job
+      /// (§14 follow-up) was never assigned one.
+      noShipLabel: string
       pilotStatusLine: string -> string
       lastLogLine: string -> string
       resume: string
@@ -659,7 +668,6 @@ let private stringsDe: Strings =
       simulating = "Simuliere Ausführung..."
       simulationDone = "Simulation beendet."
       pleaseOpenProgramFirst = "Bitte zuerst ein Programm öffnen."
-      pleaseSelectShipFirst = "Bitte zuerst ein Schiff auswählen."
       creating = "Erstelle..."
       blockCreated = "Block erstellt."
       workshopLoading = "Werkstatt wird geladen..."
@@ -760,6 +768,8 @@ let private stringsDe: Strings =
       pilotsHeading = "Piloten"
       noPilotsYet = "Noch kein Pilot aktiv."
       pilotNameLine = fun (name, ship) -> $"🤖 Pilot {name} steuert Schiff {ship}"
+      pilotNameLineNoShip = fun name -> $"🤖 Pilot {name} führt ein Programm aus"
+      noShipLabel = "kein Schiff"
       pilotStatusLine = fun status -> $"Status: {status}"
       lastLogLine = fun line -> $"Zuletzt: {line}"
       resume = "Fortsetzen"
@@ -832,7 +842,6 @@ let private stringsEn: Strings =
       simulating = "Simulating run..."
       simulationDone = "Simulation finished."
       pleaseOpenProgramFirst = "Please open a program first."
-      pleaseSelectShipFirst = "Please select a ship first."
       creating = "Creating..."
       blockCreated = "Block created."
       workshopLoading = "Loading workshop..."
@@ -931,6 +940,8 @@ let private stringsEn: Strings =
       pilotsHeading = "Pilots"
       noPilotsYet = "No pilot active yet."
       pilotNameLine = fun (name, ship) -> $"🤖 Pilot {name} is flying ship {ship}"
+      pilotNameLineNoShip = fun name -> $"🤖 Pilot {name} is running a program"
+      noShipLabel = "no ship"
       pilotStatusLine = fun status -> $"Status: {status}"
       lastLogLine = fun line -> $"Last: {line}"
       resume = "Resume"
@@ -1103,18 +1114,22 @@ let update
         { model with queueStatus = Some status; serverUnreachable = false }, Cmd.none
 
     | SelectShip symbol ->
-        { model with selectedShipSymbol = Some symbol }, Cmd.none
+        { model with selectedShipSymbol = if symbol = "" then None else Some symbol }, Cmd.none
     | StartProgram ->
-        match model.currentProgramId, model.selectedShipSymbol with
-        | None, _ -> { model with status = s.pleaseOpenProgramFirst }, Cmd.none
-        | Some _, None -> { model with status = s.pleaseSelectShipFirst }, Cmd.none
-        | Some programId, Some shipSymbol ->
+        match model.currentProgramId with
+        | None -> { model with status = s.pleaseOpenProgramFirst }, Cmd.none
+        | Some programId ->
+            // No ship-required client-side gate (§14 follow-up): a ship-agnostic
+            // program should start fine with `model.selectedShipSymbol = None`. If
+            // the program actually needs one, the server's own upfront check
+            // (`JobRemoting.fs`) rejects the start and its message surfaces below via
+            // `ProgramStartResult(Error _)` — no separate client-side message needed.
             { model with startingJob = true; pilotError = None },
             Cmd.OfAsync.perform
                 (fun () ->
                     async {
                         let! workspaceJson = call<string> js "spaceKids.serializeWorkspace" [| box model.containerId |]
-                        return! jobRemote.startJob (model.tokenInput, programId, shipSymbol, workspaceJson)
+                        return! jobRemote.startJob (model.tokenInput, programId, model.selectedShipSymbol, workspaceJson)
                     })
                 ()
                 ProgramStartResult
@@ -1860,7 +1875,10 @@ let private viewJobRunner model dispatch =
                         option { attr.value ship.symbol; ship.symbol }
                 }
                 button {
-                    attr.disabled (model.currentProgramId.IsNone || model.selectedShipSymbol.IsNone || model.startingJob)
+                    // No ship-selected gate here (§14 follow-up) — a ship-agnostic
+                    // program is meant to start with no ship picked; the server
+                    // rejects a ship-requiring program with no ship instead.
+                    attr.disabled (model.currentProgramId.IsNone || model.startingJob)
                     on.click (fun _ -> dispatch StartProgram)
                     s.start
                 }
@@ -1882,7 +1900,11 @@ let private viewJobRunner model dispatch =
 
                 div {
                     attr.style "border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem; margin: 0.5rem 0"
-                    p { s.pilotNameLine (pilotName pilot.shipSymbol, pilot.shipSymbol) }
+                    p {
+                        match pilot.shipSymbol with
+                        | Some ship -> s.pilotNameLine (pilotName ship, ship)
+                        | None -> s.pilotNameLineNoShip (pilotName pilot.jobId)
+                    }
                     p { s.pilotStatusLine (s.pilotStatus pilot.status) }
                     match pilot.statusDetail with
                     | Some detail -> p { detail }
@@ -1926,10 +1948,11 @@ let private viewJobRunner model dispatch =
         else
             ul {
                 for pilot in activePilots do
+                    let label = pilot.shipSymbol |> Option.defaultValue (pilotName pilot.jobId)
                     li {
                         match pilot.lastLogLine with
-                        | Some line -> s.logbookLine (pilot.shipSymbol, line)
-                        | None -> s.logbookLine (pilot.shipSymbol, s.pilotStatus pilot.status)
+                        | Some line -> s.logbookLine (label, line)
+                        | None -> s.logbookLine (label, s.pilotStatus pilot.status)
                     }
             }
 
@@ -1941,7 +1964,12 @@ let private viewJobRunner model dispatch =
             ul {
                 for entry in model.jobHistory do
                     li {
-                        s.historyLine (entry.programName, entry.shipSymbol, s.pilotStatus entry.status, entry.finishedAt)
+                        s.historyLine (
+                            entry.programName,
+                            entry.shipSymbol |> Option.defaultValue s.noShipLabel,
+                            s.pilotStatus entry.status,
+                            entry.finishedAt
+                        )
                     }
             }
     }
