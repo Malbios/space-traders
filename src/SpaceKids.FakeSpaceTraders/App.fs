@@ -94,7 +94,7 @@ let mutable private contracts: Map<string, Contract> =
         ``type`` = "PROCUREMENT"
         accepted = true
         fulfilled = false
-        expiration = "2026-12-31T00:00:00.000Z" } ]
+        expiration = Some "2026-12-31T00:00:00.000Z" } ]
     |> Map.ofList
 
 let private readContract (contractId: string) : Contract = lock shipLock (fun () -> contracts.[contractId])
@@ -813,5 +813,5 @@ let resetForTests () =
             ``type`` = "PROCUREMENT"
             accepted = true
             fulfilled = false
-            expiration = "2026-12-31T00:00:00.000Z" } ]
+            expiration = Some "2026-12-31T00:00:00.000Z" } ]
         |> Map.ofList

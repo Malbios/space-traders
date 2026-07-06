@@ -361,6 +361,7 @@ type Message =
     | TokenSubmitted of Result<DashboardState, string>
     | LoadDashboard
     | DashboardLoaded of DashboardState option
+    | DashboardLoadFailed of string
     | LoadQueueStatus
     | QueueStatusLoaded of QueueStatusDto
     | SelectShip of string
@@ -953,7 +954,11 @@ let update
         { model with tokenInput = value }, Cmd.none
     | SubmitToken ->
         { model with dashboardLoading = true; dashboardError = None },
-        Cmd.OfAsync.perform (fun () -> agentRemote.submitToken model.tokenInput) () TokenSubmitted
+        Cmd.OfAsync.either
+            (fun () -> agentRemote.submitToken model.tokenInput)
+            ()
+            TokenSubmitted
+            (fun ex -> TokenSubmitted(Error ex.Message))
     | TokenSubmitted(Ok state) ->
         { model with dashboard = Some state; dashboardLoading = false; dashboardError = None }, Cmd.none
     | TokenSubmitted(Error message) ->
@@ -962,10 +967,15 @@ let update
         // Fires automatically at page load and every few `MapTick`s (a silent
         // background refresh) -- unlike `SubmitToken`, a real user action, this
         // shouldn't flash a loading indicator for something the player never asked
-        // for, so `dashboardLoading` is left untouched here.
-        model, Cmd.OfAsync.perform (fun () -> agentRemote.loadDashboard ()) () DashboardLoaded
+        // for, so `dashboardLoading` is left untouched here. A failure (e.g. a
+        // deserialization error on unexpected real-account data) must still surface
+        // visibly rather than leaving the page stuck with no error and no result.
+        model,
+        Cmd.OfAsync.either (fun () -> agentRemote.loadDashboard ()) () DashboardLoaded (fun ex -> DashboardLoadFailed ex.Message)
     | DashboardLoaded stateOpt ->
         { model with dashboard = stateOpt }, Cmd.none
+    | DashboardLoadFailed message ->
+        { model with dashboardError = Some message }, Cmd.none
     | LoadQueueStatus ->
         model, Cmd.OfAsync.perform (fun () -> queueRemote.getStatus ()) () QueueStatusLoaded
     | QueueStatusLoaded status ->

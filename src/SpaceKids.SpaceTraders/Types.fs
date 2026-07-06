@@ -107,7 +107,9 @@ type Contract =
       ``type``: string
       accepted: bool
       fulfilled: bool
-      expiration: string }
+      /// Deprecated in the real API in favor of `deadlineToAccept` — some real accounts'
+      /// contracts omit/null it, unlike our fake server's always-populated fixture.
+      expiration: string option }
 
 /// A waypoint's trait signals what's actually there (a market, a shipyard, a
 /// mineable deposit, ...) — the inspector (visual-map feature) uses `symbol` to
