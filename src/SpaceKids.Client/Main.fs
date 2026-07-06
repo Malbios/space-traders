@@ -514,7 +514,6 @@ type Strings =
       programLoading: string
       programLoaded: string
 
-      dashboardHeading: string
       loadingEllipsis: string
       tokenPlaceholder: string
       login: string
@@ -665,7 +664,6 @@ let private stringsDe: Strings =
       programLoading = "Lädt..."
       programLoaded = "Programm geladen."
 
-      dashboardHeading = "Echte SpaceTraders-Daten"
       loadingEllipsis = "Lädt..."
       tokenPlaceholder = "SpaceTraders-Token einfügen"
       login = "Anmelden"
@@ -712,7 +710,7 @@ let private stringsDe: Strings =
       systemMapHeading = "Systemkarte"
 
       queueHeading = "Warteschlange"
-      refresh = "Aktualisieren"
+      refresh = "Daten aktualisieren"
       queueNotLoadedYet = "Noch nicht geladen."
       pendingRequests = fun n -> $"Wartende Anfragen: {n}"
       serverResetDetected = "Der Spielserver wurde zurückgesetzt. Ein neuer Kapitän muss erstellt werden."
@@ -834,7 +832,6 @@ let private stringsEn: Strings =
       programLoading = "Loading..."
       programLoaded = "Program loaded."
 
-      dashboardHeading = "Real SpaceTraders data"
       loadingEllipsis = "Loading..."
       tokenPlaceholder = "Paste SpaceTraders token"
       login = "Log in"
@@ -881,7 +878,7 @@ let private stringsEn: Strings =
       systemMapHeading = "System map"
 
       queueHeading = "Queue"
-      refresh = "Refresh"
+      refresh = "Update data"
       queueNotLoadedYet = "Not loaded yet."
       pendingRequests = fun n -> $"Pending requests: {n}"
       serverResetDetected = "The game server was reset. A new captain must be created."
@@ -1490,56 +1487,42 @@ let update
             pilotsPollBackoffTicks = min 30 (max 2 (model.pilotsPollBackoffTicks * 2)) },
         Cmd.none
 
-let private viewDashboard model dispatch =
-    let s = stringsFor model.locale
-
+let private viewDashboard (s: Strings) (state: DashboardState) dispatch =
     div {
-        h2 { s.dashboardHeading }
-        button { on.click (fun _ -> dispatch LoadDashboard); s.refresh }
-        if model.dashboardLoading then
-            p { s.loadingEllipsis }
-        match model.dashboardError with
-        | Some err -> p { s.errorPrefix err }
-        | None -> ()
-        match model.dashboard with
-        | None -> p { s.loginInSettingsHint }
-        | Some state ->
+        h3 { s.pilotLabel state.agent.symbol }
+        p { s.balance state.agent.credits }
+        p { s.headquarters state.agent.headquarters }
+        h3 { s.shipsHeading }
+        ul {
+            for ship in state.ships do
+                li {
+                    attr.style "cursor: pointer; text-decoration: underline"
+                    on.click (fun _ -> dispatch (InspectShip ship.symbol))
+                    s.shipLine (ship.symbol, ship.registration.role, ship.nav.status, ship.nav.waypointSymbol)
+                }
+        }
+        h3 { s.contractsHeading }
+        ul {
+            for contract in state.contracts do
+                li { s.contractLine (contract.id, contract.``type``, contract.accepted, contract.fulfilled) }
+        }
+        h3 { s.waypointsHeading }
+        ul {
+            for waypoint in state.waypoints do
+                li {
+                    attr.style "cursor: pointer; text-decoration: underline"
+                    on.click (fun _ -> dispatch (InspectWaypoint waypoint.symbol))
+                    s.waypointLine (waypoint.symbol, waypoint.``type``)
+                }
+        }
+        h3 { s.marketHeading }
+        for market in state.markets do
             div {
-                h3 { s.pilotLabel state.agent.symbol }
-                p { s.balance state.agent.credits }
-                p { s.headquarters state.agent.headquarters }
-                h3 { s.shipsHeading }
+                p { s.marketAt market.symbol }
                 ul {
-                    for ship in state.ships do
-                        li {
-                            attr.style "cursor: pointer; text-decoration: underline"
-                            on.click (fun _ -> dispatch (InspectShip ship.symbol))
-                            s.shipLine (ship.symbol, ship.registration.role, ship.nav.status, ship.nav.waypointSymbol)
-                        }
+                    for good in market.exports do
+                        li { s.exportLine good.name }
                 }
-                h3 { s.contractsHeading }
-                ul {
-                    for contract in state.contracts do
-                        li { s.contractLine (contract.id, contract.``type``, contract.accepted, contract.fulfilled) }
-                }
-                h3 { s.waypointsHeading }
-                ul {
-                    for waypoint in state.waypoints do
-                        li {
-                            attr.style "cursor: pointer; text-decoration: underline"
-                            on.click (fun _ -> dispatch (InspectWaypoint waypoint.symbol))
-                            s.waypointLine (waypoint.symbol, waypoint.``type``)
-                        }
-                }
-                h3 { s.marketHeading }
-                for market in state.markets do
-                    div {
-                        p { s.marketAt market.symbol }
-                        ul {
-                            for good in market.exports do
-                                li { s.exportLine good.name }
-                        }
-                    }
             }
     }
 
@@ -2158,12 +2141,25 @@ let view model dispatch =
 
         div {
             attr.style (tabStyle model GalaxieTab)
-            viewDashboard model dispatch
             match model.dashboard with
+            | None -> p { s.loginInSettingsHint }
             | Some state ->
                 viewSystemMap s state dispatch
+                div {
+                    attr.style "margin: 0.5rem 0"
+                    button {
+                        attr.style "font-size: 0.8em; padding: 0.2em 0.6em"
+                        on.click (fun _ -> dispatch LoadDashboard)
+                        s.refresh
+                    }
+                    if model.dashboardLoading then
+                        p { s.loadingEllipsis }
+                    match model.dashboardError with
+                    | Some err -> p { s.errorPrefix err }
+                    | None -> ()
+                }
+                viewDashboard s state dispatch
                 viewInspector state model dispatch
-            | None -> Node.Empty()
         }
 
         div {
