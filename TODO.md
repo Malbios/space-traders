@@ -336,6 +336,8 @@ program with a user, not yet planned into a milestone.
 - [ ] Do a pass over the rest of the stock-Blockly/programming category for
       other obviously-missing block kinds (found while looking for
       `logic_boolean`) — no such audit has been done since Milestone 3.
+- [ ] Make the system map (`viewSystemMap`, Galaxie tab) zoomable — currently
+      a fixed 400x400 SVG with no pan/zoom controls.
 
 ## Later milestones
 
