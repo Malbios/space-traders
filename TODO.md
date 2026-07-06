@@ -346,24 +346,6 @@ program with a user, not yet planned into a milestone.
       markup (`Main.fs`'s `view` wraps everything in plain `div`s), so this
       CSS may be dead leftover from an earlier template and dark mode might
       only be touching `body`'s background/text color, if that.
-- [ ] Bug: the real API can return `200 OK` with `data.shipyard: null` (and
-      presumably `data.market: null`) for a waypoint whose traits *do*
-      include `SHIPYARD`/`MARKETPLACE` — a third case beyond the two we
-      already handle (no trait → 404 → `None`; trait + ship present →
-      populated). Confirmed live against a real waypoint (`X1-XN65-H52`,
-      `isUnderConstruction: false`, traits include `SHIPYARD`+`MARKETPLACE`):
-      SpaceKids's own request/response expander (Settings tab) showed
-      `GET .../shipyard` returning status "ok" with body `{"shipyard":null}`.
-      Since `GetShipyardResult`/`GetMarketResult` (`SpaceTraders/Types.fs`)
-      declare `shipyard`/`market` as non-optional record fields,
-      `System.Text.Json` silently deserializes the JSON `null` into a CLR
-      null without erroring; `AgentRemoting.fetchWaypointMarket`/
-      `fetchWaypointShipyard` then return `Some <null>` (not `None`), and
-      `Main.fs`'s `viewWaypointInspector` dereferencing `shipyard.ships`/
-      `market.tradeGoods` on that null likely throws a
-      `NullReferenceException` instead of showing anything sensible. Fix:
-      treat a null `shipyard`/`market` in the response the same as a 404
-      (`None`).
 
 ## Later milestones
 
