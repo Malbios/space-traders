@@ -338,6 +338,20 @@ program with a user, not yet planned into a milestone.
       `logic_boolean`) — no such audit has been done since Milestone 3.
 - [ ] Make the system map (`viewSystemMap`, Galaxie tab) zoomable — currently
       a fixed 400x400 SVG with no pan/zoom controls.
+- [ ] Ship selection is mandatory to run a program in the Piloten tab, even
+      for programs that never touch any ship (e.g. a shipyard-scanning/
+      ship-purchasing program). `JobState`'s `shipSymbol` is a required
+      field, `startJob` always takes an exclusive `ship_locks` lease for it
+      (`JobRunner.fs:700`), and the whole pilot dashboard/watch mode is
+      keyed by ship — there's no "job with no ship" concept anywhere today.
+      Making ship-agnostic programs skip this would mean: an optional
+      `shipSymbol` on `JobState`, ship-lock acquire/release skipped when
+      absent, a `ship_locks`/migration change, reworking the pilot
+      dashboard's per-ship grouping, and the compiler/validator knowing
+      whether a given program references any ship-scoped block at all.
+      Cross-cutting, needs a real design pass, not a quick fix. Workaround
+      today: just pick any spare ship — a ship-agnostic program ignores it
+      harmlessly.
 - [ ] Bug: dark mode (Settings tab theme toggle) isn't actually dark. Not
       investigated/fixed yet. First lead: `wwwroot/css/index.css` defines
       `--sk-bg`/`--sk-text`/`--sk-sidebar-bg` custom properties overridden
