@@ -518,6 +518,8 @@ type Strings =
       loadingEllipsis: string
       tokenPlaceholder: string
       login: string
+      loginInSettingsHint: string
+      settingsTokenLabel: string
       pilotLabel: string -> string
       balance: int64 -> string
       headquarters: string -> string
@@ -667,6 +669,8 @@ let private stringsDe: Strings =
       loadingEllipsis = "Lädt..."
       tokenPlaceholder = "SpaceTraders-Token einfügen"
       login = "Anmelden"
+      loginInSettingsHint = "Bitte im Reiter „Einstellungen“ anmelden."
+      settingsTokenLabel = "SpaceTraders-Token"
       pilotLabel = fun symbol -> $"Pilot: {symbol}"
       balance = fun credits -> $"Kontostand: {credits} Credits"
       headquarters = fun hq -> $"Hauptquartier: {hq}"
@@ -834,6 +838,8 @@ let private stringsEn: Strings =
       loadingEllipsis = "Loading..."
       tokenPlaceholder = "Paste SpaceTraders token"
       login = "Log in"
+      loginInSettingsHint = "Please log in from the Settings tab."
+      settingsTokenLabel = "SpaceTraders token"
       pilotLabel = fun symbol -> $"Pilot: {symbol}"
       balance = fun credits -> $"Balance: {credits} credits"
       headquarters = fun hq -> $"Headquarters: {hq}"
@@ -1496,16 +1502,7 @@ let private viewDashboard model dispatch =
         | Some err -> p { s.errorPrefix err }
         | None -> ()
         match model.dashboard with
-        | None ->
-            div {
-                input {
-                    attr.``type`` "text"
-                    attr.placeholder s.tokenPlaceholder
-                    attr.value model.tokenInput
-                    on.change (fun e -> dispatch (TokenInputChanged(string e.Value)))
-                }
-                button { on.click (fun _ -> dispatch SubmitToken); s.login }
-            }
+        | None -> p { s.loginInSettingsHint }
         | Some state ->
             div {
                 h3 { s.pilotLabel state.agent.symbol }
@@ -2018,6 +2015,27 @@ let private viewSettings (model: Model) dispatch =
     let s = stringsFor model.locale
 
     div {
+        div {
+            attr.style "margin-bottom: 1rem"
+            p { attr.style "font-weight: bold"; s.settingsTokenLabel }
+            match model.dashboard with
+            | Some state -> p { s.pilotLabel state.agent.symbol }
+            | None ->
+                div {
+                    input {
+                        attr.``type`` "text"
+                        attr.placeholder s.tokenPlaceholder
+                        attr.value model.tokenInput
+                        on.change (fun e -> dispatch (TokenInputChanged(string e.Value)))
+                    }
+                    button { on.click (fun _ -> dispatch SubmitToken); s.login }
+                    if model.dashboardLoading then
+                        p { s.loadingEllipsis }
+                    match model.dashboardError with
+                    | Some err -> p { s.errorPrefix err }
+                    | None -> ()
+                }
+        }
         div {
             attr.style "margin-bottom: 1rem"
             p { attr.style "font-weight: bold"; s.settingsLocaleLabel }
