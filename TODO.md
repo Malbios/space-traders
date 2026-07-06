@@ -338,6 +338,14 @@ program with a user, not yet planned into a milestone.
       `logic_boolean`) — no such audit has been done since Milestone 3.
 - [ ] Make the system map (`viewSystemMap`, Galaxie tab) zoomable — currently
       a fixed 400x400 SVG with no pan/zoom controls.
+- [ ] Bug: dark mode (Settings tab theme toggle) isn't actually dark. Not
+      investigated/fixed yet. First lead: `wwwroot/css/index.css` defines
+      `--sk-bg`/`--sk-text`/`--sk-sidebar-bg` custom properties overridden
+      under `[data-theme="dark"]`, applied to `body` and a `.sidebar` class —
+      but `#main`/`.columns`/`.sidebar` don't appear anywhere in the current
+      markup (`Main.fs`'s `view` wraps everything in plain `div`s), so this
+      CSS may be dead leftover from an earlier template and dark mode might
+      only be touching `body`'s background/text color, if that.
 
 ## Later milestones
 
