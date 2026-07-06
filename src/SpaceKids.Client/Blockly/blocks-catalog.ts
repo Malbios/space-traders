@@ -346,10 +346,26 @@ export function registerCatalogBlocks(): void {
  * Idempotent (patches the stock `init` once, safe to call once at seam init).
  */
 export function registerStockBlockChecks(): void {
-    const original = Blockly.Blocks["controls_forEach"].init;
+    const originalForEach = Blockly.Blocks["controls_forEach"].init;
     Blockly.Blocks["controls_forEach"].init = function (this: Blockly.Block) {
-        original.call(this);
+        originalForEach.call(this);
         this.getInput("LIST")?.connection?.setCheck("List");
+    };
+
+    // `controls_if`'s IF0 and `controls_whileUntil`'s BOOL already check stock
+    // Blockly's own `"Boolean"`, and `controls_repeat_ext`'s TIMES already
+    // checks `"Number"` — the same literal strings our own catalog blocks use,
+    // so those three were never actually broken (confirmed live). Only
+    // `logic_compare`'s A/B operands have no check at all: `Eval.fs`'s
+    // `Comparison` case only meaningfully compares `VString`/coerces everything
+    // else via `asFloat`, so a `VList`/`VRecord` operand only ever failed at
+    // runtime, not at edit time.
+    const originalCompare = Blockly.Blocks["logic_compare"].init;
+    Blockly.Blocks["logic_compare"].init = function (this: Blockly.Block) {
+        originalCompare.call(this);
+        const primitiveChecks = ["String", "Number", "Boolean"];
+        this.getInput("A")?.connection?.setCheck(primitiveChecks);
+        this.getInput("B")?.connection?.setCheck(primitiveChecks);
     };
 }
 
