@@ -1023,7 +1023,19 @@ let update
             else
                 Cmd.none
 
-        { model with pilots = pilots; watchModeLocked = anyActive }, readOnlyCmd
+        // Event-driven dashboard refresh: a job that just transitioned into a
+        // terminal state (matched by jobId against the *previous* poll) means
+        // ship/agent state on the real API likely changed -- that's the only time
+        // it's worth spending a rate-limited real API refetch.
+        let justCompleted =
+            pilots
+            |> List.exists (fun p ->
+                List.contains p.status terminalPilotStatuses
+                && model.pilots
+                   |> List.exists (fun old -> old.jobId = p.jobId && not (List.contains old.status terminalPilotStatuses)))
+
+        { model with pilots = pilots; watchModeLocked = anyActive },
+        Cmd.batch [ readOnlyCmd; if justCompleted then Cmd.ofMsg LoadDashboard else Cmd.none ]
     | WatchModeReadOnlySet value ->
         { model with readOnly = value }, Cmd.none
     | PausePilot jobId ->
@@ -1193,12 +1205,15 @@ let update
     | MapTick ->
         let count = model.mapTickCount + 1
 
-        let reloadCmd = if count % 5 = 0 then Cmd.ofMsg LoadDashboard else Cmd.none
-
         let nextTickCmd =
             Cmd.OfAsync.perform (fun () -> async { do! Async.Sleep 1000 }) () (fun () -> MapTick)
 
-        { model with mapTickCount = count }, Cmd.batch [ reloadCmd; nextTickCmd ]
+        // Job status is a cheap, local, non-rate-limited read (JobRunner's in-process
+        // dict) -- polling it every tick costs nothing against the real SpaceTraders
+        // API. `PilotsLoaded` uses this to detect a job just finishing and triggers
+        // the actual (rate-limited) dashboard refetch only then, instead of blindly
+        // re-fetching every few ticks regardless of whether anything changed.
+        { model with mapTickCount = count }, Cmd.batch [ Cmd.ofMsg LoadPilots; nextTickCmd ]
 
     | LoadPrograms ->
         model, Cmd.OfAsync.perform (fun () -> programRemote.list ()) () ProgramsLoaded
@@ -1312,6 +1327,7 @@ let private viewDashboard model dispatch =
 
     div {
         h2 { s.dashboardHeading }
+        button { on.click (fun _ -> dispatch LoadDashboard); s.refresh }
         if model.dashboardLoading then
             p { s.loadingEllipsis }
         match model.dashboardError with
