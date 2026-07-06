@@ -98,7 +98,15 @@ let private contractRecord (c: Contract) : Value =
     )
 
 let private waypointRecord (w: Waypoint) : Value =
-    VRecord(Map.ofList [ "Symbol", VString w.symbol; "Type", VString w.``type`` ])
+    let hasTrait symbol = w.traits |> List.exists (fun t -> t.symbol = symbol)
+
+    VRecord(
+        Map.ofList
+            [ "Symbol", VString w.symbol
+              "Type", VString w.``type``
+              "HasShipyard", VBool(hasTrait "SHIPYARD")
+              "HasMarket", VBool(hasTrait "MARKETPLACE") ]
+    )
 
 /// `RequestQueue.enqueue`'s `AmbiguousFailure` can arrive wrapped in an
 /// `AggregateException` depending on the Async<->Task interop path it crosses (the

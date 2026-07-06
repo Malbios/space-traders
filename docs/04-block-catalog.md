@@ -296,7 +296,7 @@ Auftrag (one item of getContracts' list)
   Id, Type, Accepted, Fulfilled
 
 Wegpunkt (one item of getWaypoints' list)
-  Symbol, Type
+  Symbol, Type, HasShipyard, HasMarket
 ```
 
 Accessor blocks (Blockly type -> German label -> record field, all colour 65,
@@ -332,6 +332,8 @@ contractAccepted     Angenommen aus Auftrag        -> Auftrag.Accepted
 contractFulfilled    Erfüllt aus Auftrag           -> Auftrag.Fulfilled
 waypointSymbolField  Symbol aus Wegpunkt           -> Wegpunkt.Symbol
 waypointTypeField    Typ aus Wegpunkt              -> Wegpunkt.Type
+waypointHasShipyard  Hat Werft aus Wegpunkt        -> Wegpunkt.HasShipyard
+waypointHasMarket    Hat Markt aus Wegpunkt        -> Wegpunkt.HasMarket
 ```
 
 Registered in `blocks-catalog.ts`'s `ACCESSOR_BLOCKS` array (also exported as

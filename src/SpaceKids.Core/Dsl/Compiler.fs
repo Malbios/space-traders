@@ -70,6 +70,8 @@ let private ACCESSOR_BLOCKS: Map<string, string> =
         "contractFulfilled", "Fulfilled"
         "waypointSymbolField", "Symbol"
         "waypointTypeField", "Type"
+        "waypointHasShipyard", "HasShipyard"
+        "waypointHasMarket", "HasMarket"
     ]
 
 type private CompileState =
