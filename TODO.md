@@ -345,8 +345,12 @@ program with a user, not yet planned into a milestone.
       decision immediately (continue); `Validator.fs` rejects a
       `Break`/`Continue` used outside any loop. Verified live combined
       with `waypointHasShipyard` (stop scanning once a shipyard is found).
-- [ ] Make the system map (`viewSystemMap`, Galaxie tab) zoomable — currently
-      a fixed 400x400 SVG with no pan/zoom controls.
+- [x] Made the system map zoomable — scroll-wheel zoom and click-and-drag pan on
+      the SVG's `viewBox` (`Bolero.Html`'s `on.wheel`/`on.mousedown`/`on.mousemove`/
+      `on.mouseup`/`on.mouseout`, confirmed present via reflection before using
+      them), plus a "Reset view" button. Waypoint/ship coordinates and their click
+      handlers are unaffected — only which sub-rectangle of the fixed
+      400x400 coordinate space is visible changes.
 - [x] Ship selection is now optional for ship-agnostic programs (one that
       never references a ship-scoped block — a shipyard-scanning/
       ship-purchasing program, say). `JobState.shipSymbol` and the

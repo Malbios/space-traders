@@ -284,6 +284,17 @@ type Model =
         /// current against `DateTimeOffset.UtcNow` without needing to store
         /// "now" itself. Every 5th tick also reloads the dashboard.
         mapTickCount: int
+        /// Visual system map zoom/pan (Galaxie tab) — client-local view state,
+        /// reset to the auto-fit default on `ResetMapView`. `mapZoom` scales the
+        /// SVG's `viewBox` window (>= 1.0 — no need to zoom out past the
+        /// auto-fit-everything default); `mapPanX`/`mapPanY` shift that window's
+        /// center, in the same coordinate space `scaleMapPoint` already scales
+        /// waypoints into. `mapDragging` is true while the mouse button is held
+        /// down over the map (drag-to-pan in progress).
+        mapZoom: float
+        mapPanX: float
+        mapPanY: float
+        mapDragging: bool
         /// Saved/named multiple-program library: every saved program, which one
         /// (if any) is open in the editor — `containerId` is derived from this
         /// directly (the program's own id, already a valid DOM element id and
@@ -375,6 +386,10 @@ let initModel =
         waypointMarket = None
         waypointShipyard = None
         mapTickCount = 0
+        mapZoom = 1.0
+        mapPanX = 0.0
+        mapPanY = 0.0
+        mapDragging = false
         programs = []
         currentProgramId = None
         newProgramName = ""
@@ -453,6 +468,11 @@ type Message =
     | LoadWaypointShipyard of string
     | WaypointShipyardLoaded of Shipyard option
     | MapTick
+    | MapWheel of deltaY: float
+    | MapDragStart
+    | MapDragMove of movementX: float * movementY: float
+    | MapDragEnd
+    | ResetMapView
     | LoadPrograms
     | ProgramsLoaded of ProgramSummaryDto list
     | NewProgramNameChanged of string
@@ -568,6 +588,7 @@ type Strings =
       selectMapEntityHint: string
 
       systemMapHeading: string
+      resetMapView: string
 
       queueHeading: string
       refresh: string
@@ -728,6 +749,7 @@ let private stringsDe: Strings =
       selectMapEntityHint = "Klicke ein Schiff oder einen Wegpunkt auf der Karte an, um Details zu sehen."
 
       systemMapHeading = "Systemkarte"
+      resetMapView = "Ansicht zurücksetzen"
 
       queueHeading = "Warteschlange"
       refresh = "Daten aktualisieren"
@@ -902,6 +924,7 @@ let private stringsEn: Strings =
       selectMapEntityHint = "Click a ship or waypoint on the map to see its details."
 
       systemMapHeading = "System map"
+      resetMapView = "Reset view"
 
       queueHeading = "Queue"
       refresh = "Update data"
@@ -1379,6 +1402,21 @@ let update
         else
             { model with mapTickCount = count; pilotsPollTicksSinceLast = ticksSinceLast }, nextTickCmd
 
+    | MapWheel deltaY ->
+        let factor = if deltaY < 0.0 then 1.15 else 1.0 / 1.15
+        { model with mapZoom = model.mapZoom * factor |> max 1.0 |> min 8.0 }, Cmd.none
+    | MapDragStart -> { model with mapDragging = true }, Cmd.none
+    | MapDragMove(dx, dy) ->
+        if model.mapDragging then
+            { model with
+                mapPanX = model.mapPanX - dx / model.mapZoom
+                mapPanY = model.mapPanY - dy / model.mapZoom },
+            Cmd.none
+        else
+            model, Cmd.none
+    | MapDragEnd -> { model with mapDragging = false }, Cmd.none
+    | ResetMapView -> { model with mapZoom = 1.0; mapPanX = 0.0; mapPanY = 0.0 }, Cmd.none
+
     | LoadPrograms ->
         model, Cmd.OfAsync.either (fun () -> programRemote.list ()) () ProgramsLoaded (fun _ -> RemoteCallFailed)
     | ProgramsLoaded programs ->
@@ -1752,14 +1790,28 @@ let private interpolatedShipPosition (waypoints: Waypoint list) (ship: Ship) : (
         |> List.tryFind (fun w -> w.symbol = ship.nav.waypointSymbol)
         |> Option.map (fun w -> float w.x, float w.y)
 
-let private viewSystemMap (s: Strings) (state: DashboardState) dispatch =
+let private viewSystemMap (s: Strings) (model: Model) (state: DashboardState) dispatch =
     let bounds = computeMapBounds state.waypoints
+
+    // `viewSize`/`viewX`/`viewY` define which sub-rectangle of the fixed
+    // `mapViewSize x mapViewSize` coordinate space `scaleMapPoint` draws into is
+    // actually visible -- `mapZoom`/`mapPanX`/`mapPanY` never touch how waypoints/
+    // ships are themselves scaled into that space, only this window onto it.
+    let viewSize = mapViewSize / model.mapZoom
+    let viewX = (mapViewSize - viewSize) / 2.0 + model.mapPanX
+    let viewY = (mapViewSize - viewSize) / 2.0 + model.mapPanY
 
     div {
         h2 { s.systemMapHeading }
         svg {
-            "viewBox" => $"0 0 {mapViewSize} {mapViewSize}"
-            attr.style "width: 100%; max-width: 400px; height: 400px; border: 1px solid #ccc"
+            "viewBox" => $"{viewX} {viewY} {viewSize} {viewSize}"
+            attr.style
+                "width: 100%; max-width: 400px; height: 400px; border: 1px solid #ccc; cursor: grab; touch-action: none"
+            on.wheel (fun e -> dispatch (MapWheel e.DeltaY))
+            on.mousedown (fun _ -> dispatch MapDragStart)
+            on.mousemove (fun e -> dispatch (MapDragMove(e.MovementX, e.MovementY)))
+            on.mouseup (fun _ -> dispatch MapDragEnd)
+            on.mouseout (fun _ -> dispatch MapDragEnd)
 
             for waypoint in state.waypoints do
                 let sx, sy = scaleMapPoint bounds (float waypoint.x) (float waypoint.y)
@@ -1813,6 +1865,11 @@ let private viewSystemMap (s: Strings) (state: DashboardState) dispatch =
                             ship.symbol
                         }
                     }
+        }
+        button {
+            attr.style "font-size: 0.8em; padding: 0.2em 0.6em; margin-top: 0.3rem"
+            on.click (fun _ -> dispatch ResetMapView)
+            s.resetMapView
         }
     }
 
@@ -2234,7 +2291,7 @@ let view model dispatch =
                     attr.style "display: flex; gap: 1rem; align-items: flex-start; flex-wrap: wrap"
                     div {
                         attr.style "flex: 0 0 auto"
-                        viewSystemMap s state dispatch
+                        viewSystemMap s model state dispatch
                         div {
                             attr.style "margin: 0.5rem 0"
                             button {
