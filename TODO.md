@@ -322,13 +322,13 @@ a time.
 Surfaced while building an example "scan all shipyards for a mining drone"
 program with a user, not yet planned into a milestone.
 
-- [ ] `getShipyard` (and likely `getMarket`) hard-fails the whole job with
-      `ApiFailed` when called on a waypoint that has no shipyard/market
-      (a real 404 from the API, `Step.fs:716-717` has no per-step
-      skip-and-continue path for info reads) — makes "check every waypoint"
-      style programs unsafe to write today. Needs either a non-fatal
-      "not found" info result the DSL can branch on, or exposing enough
-      waypoint data (traits) up front to filter safely before calling.
+- [x] `getShipyard`/`getMarket` still hard-fail the whole job with
+      `ApiFailed` on a 404, but a program no longer needs to risk it —
+      `waypointHasShipyard`/`waypointHasMarket` accessor blocks expose the
+      waypoint's already-fetched trait data, so a "check every waypoint"
+      program can filter safely before ever calling `getShipyard`/
+      `getMarket`. Verified live with a real forEach-over-every-waypoint
+      program.
 - [ ] No `true`/`false` (`logic_boolean`) block in the toolbox
       (`toolbox-de.ts`'s "Programmierung" category) — a program needing a
       boolean flag has to fake it with a Number variable (0/1) compared via
