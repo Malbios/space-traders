@@ -180,6 +180,7 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                         | Some token -> do! JobRunner.cancel client dbPath token jobId
                         | None -> ()
                     }
+            dismiss = fun jobId -> async { return JobRunner.dismiss jobId }
             listJobs = fun () -> async { return JobRunner.listJobs () |> List.map toSummaryDto }
             listHistory =
                 fun () ->

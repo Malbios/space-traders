@@ -861,6 +861,45 @@ let ``a DSL evaluation error fails just that job instead of crashing the tick lo
 
         Assert.False(shipLockExists dbPath "FAKE-AGENT-1"))
 
+/// A dismissed pilot card must disappear from the live dashboard
+/// (`JobRunner.listJobs`) without touching the persisted `jobs` row History
+/// reads independently — confirmed directly against the table rather than via
+/// `JobRepository.listHistory`, which needs an unrelated `program_definitions`
+/// join `startJobSync`'s minimal test fixture doesn't set up.
+[<Fact>]
+let ``dismissing a finished pilot clears it from listJobs but keeps its persisted row`` () =
+    use fixture = new JobFixture()
+
+    withJobTest fixture.RawClient (fun dbPath ->
+        Persistence.AgentRepository.saveAgent dbPath "FAKE-AGENT" App.seededToken
+        |> Async.RunSynchronously
+
+        let ship1 = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+
+        let instructions = [ ForEach("b1", "item", Literal(NumberLit 1.0), []) ]
+        let jobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" (program instructions) ship1
+
+        JobScheduler.tickOnce fixture.Client dbPath |> Async.RunSynchronously
+
+        match JobRunner.getStatus jobId with
+        | Some { status = Failed _ } -> ()
+        | Some other -> Assert.Fail($"expected the job to have failed first, got {other.status}")
+        | None -> Assert.Fail("job not found")
+
+        JobRunner.dismiss jobId
+
+        Assert.True(JobRunner.getStatus jobId |> Option.isNone)
+        Assert.DoesNotContain(jobId, JobRunner.listJobs () |> List.map (fun j -> j.jobId))
+
+        use conn = Database.openConnection dbPath
+        use cmd = conn.CreateCommand()
+        cmd.CommandText <- "SELECT state FROM jobs WHERE id = $id;"
+        cmd.Parameters.AddWithValue("$id", jobId) |> ignore
+
+        match cmd.ExecuteScalar() with
+        | null -> Assert.Fail("expected the jobs table row to still exist after dismiss")
+        | v -> Assert.Equal("Failed", string v))
+
 [<Fact>]
 let ``a concurrent trade on another ship doesn't corrupt an in-flight ambiguous-failure reconciliation`` () =
     use fixture = new JobFixture()

@@ -9,7 +9,7 @@ import {
     registerCustomBlockAccessors,
     readSignature,
 } from "./blocks";
-import { registerCatalogBlocks } from "./blocks-catalog";
+import { registerCatalogBlocks, registerStockBlockChecks } from "./blocks-catalog";
 import { buildCatalogToolbox } from "./toolbox-de";
 import { serializeWorkspace as serialize, loadWorkspace as load } from "./workspace-serialization";
 import { Locale, setCurrentLocale } from "./locale-state";
@@ -25,6 +25,32 @@ registerTrivialBlocks();
 registerDefinitionShellBlock();
 registerCallerBlock();
 registerCatalogBlocks();
+registerStockBlockChecks();
+
+/** A minimal self-contained dark theme (§ Settings tab dark mode) — defined here
+ * rather than pulling in the separate `@blockly/theme-dark` package for a
+ * handful of color overrides. Falls back to Blockly's own built-in `Classic`
+ * theme for "light". */
+const darkBlocklyTheme = Blockly.Theme.defineTheme("spacekids-dark", {
+    name: "spacekids-dark",
+    base: Blockly.Themes.Classic,
+    componentStyles: {
+        workspaceBackgroundColour: "#1e1e1e",
+        toolboxBackgroundColour: "#2a2a2a",
+        toolboxForegroundColour: "#e8e8e8",
+        flyoutBackgroundColour: "#2a2a2a",
+        flyoutForegroundColour: "#e8e8e8",
+        flyoutOpacity: 1,
+        scrollbarColour: "#555555",
+        insertionMarkerColour: "#ffffff",
+        insertionMarkerOpacity: 0.3,
+        cursorColour: "#d0d0d0",
+    },
+});
+
+function blocklyThemeFor(theme: string): Blockly.Theme {
+    return theme === "dark" ? darkBlocklyTheme : Blockly.Themes.Classic;
+}
 
 const workspaces = new Map<string, Blockly.WorkspaceSvg>();
 /** Per-workspace list of custom-block ids currently injected into that workspace's "Eigene Blöcke" category, one generic `callCustomBlock` toolbox entry each (§9b). */
@@ -63,6 +89,7 @@ function initWorkspace(containerId: string, readOnly: boolean): void {
     const ws = Blockly.inject(el, {
         toolbox: buildCatalogToolbox([], []) as Blockly.utils.toolbox.ToolboxDefinition,
         readOnly,
+        theme: blocklyThemeFor(getTheme()),
     });
     workspaces.set(containerId, ws);
     onWorkspaceChanged(containerId);
@@ -102,6 +129,7 @@ function setLocale(locale: Locale): void {
         const newWs = Blockly.inject(el, {
             toolbox: buildCatalogToolbox(customBlockIds, dynamicAccessorTypes) as Blockly.utils.toolbox.ToolboxDefinition,
             readOnly,
+            theme: blocklyThemeFor(getTheme()),
         });
         workspaces.set(containerId, newWs);
         customBlockIdsByContainer.set(containerId, customBlockIds);
@@ -123,6 +151,10 @@ function getTheme(): string {
 function setTheme(theme: string): void {
     window.localStorage.setItem(THEME_STORAGE_KEY, theme);
     document.documentElement.setAttribute("data-theme", theme);
+    const blocklyTheme = blocklyThemeFor(theme);
+    for (const ws of workspaces.values()) {
+        ws.setTheme(blocklyTheme);
+    }
 }
 
 const LOG_LEVEL_STORAGE_KEY = "spacekids-log-level";

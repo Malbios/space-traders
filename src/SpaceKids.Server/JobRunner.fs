@@ -778,6 +778,20 @@ let getStatus (jobId: JobId) : JobState option =
 /// browser this milestone — see `docs/decisions.md`.
 let listJobs () : JobState list = jobs.Values |> List.ofSeq
 
+/// Clears a finished pilot card from the live dashboard (`listJobs`) on request —
+/// purely an in-memory removal, no API call/token needed. Safe: the persisted
+/// `jobs` SQL table (`JobRepository.listHistory`) is written independently on
+/// every `persist` call and never deleted here, so History still shows this job
+/// afterward. Only removes a job that's actually terminal — a client-side bug
+/// dispatching this for a still-running job is a no-op, not data loss.
+let dismiss (jobId: JobId) : unit =
+    match jobs.TryGetValue jobId with
+    | true, { status = Completed }
+    | true, { status = Failed _ }
+    | true, { status = Cancelled } -> jobs.TryRemove(jobId) |> ignore
+    | true, _
+    | false, _ -> ()
+
 /// Milestone 7: hydrates every row `JobScheduler`'s startup resume loaded from the
 /// `jobs` table into the in-memory cache, without touching anything already
 /// loaded (defensive — nothing should call this twice in practice).

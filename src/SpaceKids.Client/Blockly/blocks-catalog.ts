@@ -332,6 +332,27 @@ export function registerCatalogBlocks(): void {
     ACCESSOR_BLOCKS.forEach((spec) => registerAccessorBlock(spec));
 }
 
+/**
+ * Milestone 13/Part B gave every catalog/accessor block's own sockets a real
+ * `.setCheck` type, but stock Blockly control blocks were left untouched —
+ * `controls_forEach`'s "LIST" input has no check at all, so a record-shaped
+ * block (e.g. `getShipyard`'s output) can be wired straight into a `forEach`
+ * without Blockly refusing the connection, only surfacing as a confusing
+ * runtime DSL error (`Eval.asList`) once the program actually runs. `"List"`
+ * is the exact same check string every list-producing catalog/accessor block
+ * already declares as its `outputCheck` (`getWaypoints`, `shipyardTypes`,
+ * `marketGoods`, ...), so this doesn't block any legitimate program — an
+ * unchecked block (e.g. `variables_get`) still connects fine either way.
+ * Idempotent (patches the stock `init` once, safe to call once at seam init).
+ */
+export function registerStockBlockChecks(): void {
+    const original = Blockly.Blocks["controls_forEach"].init;
+    Blockly.Blocks["controls_forEach"].init = function (this: Blockly.Block) {
+        original.call(this);
+        this.getInput("LIST")?.connection?.setCheck("List");
+    };
+}
+
 export const catalogActionBlockTypes: string[] = ACTION_BLOCKS.map((spec) => spec.type);
 export const catalogInfoBlockTypes: string[] = INFO_BLOCKS.map((spec) => spec.type);
 export const catalogAccessorBlockTypes: string[] = ACCESSOR_BLOCKS.map((spec) => spec.type);

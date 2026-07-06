@@ -151,6 +151,9 @@ type JobService =
         pause: string -> Async<unit>
         resume: string -> Async<unit>
         cancel: string -> Async<unit>
+        /// Clears a finished pilot card from the live dashboard (`listJobs`) —
+        /// purely local server memory, no bearing on `listHistory` below.
+        dismiss: string -> Async<unit>
         listJobs: unit -> Async<JobSummaryDto list>
         /// Milestone 13/Part C: most-recent-50 terminal jobs, newest first —
         /// survives a server restart since it reads the persisted `jobs` table
@@ -418,6 +421,7 @@ type Message =
     | PausePilot of string
     | ResumePilot of string
     | CancelPilot of string
+    | DismissPilot of string
     | PilotActionDone
     | LoadCustomBlocks
     | CustomBlocksLoaded of CustomBlockSummaryDto list
@@ -591,6 +595,7 @@ type Strings =
       resume: string
       pause: string
       stop: string
+      dismiss: string
       stopWatching: string
       watch: string
       innerActiveLine: string -> string
@@ -762,6 +767,7 @@ let private stringsDe: Strings =
       resume = "Fortsetzen"
       pause = "Pause"
       stop = "Stoppen"
+      dismiss = "Entfernen"
       stopWatching = "Beobachtung stoppen"
       watch = "Beobachten"
       innerActiveLine = fun name -> $"Innen aktiv: \"{name}\" "
@@ -933,6 +939,7 @@ let private stringsEn: Strings =
       resume = "Resume"
       pause = "Pause"
       stop = "Stop"
+      dismiss = "Dismiss"
       stopWatching = "Stop watching"
       watch = "Watch"
       innerActiveLine = fun name -> $"Active inside: \"{name}\" "
@@ -1170,6 +1177,8 @@ let update
         model, Cmd.OfAsync.perform (fun () -> jobRemote.resume jobId) () (fun () -> PilotActionDone)
     | CancelPilot jobId ->
         model, Cmd.OfAsync.perform (fun () -> jobRemote.cancel jobId) () (fun () -> PilotActionDone)
+    | DismissPilot jobId ->
+        model, Cmd.OfAsync.perform (fun () -> jobRemote.dismiss jobId) () (fun () -> PilotActionDone)
     | PilotActionDone ->
         model, Cmd.batch [ Cmd.ofMsg LoadPilots; Cmd.ofMsg LoadJobHistory ]
     | LoadJobHistory ->
@@ -1893,6 +1902,8 @@ let private viewJobRunner model dispatch =
                             button { on.click (fun _ -> dispatch StopWatching); s.stopWatching }
                         else
                             button { on.click (fun _ -> dispatch (WatchPilot pilot.jobId)); s.watch }
+                    else
+                        button { on.click (fun _ -> dispatch (DismissPilot pilot.jobId)); s.dismiss }
 
                     if model.watchedJobId = Some pilot.jobId then
                         match model.watchedFrames with

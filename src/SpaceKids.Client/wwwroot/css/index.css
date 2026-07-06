@@ -10,6 +10,14 @@
   --sk-sidebar-bg: #2a2a2a;
 }
 
+[data-theme="dark"] button,
+[data-theme="dark"] input,
+[data-theme="dark"] select {
+  background: var(--sk-sidebar-bg);
+  color: var(--sk-text);
+  border-color: #555;
+}
+
 html, body {
   height: 100%;
 }
