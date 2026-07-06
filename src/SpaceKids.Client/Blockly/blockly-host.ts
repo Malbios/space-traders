@@ -112,6 +112,19 @@ function setLocale(locale: Locale): void {
     }
 }
 
+const THEME_STORAGE_KEY = "spacekids-theme";
+
+/** Settings tab: a per-browser display preference, stored in `localStorage` since it
+ * has no bearing on any server-side state (unlike locale/poll-interval). */
+function getTheme(): string {
+    return window.localStorage.getItem(THEME_STORAGE_KEY) ?? "light";
+}
+
+function setTheme(theme: string): void {
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    document.documentElement.setAttribute("data-theme", theme);
+}
+
 function destroyWorkspace(containerId: string): void {
     const ws = workspaces.get(containerId);
     if (ws) {
@@ -242,6 +255,8 @@ interface SpaceKidsHost {
     publishCustomBlockSignature: typeof publishCustomBlockSignature;
     simulateRun: typeof simulateRun;
     setLocale: typeof setLocale;
+    getTheme: typeof getTheme;
+    setTheme: typeof setTheme;
 }
 
 declare global {
@@ -263,4 +278,6 @@ window.spaceKids = {
     publishCustomBlockSignature,
     simulateRun,
     setLocale,
+    getTheme,
+    setTheme,
 };

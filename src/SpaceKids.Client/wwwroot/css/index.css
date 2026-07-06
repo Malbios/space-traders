@@ -1,3 +1,15 @@
+:root {
+  --sk-bg: white;
+  --sk-text: black;
+  --sk-sidebar-bg: whitesmoke;
+}
+
+[data-theme="dark"] {
+  --sk-bg: #1e1e1e;
+  --sk-text: #e8e8e8;
+  --sk-sidebar-bg: #2a2a2a;
+}
+
 html, body {
   height: 100%;
 }
@@ -5,6 +17,8 @@ html, body {
 body {
   display: flex;
   flex-direction: column;
+  background: var(--sk-bg);
+  color: var(--sk-text);
 }
 
 #main {
@@ -17,6 +31,6 @@ body {
 
 .sidebar {
   width: 250px;
-  background: whitesmoke;
+  background: var(--sk-sidebar-bg);
   min-height: 100%;
 }

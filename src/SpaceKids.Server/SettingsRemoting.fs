@@ -15,4 +15,6 @@ type SettingsRemoteHandler(ctx: IRemoteContext) =
         {
             getLocale = fun () -> Persistence.SettingsRepository.getLocale dbPath
             setLocale = fun locale -> Persistence.SettingsRepository.setLocale dbPath locale
+            getPollIntervalSeconds = fun () -> Persistence.SettingsRepository.getPollIntervalSeconds dbPath
+            setPollIntervalSeconds = fun seconds -> Persistence.SettingsRepository.setPollIntervalSeconds dbPath seconds
         }

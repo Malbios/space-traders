@@ -81,6 +81,8 @@ type SettingsService =
     {
         getLocale: unit -> Async<string>
         setLocale: string -> Async<unit>
+        getPollIntervalSeconds: unit -> Async<int>
+        setPollIntervalSeconds: int -> Async<unit>
     }
 
     interface IRemoteService with
@@ -223,6 +225,7 @@ type Tab =
     | PilotenTab
     | GalaxieTab
     | SystemTab
+    | SettingsTab
 
 type Model =
     {
@@ -301,6 +304,15 @@ type Model =
         /// — stops hammering a down server every second.
         pilotsPollBackoffTicks: int
         pilotsPollTicksSinceLast: int
+        /// Settings tab: the configured healthy-state baseline (in seconds) for
+        /// `MapTick`'s `LoadPilots` polling — the floor that `pilotsPollBackoffTicks`
+        /// multiplies past while the server is down. Persisted server-side
+        /// (see `SettingsService`), loaded once at `Init`.
+        pollIntervalSeconds: int
+        /// Settings tab: `"light"`/`"dark"`, a per-browser display preference —
+        /// unlike locale/poll-interval this is stored in `localStorage`, not the
+        /// server, since it has no bearing on shared/server-side state.
+        theme: string
     }
 
 let private terminalPilotStatuses = [ "Completed"; "Failed"; "Cancelled" ]
@@ -360,6 +372,8 @@ let initModel =
         serverUnreachable = false
         pilotsPollBackoffTicks = 1
         pilotsPollTicksSinceLast = 0
+        pollIntervalSeconds = 5
+        theme = "light"
     }
 
 type Message =
@@ -442,6 +456,14 @@ type Message =
     | SetLocale of string
     | LocaleSet
     | SwitchTab of Tab
+    | LoadPollInterval
+    | PollIntervalLoaded of int
+    | SetPollInterval of int
+    | PollIntervalSet
+    | LoadTheme
+    | ThemeLoaded of string
+    | SetTheme of string
+    | ThemeSet
     /// Shared failure path for every load that previously had none at all (see
     /// `LoadDashboard`'s `DashboardLoadFailed` for the pattern this mirrors) — a
     /// down SpaceKids server should be visible and not spammed, not silent.
@@ -597,7 +619,13 @@ type Strings =
       tabPiloten: string
       tabGalaxie: string
       tabSystem: string
-      serverUnreachableMessage: string }
+      tabSettings: string
+      serverUnreachableMessage: string
+      settingsLocaleLabel: string
+      settingsPollIntervalLabel: string
+      settingsThemeLabel: string
+      settingsThemeLight: string
+      settingsThemeDark: string }
 
 let private stringsDe: Strings =
     { workshopLoaded = "Werkstatt geladen."
@@ -757,7 +785,13 @@ let private stringsDe: Strings =
       tabPiloten = "Piloten"
       tabGalaxie = "Galaxie"
       tabSystem = "System"
-      serverUnreachableMessage = "Verbindung zum Server unterbrochen — versuche es weiter..." }
+      tabSettings = "Einstellungen"
+      serverUnreachableMessage = "Verbindung zum Server unterbrochen — versuche es weiter..."
+      settingsLocaleLabel = "Sprache"
+      settingsPollIntervalLabel = "Abfrage-Intervall"
+      settingsThemeLabel = "Design"
+      settingsThemeLight = "Hell"
+      settingsThemeDark = "Dunkel" }
 
 let private stringsEn: Strings =
     { workshopLoaded = "Workshop loaded."
@@ -915,7 +949,13 @@ let private stringsEn: Strings =
       tabPiloten = "Pilots"
       tabGalaxie = "Galaxy"
       tabSystem = "System"
-      serverUnreachableMessage = "Lost connection to the server — still retrying..." }
+      tabSettings = "Settings"
+      serverUnreachableMessage = "Lost connection to the server — still retrying..."
+      settingsLocaleLabel = "Language"
+      settingsPollIntervalLabel = "Poll interval"
+      settingsThemeLabel = "Theme"
+      settingsThemeLight = "Light"
+      settingsThemeDark = "Dark" }
 
 let private stringsFor (locale: string) : Strings = if locale = "en" then stringsEn else stringsDe
 
@@ -1267,8 +1307,11 @@ let update
         // `pilotsPollBackoffTicks` guards against a *different* problem: if the
         // SpaceKids server itself is down, this poll would otherwise fire every
         // second forever with no backoff (`RemoteCallFailed` doubles it, capped at
-        // 30, on each failure; `PilotsLoaded` resets it to 1 on success).
-        if ticksSinceLast >= model.pilotsPollBackoffTicks then
+        // 30, on each failure; `PilotsLoaded` resets it to 1 on success). The
+        // configured `pollIntervalSeconds` (Settings tab) is the healthy-state
+        // floor; the backoff multiplier only ever pushes the effective cadence
+        // *above* that floor while the server is unreachable.
+        if ticksSinceLast >= max model.pollIntervalSeconds model.pilotsPollBackoffTicks then
             { model with mapTickCount = count; pilotsPollTicksSinceLast = 0 },
             Cmd.batch [ Cmd.ofMsg LoadPilots; nextTickCmd ]
         else
@@ -1380,6 +1423,26 @@ let update
             Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.setLocale" [| box locale |]) () (fun () -> LocaleSet)
         ]
     | LocaleSet -> model, Cmd.none
+
+    | LoadPollInterval ->
+        model,
+        Cmd.OfAsync.either (fun () -> settingsRemote.getPollIntervalSeconds ()) () PollIntervalLoaded (fun _ -> RemoteCallFailed)
+    | PollIntervalLoaded seconds ->
+        { model with pollIntervalSeconds = seconds; serverUnreachable = false }, Cmd.none
+    | SetPollInterval seconds ->
+        { model with pollIntervalSeconds = seconds },
+        Cmd.OfAsync.perform (fun () -> settingsRemote.setPollIntervalSeconds seconds) () (fun () -> PollIntervalSet)
+    | PollIntervalSet -> model, Cmd.none
+
+    | LoadTheme ->
+        model, Cmd.OfAsync.perform (fun () -> call<string> js "spaceKids.getTheme" [||]) () ThemeLoaded
+    | ThemeLoaded theme ->
+        { model with theme = theme },
+        Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.setTheme" [| box theme |]) () (fun () -> ThemeSet)
+    | SetTheme theme ->
+        { model with theme = theme },
+        Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.setTheme" [| box theme |]) () (fun () -> ThemeSet)
+    | ThemeSet -> model, Cmd.none
 
     | SwitchTab tab -> { model with activeTab = tab }, Cmd.none
     | RemoteCallFailed ->
@@ -1915,13 +1978,15 @@ let private tabButton (model: Model) dispatch (tab: Tab) (label: string) =
         label
     }
 
-let view model dispatch =
+let private pollIntervalPresets = [ 1; 5; 10; 30 ]
+
+let private viewSettings (model: Model) dispatch =
     let s = stringsFor model.locale
 
     div {
-        attr.style "font-family: sans-serif; padding: 1rem"
-        h1 { "SpaceKids" }
         div {
+            attr.style "margin-bottom: 1rem"
+            p { attr.style "font-weight: bold"; s.settingsLocaleLabel }
             button {
                 attr.disabled (model.locale = "de")
                 on.click (fun _ -> dispatch (SetLocale "de"))
@@ -1933,6 +1998,37 @@ let view model dispatch =
                 "English"
             }
         }
+        div {
+            attr.style "margin-bottom: 1rem"
+            p { attr.style "font-weight: bold"; s.settingsPollIntervalLabel }
+            for seconds in pollIntervalPresets do
+                button {
+                    attr.disabled (model.pollIntervalSeconds = seconds)
+                    on.click (fun _ -> dispatch (SetPollInterval seconds))
+                    $"{seconds}s"
+                }
+        }
+        div {
+            p { attr.style "font-weight: bold"; s.settingsThemeLabel }
+            button {
+                attr.disabled (model.theme = "light")
+                on.click (fun _ -> dispatch (SetTheme "light"))
+                s.settingsThemeLight
+            }
+            button {
+                attr.disabled (model.theme = "dark")
+                on.click (fun _ -> dispatch (SetTheme "dark"))
+                s.settingsThemeDark
+            }
+        }
+    }
+
+let view model dispatch =
+    let s = stringsFor model.locale
+
+    div {
+        attr.style "font-family: sans-serif; padding: 1rem"
+        h1 { "SpaceKids" }
         p { model.status }
         if model.serverUnreachable then
             p { attr.style "color: #cc0000"; s.serverUnreachableMessage }
@@ -1943,6 +2039,7 @@ let view model dispatch =
             tabButton model dispatch PilotenTab s.tabPiloten
             tabButton model dispatch GalaxieTab s.tabGalaxie
             tabButton model dispatch SystemTab s.tabSystem
+            tabButton model dispatch SettingsTab s.tabSettings
         }
 
         div {
@@ -2011,6 +2108,11 @@ let view model dispatch =
             attr.style (tabStyle model SystemTab)
             viewQueueStatus model dispatch
         }
+
+        div {
+            attr.style (tabStyle model SettingsTab)
+            viewSettings model dispatch
+        }
     }
 
 type MyApp() =
@@ -2037,6 +2139,8 @@ type MyApp() =
                     Cmd.ofMsg LoadCustomBlocks
                     Cmd.ofMsg LoadPrograms
                     Cmd.ofMsg LoadLocale
+                    Cmd.ofMsg LoadPollInterval
+                    Cmd.ofMsg LoadTheme
                     Cmd.ofMsg MapTick
                 ])
             (update js remote agentRemote queueRemote jobRemote customBlockRemote programRemote settingsRemote)
