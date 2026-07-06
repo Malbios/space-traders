@@ -218,8 +218,15 @@ type InspectedEntity =
     | InspectedShip of shipSymbol: string
     | InspectedWaypoint of waypointSymbol: string
 
+type Tab =
+    | ProgrammierenTab
+    | PilotenTab
+    | GalaxieTab
+    | SystemTab
+
 type Model =
     {
+        activeTab: Tab
         containerId: string
         workshopContainerId: string
         lastBlockId: string option
@@ -283,6 +290,17 @@ type Model =
         /// Milestone 12 (bilingual support): `"de"`/`"en"`, loaded once at `Init`
         /// from the stored server-side setting (see `SettingsService`).
         locale: string
+        /// True whenever the most recent load of *any* kind (pilots, queue status,
+        /// job history, custom blocks, programs, locale) has failed — the SpaceKids
+        /// server itself is unreachable, not the SpaceTraders API. Cleared by any
+        /// subsequent successful load.
+        serverUnreachable: bool
+        /// Backoff for `MapTick`'s `LoadPilots` polling (the one periodic, repeat-
+        /// forever call): only dispatched once `pilotsPollTicksSinceLast` reaches
+        /// this many ticks. Doubles (capped at 30) on failure, resets to 1 on success
+        /// — stops hammering a down server every second.
+        pilotsPollBackoffTicks: int
+        pilotsPollTicksSinceLast: int
     }
 
 let private terminalPilotStatuses = [ "Completed"; "Failed"; "Cancelled" ]
@@ -303,6 +321,7 @@ let private pilotName (shipSymbol: string) : string =
 
 let initModel =
     {
+        activeTab = ProgrammierenTab
         containerId = ""
         workshopContainerId = "blockly-workshop-spike"
         lastBlockId = None
@@ -338,6 +357,9 @@ let initModel =
         programStatus = ""
         staleWarnings = []
         locale = "de"
+        serverUnreachable = false
+        pilotsPollBackoffTicks = 1
+        pilotsPollTicksSinceLast = 0
     }
 
 type Message =
@@ -419,6 +441,11 @@ type Message =
     | LocaleLoaded of string
     | SetLocale of string
     | LocaleSet
+    | SwitchTab of Tab
+    /// Shared failure path for every load that previously had none at all (see
+    /// `LoadDashboard`'s `DashboardLoadFailed` for the pattern this mirrors) — a
+    /// down SpaceKids server should be visible and not spammed, not silent.
+    | RemoteCallFailed
 
 let private callVoid (js: IJSRuntime) (identifier: string) (args: obj[]) : Async<unit> =
     js.InvokeVoidAsync(identifier, args).AsTask() |> Async.AwaitTask
@@ -564,7 +591,13 @@ type Strings =
       programHeading: string
       workshopHeading: string
       workshopHint: string
-      publishSignatureButton: string }
+      publishSignatureButton: string
+
+      tabProgrammieren: string
+      tabPiloten: string
+      tabGalaxie: string
+      tabSystem: string
+      serverUnreachableMessage: string }
 
 let private stringsDe: Strings =
     { workshopLoaded = "Werkstatt geladen."
@@ -591,7 +624,7 @@ let private stringsDe: Strings =
       programLoading = "Lädt..."
       programLoaded = "Programm geladen."
 
-      dashboardHeading = "Echte SpaceTraders-Daten (Milestone 2)"
+      dashboardHeading = "Echte SpaceTraders-Daten"
       loadingEllipsis = "Lädt..."
       tokenPlaceholder = "SpaceTraders-Token einfügen"
       login = "Anmelden"
@@ -635,7 +668,7 @@ let private stringsDe: Strings =
 
       systemMapHeading = "Systemkarte"
 
-      queueHeading = "Warteschlange (Milestone 5)"
+      queueHeading = "Warteschlange"
       refresh = "Aktualisieren"
       queueNotLoadedYet = "Noch nicht geladen."
       pendingRequests = fun n -> $"Wartende Anfragen: {n}"
@@ -662,7 +695,7 @@ let private stringsDe: Strings =
               | "Failed" -> "Fehlgeschlagen"
               | other -> other
 
-      jobRunnerHeading = "Programm ausführen (Milestone 7)"
+      jobRunnerHeading = "Programm ausführen"
       pleaseLoginFirst = "Zuerst anmelden, um ein Schiff auszuwählen."
       shipLabel = "Schiff: "
       chooseOption = "-- wählen --"
@@ -690,7 +723,7 @@ let private stringsDe: Strings =
           fun (programName, shipSymbol, status, finishedAt) ->
               $"{programName} — Schiff {shipSymbol} — {status} ({finishedAt.ToLocalTime():g})"
 
-      customBlocksHeading = "Eigene Blöcke (Milestone 9)"
+      customBlocksHeading = "Eigene Blöcke"
       newBlockNamePlaceholder = "Name des neuen Blocks"
       newBlockButton = "Neuer Block"
       noCustomBlocksYet = "Noch kein eigener Block gespeichert."
@@ -718,7 +751,13 @@ let private stringsDe: Strings =
       programHeading = "Programm"
       workshopHeading = "Blockwerkstatt (Eigener Block definieren)"
       workshopHint = "Ziehe \"Eigener Block\" auf die Fläche, öffne sein Zahnrad-Menü, füge eine Eingabe hinzu, dann:"
-      publishSignatureButton = "Signatur an Programm übergeben" }
+      publishSignatureButton = "Signatur an Programm übergeben"
+
+      tabProgrammieren = "Programmieren"
+      tabPiloten = "Piloten"
+      tabGalaxie = "Galaxie"
+      tabSystem = "System"
+      serverUnreachableMessage = "Verbindung zum Server unterbrochen — versuche es weiter..." }
 
 let private stringsEn: Strings =
     { workshopLoaded = "Workshop loaded."
@@ -745,7 +784,7 @@ let private stringsEn: Strings =
       programLoading = "Loading..."
       programLoaded = "Program loaded."
 
-      dashboardHeading = "Real SpaceTraders data (Milestone 2)"
+      dashboardHeading = "Real SpaceTraders data"
       loadingEllipsis = "Loading..."
       tokenPlaceholder = "Paste SpaceTraders token"
       login = "Log in"
@@ -789,7 +828,7 @@ let private stringsEn: Strings =
 
       systemMapHeading = "System map"
 
-      queueHeading = "Queue (Milestone 5)"
+      queueHeading = "Queue"
       refresh = "Refresh"
       queueNotLoadedYet = "Not loaded yet."
       pendingRequests = fun n -> $"Pending requests: {n}"
@@ -814,7 +853,7 @@ let private stringsEn: Strings =
               | "Failed" -> "Failed"
               | other -> other
 
-      jobRunnerHeading = "Run program (Milestone 7)"
+      jobRunnerHeading = "Run program"
       pleaseLoginFirst = "Log in first to select a ship."
       shipLabel = "Ship: "
       chooseOption = "-- choose --"
@@ -842,7 +881,7 @@ let private stringsEn: Strings =
           fun (programName, shipSymbol, status, finishedAt) ->
               $"{programName} — ship {shipSymbol} — {status} ({finishedAt.ToLocalTime():g})"
 
-      customBlocksHeading = "Custom blocks (Milestone 9)"
+      customBlocksHeading = "Custom blocks"
       newBlockNamePlaceholder = "New block name"
       newBlockButton = "New block"
       noCustomBlocksYet = "No custom block saved yet."
@@ -870,7 +909,13 @@ let private stringsEn: Strings =
       programHeading = "Program"
       workshopHeading = "Block workshop (define a custom block)"
       workshopHint = "Drag \"Custom block\" onto the canvas, open its gear menu, add an input, then:"
-      publishSignatureButton = "Hand signature to program" }
+      publishSignatureButton = "Hand signature to program"
+
+      tabProgrammieren = "Code"
+      tabPiloten = "Pilots"
+      tabGalaxie = "Galaxy"
+      tabSystem = "System"
+      serverUnreachableMessage = "Lost connection to the server — still retrying..." }
 
 let private stringsFor (locale: string) : Strings = if locale = "en" then stringsEn else stringsDe
 
@@ -977,9 +1022,9 @@ let update
     | DashboardLoadFailed message ->
         { model with dashboardError = Some message }, Cmd.none
     | LoadQueueStatus ->
-        model, Cmd.OfAsync.perform (fun () -> queueRemote.getStatus ()) () QueueStatusLoaded
+        model, Cmd.OfAsync.either (fun () -> queueRemote.getStatus ()) () QueueStatusLoaded (fun _ -> RemoteCallFailed)
     | QueueStatusLoaded status ->
-        { model with queueStatus = Some status }, Cmd.none
+        { model with queueStatus = Some status; serverUnreachable = false }, Cmd.none
 
     | SelectShip symbol ->
         { model with selectedShipSymbol = Some symbol }, Cmd.none
@@ -1002,7 +1047,7 @@ let update
     | ProgramStartResult(Error message) ->
         { model with startingJob = false; pilotError = Some message }, Cmd.none
     | LoadPilots ->
-        model, Cmd.OfAsync.perform (fun () -> jobRemote.listJobs ()) () PilotsLoaded
+        model, Cmd.OfAsync.either (fun () -> jobRemote.listJobs ()) () PilotsLoaded (fun _ -> RemoteCallFailed)
     | PilotsLoaded pilots ->
         // Per-program watch mode (§9/§15/Milestone-11-Part-E): a pilot flying a
         // *different* saved program no longer locks the one currently open here —
@@ -1034,7 +1079,11 @@ let update
                 && model.pilots
                    |> List.exists (fun old -> old.jobId = p.jobId && not (List.contains old.status terminalPilotStatuses)))
 
-        { model with pilots = pilots; watchModeLocked = anyActive },
+        { model with
+            pilots = pilots
+            watchModeLocked = anyActive
+            serverUnreachable = false
+            pilotsPollBackoffTicks = 1 },
         Cmd.batch [ readOnlyCmd; if justCompleted then Cmd.ofMsg LoadDashboard else Cmd.none ]
     | WatchModeReadOnlySet value ->
         { model with readOnly = value }, Cmd.none
@@ -1047,14 +1096,14 @@ let update
     | PilotActionDone ->
         model, Cmd.batch [ Cmd.ofMsg LoadPilots; Cmd.ofMsg LoadJobHistory ]
     | LoadJobHistory ->
-        model, Cmd.OfAsync.perform (fun () -> jobRemote.listHistory ()) () JobHistoryLoaded
+        model, Cmd.OfAsync.either (fun () -> jobRemote.listHistory ()) () JobHistoryLoaded (fun _ -> RemoteCallFailed)
     | JobHistoryLoaded history ->
-        { model with jobHistory = history }, Cmd.none
+        { model with jobHistory = history; serverUnreachable = false }, Cmd.none
 
     | LoadCustomBlocks ->
-        model, Cmd.OfAsync.perform (fun () -> customBlockRemote.list ()) () CustomBlocksLoaded
+        model, Cmd.OfAsync.either (fun () -> customBlockRemote.list ()) () CustomBlocksLoaded (fun _ -> RemoteCallFailed)
     | CustomBlocksLoaded blocks ->
-        { model with customBlocks = blocks }, Cmd.none
+        { model with customBlocks = blocks; serverUnreachable = false }, Cmd.none
 
     | NewCustomBlockNameChanged value ->
         { model with newCustomBlockName = value }, Cmd.none
@@ -1204,6 +1253,7 @@ let update
 
     | MapTick ->
         let count = model.mapTickCount + 1
+        let ticksSinceLast = model.pilotsPollTicksSinceLast + 1
 
         let nextTickCmd =
             Cmd.OfAsync.perform (fun () -> async { do! Async.Sleep 1000 }) () (fun () -> MapTick)
@@ -1213,12 +1263,21 @@ let update
         // API. `PilotsLoaded` uses this to detect a job just finishing and triggers
         // the actual (rate-limited) dashboard refetch only then, instead of blindly
         // re-fetching every few ticks regardless of whether anything changed.
-        { model with mapTickCount = count }, Cmd.batch [ Cmd.ofMsg LoadPilots; nextTickCmd ]
+        //
+        // `pilotsPollBackoffTicks` guards against a *different* problem: if the
+        // SpaceKids server itself is down, this poll would otherwise fire every
+        // second forever with no backoff (`RemoteCallFailed` doubles it, capped at
+        // 30, on each failure; `PilotsLoaded` resets it to 1 on success).
+        if ticksSinceLast >= model.pilotsPollBackoffTicks then
+            { model with mapTickCount = count; pilotsPollTicksSinceLast = 0 },
+            Cmd.batch [ Cmd.ofMsg LoadPilots; nextTickCmd ]
+        else
+            { model with mapTickCount = count; pilotsPollTicksSinceLast = ticksSinceLast }, nextTickCmd
 
     | LoadPrograms ->
-        model, Cmd.OfAsync.perform (fun () -> programRemote.list ()) () ProgramsLoaded
+        model, Cmd.OfAsync.either (fun () -> programRemote.list ()) () ProgramsLoaded (fun _ -> RemoteCallFailed)
     | ProgramsLoaded programs ->
-        { model with programs = programs }, Cmd.none
+        { model with programs = programs; serverUnreachable = false }, Cmd.none
 
     | NewProgramNameChanged value ->
         { model with newProgramName = value }, Cmd.none
@@ -1303,13 +1362,13 @@ let update
         { model with programStatus = message }, Cmd.none
 
     | LoadLocale ->
-        model, Cmd.OfAsync.perform (fun () -> settingsRemote.getLocale ()) () LocaleLoaded
+        model, Cmd.OfAsync.either (fun () -> settingsRemote.getLocale ()) () LocaleLoaded (fun _ -> RemoteCallFailed)
     | LocaleLoaded locale ->
         // The persisted setting must reach the JS side too — otherwise a freshly
         // loaded page keeps rendering new blocks in German regardless of what was
         // saved, since `locale-state.ts`'s own `currentLocale` defaults to "de"
         // until something explicitly tells it otherwise.
-        { model with locale = locale },
+        { model with locale = locale; serverUnreachable = false },
         Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.setLocale" [| box locale |]) () (fun () -> LocaleSet)
     | SetLocale locale ->
         { model with locale = locale },
@@ -1321,6 +1380,13 @@ let update
             Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.setLocale" [| box locale |]) () (fun () -> LocaleSet)
         ]
     | LocaleSet -> model, Cmd.none
+
+    | SwitchTab tab -> { model with activeTab = tab }, Cmd.none
+    | RemoteCallFailed ->
+        { model with
+            serverUnreachable = true
+            pilotsPollBackoffTicks = min 30 (max 2 (model.pilotsPollBackoffTicks * 2)) },
+        Cmd.none
 
 let private viewDashboard model dispatch =
     let s = stringsFor model.locale
@@ -1828,12 +1894,33 @@ let private viewProgramLibrary model dispatch =
             p { model.programStatus }
     }
 
+/// CSS-hide inactive tabs rather than omitting them from the tree: two sections
+/// (the program workspace and the custom-block workshop, both in `ProgrammierenTab`)
+/// host imperative Blockly mounts (`spaceKids.initWorkspace`/`loadWorkspace`, JS
+/// interop outside Blazor's diffing) — actually removing/re-adding those DOM nodes
+/// on every tab switch would require re-running Blockly's init/load calls each time
+/// and risks losing workspace state. Keeping every tab's markup always in the DOM
+/// (just hidden) means Blockly's mounted instance is never touched by switching tabs.
+let private tabStyle (model: Model) (tab: Tab) = if model.activeTab = tab then "" else "display: none"
+
+let private tabButton (model: Model) dispatch (tab: Tab) (label: string) =
+    button {
+        attr.style (
+            if model.activeTab = tab then
+                "font-weight: bold; text-decoration: underline"
+            else
+                ""
+        )
+        on.click (fun _ -> dispatch (SwitchTab tab))
+        label
+    }
+
 let view model dispatch =
     let s = stringsFor model.locale
 
     div {
         attr.style "font-family: sans-serif; padding: 1rem"
-        h1 { "SpaceKids – Blockly-Spike (Milestone 0)" }
+        h1 { "SpaceKids" }
         div {
             button {
                 attr.disabled (model.locale = "de")
@@ -1847,57 +1934,83 @@ let view model dispatch =
             }
         }
         p { model.status }
-        viewProgramLibrary model dispatch
-        match model.currentProgramId with
-        | None -> p { s.noProgramOpen }
-        | Some _ ->
-            div {
-                if not model.staleWarnings.IsEmpty then
-                    div {
-                        attr.style "border: 1px solid #cc8800; background: #fff8e6; padding: 0.5rem; margin-bottom: 0.5rem"
-                        p { s.staleWarningsBanner }
-                        ul {
-                            for w in model.staleWarnings do
-                                li { w }
-                        }
-                    }
-                div {
-                    button { on.click (fun _ -> dispatch Save); s.saveButton }
-                    button { on.click (fun _ -> dispatch Load); s.loadButton }
-                    button { on.click (fun _ -> dispatch HighlightFirstBlock); s.highlightFirstBlockButton }
-                    button {
-                        attr.disabled model.watchModeLocked
-                        on.click (fun _ -> dispatch ToggleReadOnly)
-                        if model.readOnly then s.allowEditing else s.viewOnly
-                    }
-                    button { on.click (fun _ -> dispatch SimulateRun); s.simulateRunButton }
-                }
-                if model.watchModeLocked then
-                    p { s.watchModeLockedBanner }
-                h2 { s.programHeading }
-                div {
-                    attr.id model.containerId
-                    attr.style "height: 360px; width: 100%; border: 1px solid #ccc; margin-top: 0.5rem"
-                }
-            }
-        viewCustomBlockLibrary model dispatch
-        h2 { s.workshopHeading }
-        p {
-            s.workshopHint
-            button { on.click (fun _ -> dispatch PublishSignature); s.publishSignatureButton }
-        }
+        if model.serverUnreachable then
+            p { attr.style "color: #cc0000"; s.serverUnreachableMessage }
+
         div {
-            attr.id model.workshopContainerId
-            attr.style "height: 360px; width: 100%; border: 1px solid #ccc; margin-top: 0.5rem"
+            attr.style "margin-bottom: 1rem; border-bottom: 1px solid #ccc; padding-bottom: 0.5rem"
+            tabButton model dispatch ProgrammierenTab s.tabProgrammieren
+            tabButton model dispatch PilotenTab s.tabPiloten
+            tabButton model dispatch GalaxieTab s.tabGalaxie
+            tabButton model dispatch SystemTab s.tabSystem
         }
-        viewDashboard model dispatch
-        match model.dashboard with
-        | Some state ->
-            viewSystemMap s state dispatch
-            viewInspector state model dispatch
-        | None -> Node.Empty()
-        viewQueueStatus model dispatch
-        viewJobRunner model dispatch
+
+        div {
+            attr.style (tabStyle model ProgrammierenTab)
+            viewProgramLibrary model dispatch
+            match model.currentProgramId with
+            | None -> p { s.noProgramOpen }
+            | Some _ ->
+                div {
+                    if not model.staleWarnings.IsEmpty then
+                        div {
+                            attr.style "border: 1px solid #cc8800; background: #fff8e6; padding: 0.5rem; margin-bottom: 0.5rem"
+                            p { s.staleWarningsBanner }
+                            ul {
+                                for w in model.staleWarnings do
+                                    li { w }
+                            }
+                        }
+                    div {
+                        button { on.click (fun _ -> dispatch Save); s.saveButton }
+                        button { on.click (fun _ -> dispatch Load); s.loadButton }
+                        button { on.click (fun _ -> dispatch HighlightFirstBlock); s.highlightFirstBlockButton }
+                        button {
+                            attr.disabled model.watchModeLocked
+                            on.click (fun _ -> dispatch ToggleReadOnly)
+                            if model.readOnly then s.allowEditing else s.viewOnly
+                        }
+                        button { on.click (fun _ -> dispatch SimulateRun); s.simulateRunButton }
+                    }
+                    if model.watchModeLocked then
+                        p { s.watchModeLockedBanner }
+                    h2 { s.programHeading }
+                    div {
+                        attr.id model.containerId
+                        attr.style "height: 360px; width: 100%; border: 1px solid #ccc; margin-top: 0.5rem"
+                    }
+                }
+            viewCustomBlockLibrary model dispatch
+            h2 { s.workshopHeading }
+            p {
+                s.workshopHint
+                button { on.click (fun _ -> dispatch PublishSignature); s.publishSignatureButton }
+            }
+            div {
+                attr.id model.workshopContainerId
+                attr.style "height: 360px; width: 100%; border: 1px solid #ccc; margin-top: 0.5rem"
+            }
+        }
+
+        div {
+            attr.style (tabStyle model PilotenTab)
+            viewJobRunner model dispatch
+        }
+
+        div {
+            attr.style (tabStyle model GalaxieTab)
+            viewDashboard model dispatch
+            match model.dashboard with
+            | Some state ->
+                viewSystemMap s state dispatch
+                viewInspector state model dispatch
+            | None -> Node.Empty()
+        }
+
+        div {
+            attr.style (tabStyle model SystemTab)
+            viewQueueStatus model dispatch
+        }
     }
 
 type MyApp() =
