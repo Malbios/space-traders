@@ -352,14 +352,39 @@ program with a user, not yet planned into a milestone.
       Cross-cutting, needs a real design pass, not a quick fix. Workaround
       today: just pick any spare ship — a ship-agnostic program ignores it
       harmlessly.
-- [ ] Bug: dark mode (Settings tab theme toggle) isn't actually dark. Not
-      investigated/fixed yet. First lead: `wwwroot/css/index.css` defines
-      `--sk-bg`/`--sk-text`/`--sk-sidebar-bg` custom properties overridden
-      under `[data-theme="dark"]`, applied to `body` and a `.sidebar` class —
-      but `#main`/`.columns`/`.sidebar` don't appear anywhere in the current
-      markup (`Main.fs`'s `view` wraps everything in plain `div`s), so this
-      CSS may be dead leftover from an earlier template and dark mode might
-      only be touching `body`'s background/text color, if that.
+- [ ] Bug: dark mode (Settings tab theme toggle) is only partially dark. Not
+      fixed yet. `wwwroot/css/index.css` defines `--sk-bg`/`--sk-text`/
+      `--sk-sidebar-bg` custom properties overridden under
+      `[data-theme="dark"]`, applied to `body` (confirmed: background/text
+      color do go dark) — but `<button>` elements have no CSS rule at all,
+      so they keep the browser's default light styling; the Blockly
+      workspace renders via its own separate `Blockly.Theme` system,
+      completely disconnected from page CSS, and never follows
+      `data-theme` unless `blockly-host.ts` explicitly calls
+      `workspace.setTheme(...)` with a dark Blockly theme. Needs: button
+      styling under `[data-theme="dark"]`, plus wiring a dark Blockly theme
+      through on `setTheme`.
+- [ ] Stock Blockly control blocks (`controls_forEach`'s LIST input,
+      `controls_if`'s condition, etc.) have no `.setCheck` type constraint,
+      unlike the catalog/accessor blocks (Milestone 13/Part B) — so a
+      program can wire a record (e.g. a whole shipyard/market result) into
+      a `forEach`'s list socket without Blockly refusing the connection at
+      edit time. `Eval.asList`/`asBool`/`asString`/`asRecord` (`Eval.fs`)
+      already reject the mismatch at runtime (now gracefully, see the
+      "DSL evaluation error" fix below) but only after the fact — a kid
+      building a program gets a cryptic-ish German runtime error instead
+      of Blockly refusing the connection outright. Worth adding real
+      checks to these stock sockets too.
+- [ ] No way to dismiss/clear a finished (Completed/Failed/Cancelled) pilot
+      card from the Piloten tab — `viewJobRunner` (`Main.fs:1886`) only
+      shows pause/stop/watch buttons for non-terminal pilots; a terminal
+      one just sits there with no button at all. The dashboard is backed
+      by `JobRunner.listJobs()`, an in-memory list that keeps every job —
+      including finished ones — until the server process restarts
+      (`JobRunner.fs`'s own doc comment on `listJobs` confirms this).
+      Today the only way to clear a stuck-looking "Fehlgeschlagen" card is
+      restarting the server. Needs a real dismiss action (and/or having
+      `listJobs`/the dashboard only show the latest job per ship).
 
 ## Later milestones
 
