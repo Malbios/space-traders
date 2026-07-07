@@ -44,6 +44,31 @@ let asRecord (v: Value) : Map<string, Value> =
     | VRecord fields -> fields
     | _ -> failwith "Erwarte einen Datensatz (z.B. Schiff, Fracht, Markt)."
 
+let resolveListIndex (items: Value list) (where: ListIndexWhere) (index: Value option) : int =
+    let len = List.length items
+
+    if len = 0 then
+        failwith "Die Liste ist leer."
+
+    let i =
+        match where with
+        | FromStart ->
+            index |> Option.map asInt |> Option.defaultValue 0
+        | FromEnd ->
+            let offset = index |> Option.map asInt |> Option.defaultValue 0
+            len - 1 - offset
+        | First -> 0
+        | Last -> len - 1
+        | Random -> System.Random.Shared.Next(0, len)
+
+    if i < 0 || i >= len then
+        failwith "Listenindex außerhalb des gültigen Bereichs."
+    else
+        i
+
+let setListAt (items: Value list) (index: int) (value: Value) : Value list =
+    items |> List.mapi (fun i item -> if i = index then value else item)
+
 let rec eval (locals: Map<string, Value>) (expr: Expr) : Value =
     match expr with
     | Literal(StringLit s) -> VString s
@@ -106,11 +131,8 @@ let rec eval (locals: Map<string, Value>) (expr: Expr) : Value =
         VBool result
     | ListLiteral items -> VList(items |> List.map (eval locals))
     | RecordLiteral fields -> VRecord(fields |> List.map (fun (name, expr) -> name, eval locals expr) |> Map.ofList)
-    | ListGet(list, index) ->
+    | ListGet(list, where, index) ->
         let items = eval locals list |> asList
-        let i = eval locals index |> asInt
-
-        if i >= 0 && i < List.length items then
-            items.[i]
-        else
-            failwith "Listenindex außerhalb des gültigen Bereichs."
+        let indexValue = index |> Option.map (eval locals)
+        let i = resolveListIndex items where indexValue
+        items.[i]
