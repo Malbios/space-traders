@@ -1,9 +1,8 @@
 # Flotilla: multi-ship programs
 
-Status: **planning only, not started.** Written as a brainstorm + concrete
-milestone breakdown, not a locked design — the open question in "Design
-options" below is genuinely open; pick one (or something better) before
-starting Part A.
+Status: **planning only, not started.** Design direction is now settled (see
+below); this doc is a concrete milestone breakdown, not a locked spec down to
+the last field name.
 
 ## Why
 
@@ -11,170 +10,169 @@ Today a "program" and a "job" are ship-agnostic-by-construction: no DSL block
 carries a ship symbol, the compiler never threads one through, and the
 scheduler binds exactly one ship to a job at pilot-pick time
 (`JobState.shipSymbol: string option`, set once, injected implicitly at every
-dispatch site in `Step.fs`). One program flies one ship. If a kid wants two
-ships doing coordinated things (one mines, one hauls; one explores while
-another trades), they have to save the *same* program twice and start it on
-two different pilots independently — there is no way for one program to
-address more than one ship, and no way for two running instances of a program
-to coordinate at all.
+dispatch site in `Step.fs`). One program flies one ship, and one job has
+exactly one instruction pointer (`JobState.position: PathEntry list`) — no
+concurrency within a program at all, only across independently-started jobs.
 
-Flotilla means a single program can reference, and act through, more than one
-ship.
+Flotilla adds two things to close this gap:
 
-## Design options for "which ship does this block act on"
+1. **`mitSchiff` — a scope block that changes which ship the blocks inside it
+   act on.** `navigate`/`dock`/`extract`/etc. keep working exactly as today
+   (act on "whichever ship is current") outside any `mitSchiff` block; nested
+   inside one, "current" becomes that block's ship for everything in its
+   body, sequentially.
+2. **`parallel` — a generic "do these branches at the same time" block.**
+   N instruction lists run concurrently within one job; the block as a whole
+   completes once every branch has. Combined with `mitSchiff`, this is what
+   actually enables "ship A mines while ship B hauls" from a single program
+   — `mitSchiff` alone is still strictly sequential (one ship's block fully
+   finishes before the next `mitSchiff` block even starts).
 
-This is the crux of the whole feature and should be settled deliberately, not
-by momentum. Three shapes, roughly in order of how much they disrupt the
-existing block catalog:
+These two are deliberately shipped as **two separate milestones in sequence**
+below, not one combined change — `mitSchiff` alone needs no new concurrency in
+the scheduler at all (still exactly one thing in flight at a time, just
+targeting a different ship over time), while `parallel` is a real
+architectural change (multiple concurrent instruction pointers, per-branch
+reconciliation, per-branch pause/cancel). Shipping `mitSchiff` first gets
+real value out the door and exercises the multi-ship-lock groundwork that
+`parallel` needs anyway, before taking on fork/join semantics.
 
-**Option 1 — implicit "current ship" + an explicit `mitSchiff X: ...` scope
-block.** Every existing block (`navigate`, `dock`, `extract`, ...) keeps
-working exactly as today, unchanged, acting on "whichever ship is current."
-A new C-shaped block, e.g. `mitSchiff "SHIP-2": [...]`, changes what "current"
-means for every block nested inside it (stack-scoped, like a `for`-loop
-body). Plain: `navigate X1-A1` outside any `mitSchiff` block still means "the
-job's default/primary ship," same as today.
-- *Pro*: zero changes to the ~20 existing action/info blocks, zero migration
-  risk for saved programs, reads naturally ("with ship X, do: ..."), and it's
-  a very small DSL surface (one new block, one new compiler concept: a
-  lexical "current ship" that can be pushed/popped).
-- *Con*: doesn't compose well if a kid wants "ship A does X *while* ship B
-  does Y" (concurrent, not sequential) — `mitSchiff` blocks would still run
-  strictly in program order, one ship fully done before the "with"-block for
-  the next ship even starts its first action. Good for round-robin
-  choreography, not true parallelism.
+## Milestone F1 — `mitSchiff` (sequential multi-ship addressing)
 
-**Option 2 — every ship-scoped block gains an optional ship-reference input.**
-`navigate(waypoint)` becomes `navigate(waypoint, ship?)` where the socket
-defaults to "current ship" if left empty (matching your own instinct in the
-prompt: "navigate" for current ship, "navigate x" for a specific one). Ship
-references come from a new reporter block, e.g. `meinSchiff` (the job's
-default ship) or `schiffAusFlotte "SHIP-2"` (a named member of the flotilla).
-- *Pro*: most flexible expression-wise, fits naturally with existing
-  `for`/`if`/variable blocks (a ship reference is just a value you can store
-  in a variable and pass around), doesn't need a new C-shaped scope block.
-- *Con*: touches all ~20 action blocks' Blockly definitions
-  (`blocks-catalog.ts`) and the compiler's per-block-type argument tables
-  (`Compiler.fs`), a materially bigger diff; every saved program still
-  compiles (missing optional socket = default), so backward compatibility
-  should hold, but it's more surface to get wrong.
+**DSL/compiler.** A new C-shaped block, `mitSchiff "SHIP-2": [...]`
+(`blocks-catalog.ts`), lexically scoped like a `for`-loop body. `Compiler.fs`
+tracks a "current ship" context that `mitSchiff` pushes on entry / pops on
+exit; every ship-scoped action/info block compiles with whichever ship symbol
+is current at that point in the program (a literal for now — see the
+"restriction" note below). Outside any `mitSchiff`, current ship is the job's
+default/primary ship, exactly like today. `Validator.fs` gains a check: every
+`mitSchiff` block's ship-symbol argument must be a literal (not a variable or
+expression) for Milestone F1 — dynamic ship references are out of scope until
+static analysis of "every ship this program could possibly touch" is no
+longer required for locking (see below); a clear, locale-aware error covers
+the rejected case.
 
-**Option 3 — a genuinely separate concurrency primitive: "launch a copy of
-this program on ship X" (fork), not a way to reference other ships inline.**
-Closer to how real fleets are often scripted: one "coordinator" program
-launches N "worker" jobs (each a normal, single-ship program, possibly the
-*same* saved program), optionally passing simple parameters, and can wait
-on/query their status. No changes to the existing single-ship block catalog
-at all — the ship-scoped blocks never need to know about other ships.
-- *Pro*: true parallelism for free (each forked job is scheduled
-  independently, same as today's pilot dashboard already does); smallest
-  change to `Step.fs`'s actual instruction-execution semantics (nothing about
-  *how* an action runs changes, only *how many jobs exist*).
-- *Con*: different mental model from "my program controls my fleet directly"
-  — more like a light job-spawning API than in-line multi-ship scripting; the
-  two forked jobs can't share program-local variables directly (only through
-  something like contract/market state, or new explicit inter-job signaling,
-  which is its own can of worms).
+**Scheduler.** Each compiled action needs to carry (or the scheduler must be
+able to derive) which ship it targets, instead of the dispatch sites in
+`Step.fs` reading a single static `job.shipSymbol` — likely a `shipSymbol:
+string` field added onto `QueuedAction`'s action cases, populated by the
+compiler from whatever was current at compile time. `JobState` still has
+exactly one instruction pointer and at most one in-flight action — this is
+the part that keeps F1 tractable: reconciliation, pause/cancel, and the
+`AwaitingApiResponse`/`Reconciling` machinery all still work exactly as today,
+just keyed by "the ship this specific action carries" instead of "the job's
+one ship."
 
-**A fourth option worth naming even though it's likely too much for one
-milestone**: combine 1 or 2 with a real "parallel block" (`parallel: [branch
-A] [branch B]`), giving the scheduler multiple concurrent instruction
-pointers *within one job*. This is the most powerful and the most invasive —
-`JobState`/`Step.fs`'s path/frame model would need real fork/join semantics,
-not just a scoped ship reference. Worth a two-line callout in the milestone
-kickoff conversation, but probably not Milestone-1 scope.
+**Ship locks.** Since every ship a program can touch is now known statically
+(literal ship symbols only, per the Validator restriction above), acquire
+*all* of them atomically when the job starts — sorted into a canonical order
+first (e.g. by ship symbol) to avoid a circular-wait deadlock against another
+job trying to acquire an overlapping set — and hold all of them for the job's
+full lifetime, released together on any terminal state. This sidesteps a
+much harder problem (acquiring/releasing locks dynamically as execution
+enters/exits each `mitSchiff` scope) entirely, at the cost of a job holding a
+ship's lock even during long stretches of the program where it isn't
+currently "in" that ship's `mitSchiff` block. Worth being upfront with the
+user about that tradeoff before building it — the alternative (acquire on
+`mitSchiff` entry, release on exit) is real but meaningfully more complex and
+not obviously worth it for a first version.
 
-No recommendation is baked into the milestone breakdown below beyond
-sequencing — Part A is written to be option-agnostic where possible, but
-Part B (the actual compiler/block work) forks based on which option is
-picked.
+**UI.** Starting a program that contains any `mitSchiff` block needs a
+"pick every ship this program uses" flow instead of today's single-ship
+picker (the set is knowable statically, same list the lock-acquisition logic
+above needs) — likely surfaced as "this program needs N ships, assign them:"
+rather than a generic multi-select, so a kid can see which ship plays which
+role. The pilot dashboard's card for such a job should show all its ships,
+plus which one is "current" right now (reusing the same
+`Step.blockIdPerFrame`-style "what's active right now" mechanism the
+custom-block call stack already has, generalized from "which stack frame" to
+"which ship").
 
-## What has to change regardless of which option wins
+**Verification.** `SchedulerTests.fs`: a program with two `mitSchiff` blocks
+back to back, asserting actions dispatch against the right ship in the right
+order. `JobRunnerTests.fs`: end-to-end against the fake's two seeded ships.
+Playwright: a program using both `FAKE-AGENT-1` and `FAKE-AGENT-2` in
+sequence, started, watched to completion.
 
-- **`JobState.shipSymbol: string option`** (`SpaceKids.Core/Scheduler/Types.fs`)
-  is a single ship per job. Flotilla needs either (a) a job that can hold
-  *multiple* locked ships at once (Options 1/2), or (b) no change here at all
-  if Option 3 (fork) is chosen, since each forked job is still single-ship.
-  This is the single highest-leverage design decision to nail down first,
-  since it ripples into ship-lock acquisition, reconciliation, and every
-  `Step.fs` dispatch site that currently reads `job.shipSymbol` directly.
-- **Ship locks** (`ShipLockRepository.fs`) currently key one lock row per
-  `(ship_symbol, job_id)` pair with a 1:1 assumption baked into the
-  acquire/reclaim logic (see the `BEGIN IMMEDIATE` TOCTOU fix from the
-  code-review session — that fix assumed one lock acquisition per call).
-  Options 1/2 need N locks acquired atomically for one job (all-or-nothing,
-  to avoid a job holding ship A but failing to get ship B and deadlocking
-  another job that got B-then-wants-A) — this is a real distributed-lock
-  ordering problem (classic: acquire in a canonical order, e.g. sorted by
-  ship symbol, to avoid circular waits).
-- **Reconciliation** (§13's ambiguous-failure handling) is already per-action,
-  keyed by whichever ship the in-flight action targeted — this mostly
-  survives unchanged for Options 1/2 as long as each `QueuedAction`/`Effect`
-  still carries (or the scheduler can still derive) exactly one ship symbol
-  per in-flight call. Don't let "flotilla" leak into "one API call touches
-  two ships at once" — the real SpaceTraders API is one-ship-per-call
-  regardless, which is a natural constraint to lean on.
-- **UI**: the pilot dashboard's "one job = one ship" framing
-  (`Main.fs`'s pilot cards, `pilotName`, watch mode) needs a multi-ship job to
-  show *which* ships are involved, and (for Option 1/2) probably an
-  indicator of "currently acting through ship X" the same way `Step.
-  blockIdPerFrame` already drives the custom-block call-stack's "innen aktiv"
-  indicator — likely the same mechanism, generalized.
-- **Compiler/Validator**: whichever option is picked, a program referencing a
-  ship that was never actually assigned to the job (e.g. a typo'd ship
-  symbol, or a flotilla member removed after the program was written) needs a
-  clear, locale-aware failure — this project's established pattern (German
-  `failwith` messages, `Validator.fs`'s static checks catching what can be
-  caught before the job even starts) should extend here, not be
-  reinvented.
+## Milestone F2 — `parallel` (real concurrency within one job)
 
-## Milestone breakdown
+Builds on F1 — a `parallel` block's branches are themselves ordinary
+instruction lists that may contain `mitSchiff` blocks (or act on the job's
+default ship if they don't).
 
-**Part A — pick the design, no code.** Resolve the Option 1/2/3 question above
-(plus whether the 4th, real-parallel-block option is explicitly deferred or
-folded in) with the user. Write the concrete DSL/compiler/scheduler shape
-before touching any files — this is the one part of this whole feature
-that's genuinely a product decision, not an engineering one.
+**DSL/compiler.** A new C-shaped-with-multiple-bodies block, `parallel:
+[branch 1] [branch 2] ... [branch N]` (however many branch slots Blockly's
+mutator UI lets a kid add — same "gear icon to add an input" mutator pattern
+already used for custom blocks' typed inputs). Compiles to a new
+`Instruction` case carrying N independent instruction lists.
 
-**Part B — scheduler + persistence groundwork.** Whatever Part A decided,
-implement the `JobState`/ship-lock changes needed to let one job legitimately
-touch more than one ship (Options 1/2) or spawn sibling jobs (Option 3) —
-before any new blocks exist. Test this at the `SchedulerTests.fs`/
-`JobRunnerTests.fs` level first, same as every prior milestone (pure core,
-then integration against the fake), independent of UI.
+**Scheduler — the real architectural change.** `JobState` needs multiple
+concurrent instruction pointers, not one. Concretely: replace (or augment)
+the single `position`/`stack` with something like a `Branch` record —
+`{ id; position: PathEntry list; stack: Frame list; status: BranchStatus;
+currentShip: string option }` — and a job executing a `parallel` block holds
+a `Branch list`, each stepped independently. This ripples into:
+- **Per-branch status**, not one job-wide status: one branch can be
+  `AwaitingApiResponse` while a sibling is `WaitingForCooldown` or already
+  `Completed`. The job's own overall status becomes derived (e.g. "Running"
+  while any branch is; "Completed" only once every branch is; **what
+  happens if one branch fails while siblings are still running is a real
+  product decision to make explicitly** — does the whole job fail
+  immediately (siblings aborted), or do healthy branches keep going until
+  the `parallel` block's join, surfacing the failure only then? Flag this to
+  the user before building it, don't default silently).
+- **Per-branch reconciliation.** Today's ambiguous-failure handling assumes
+  a job has at most one in-flight action ever. With N branches, up to N
+  actions can be genuinely in flight at once, each needing its own
+  independent `Reconciling` hop — this is the existing per-action mechanism,
+  just no longer able to assume job-wide exclusivity.
+- **Per-branch pause/cancel deferral.** `pausePending`/`cancelPending`
+  currently defer job-wide until the one in-flight action resolves. With N
+  branches, each branch defers independently until *its own* in-flight
+  action resolves; the job only reaches `Paused`/`Cancelled` once every
+  branch has settled.
+- **Nesting.** Can a `parallel` block appear inside another `parallel`
+  block's branch? Structurally recursive and probably fine to allow, but
+  adds real complexity to lock ordering and status aggregation — consider
+  explicitly disallowing nested `parallel` for a first version (Validator
+  check) and revisiting once flat `parallel` is proven out.
 
-**Part C — DSL/compiler/block-catalog surface.** The actual new block(s)
-(`mitSchiff`, or the optional ship-reference socket + `meinSchiff`/
-`schiffAusFlotte` reporters, or a "start program on ship" action block for
-Option 3), `Compiler.fs` support, `Validator.fs` checks for
-referencing-a-ship-the-job-doesn't-have. Existing saved programs must still
-compile and run identically (no ship reference = today's behavior) —
-regression-test this explicitly, it's the thing most likely to silently
-break.
+**Ship locks.** Extends F1's "acquire every statically-known ship up front"
+approach — a `parallel` block's branches only add more ships to that same
+static set, no new acquisition-timing complexity, *as long as* nested
+`parallel` is disallowed (see above) and every `mitSchiff` ship symbol stays
+a literal.
 
-**Part D — UI: choosing a flotilla, not just a pilot.** Today "Start" picks
-one ship for one job. Flotilla needs a "pick 1-or-more ships" flow (or, for
-Option 3, no change here at all — forking is triggered by a block, not a
-Start-time picker), plus dashboard visibility into which ships a running job
-is currently touching.
+**UI.** A job running a `parallel` block needs its dashboard card to show
+every branch's current ship and status at once, not one line — a real UI
+design question (a mini-table per job? one row per branch, indented under
+the job?), not just a copy-paste of the existing single-line pilot card.
 
-**Part E — verification.** A live end-to-end scenario with the fake server's
-two seeded ships (`FAKE-AGENT-1`/`FAKE-AGENT-2`) doing something a single-ship
-program provably couldn't: e.g. one mines while the other hauls to a
-delivery contract, verified via Playwright same as every prior UI milestone,
-plus an integration test proving two ships' actions from the *same* job don't
-cross-contaminate reconciliation state (mirroring Milestone 10 Part C's
-existing "two concurrent pilots don't cross-contaminate" test, but within one
-job instead of across two).
+**Verification.** `SchedulerTests.fs`: two branches genuinely interleaving
+(prove via a fake clock that branch B's second action can dispatch before
+branch A's first one resolves, not just "both eventually finish"). An
+integration test proving two branches *within the same job* don't
+cross-contaminate reconciliation state — the sibling to Milestone 10 Part
+C's existing "two concurrent jobs don't cross-contaminate" test, but the
+harder within-one-job version. Live Playwright: one program, one job, two
+ships genuinely doing different things at the same time (e.g. one mining,
+one hauling toward a delivery), confirmed via the dashboard's per-branch
+view.
 
-## Open questions to raise with the user before Part A starts
+## Open questions to raise with the user before starting
 
-1. Which of Options 1/2/3/4 (or a hybrid) actually matches what "manage
-   multiple ships" should feel like for a kid — sequential choreography
-   (Option 1), flexible references (Option 2), or spawn-and-forget parallel
-   workers (Option 3)?
-2. Does a flotilla need to be a *named, reusable* group of ships (saved
+1. **F1's "acquire all ships up front, hold for the job's whole lifetime"
+   lock strategy** — confirmed acceptable, or is per-`mitSchiff`-scope
+   acquire/release worth the extra complexity from the start?
+2. **F1's literal-only restriction on `mitSchiff`'s ship argument** — fine
+   for a first version, or does the feature feel too limited without
+   dynamic ship references (e.g. "whichever ship is idle") from day one?
+3. **F2's branch-failure semantics** — does one branch failing abort its
+   siblings immediately, or do they run to their own natural
+   completion/failure independently, with the `parallel` block only
+   surfacing the aggregate result at the join?
+4. **F2's nested-`parallel` restriction** — confirmed out of scope for a
+   first version?
+5. Does a flotilla need to be a *named, reusable* group of ships (saved
    somewhere, like custom blocks or programs are), or is it always just "the
    ships this particular job happens to touch," picked fresh each run?
-3. Should a flotilla job still occupy one "pilot card" in the dashboard, or
-   become its own dashboard concept (a "squadron" card showing N ships)?
