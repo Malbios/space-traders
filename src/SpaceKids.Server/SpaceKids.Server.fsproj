@@ -11,6 +11,7 @@
     <Compile Include="Persistence/MigrationRunner.fs" />
     <Compile Include="Persistence/WorkspaceRepository.fs" />
     <Compile Include="Persistence/AgentRepository.fs" />
+    <Compile Include="Persistence/ApiCacheRepository.fs" />
     <Compile Include="Persistence/JobStateJson.fs" />
     <Compile Include="Persistence/ProgramRepository.fs" />
     <Compile Include="Persistence/JobRepository.fs" />

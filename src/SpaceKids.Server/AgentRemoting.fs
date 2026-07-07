@@ -1,10 +1,54 @@
 module SpaceKids.Server.AgentRemoting
 
+open System
 open System.Text.Json
 open Bolero.Remoting
 open Bolero.Remoting.Server
 open SpaceKids.SpaceTraders
 open SpaceKids.Client.Main
+
+let private galaxyCatalogTtl = TimeSpan.FromHours(6.0)
+
+let private jsonOptions = JsonSerializerOptions(PropertyNameCaseInsensitive = true)
+
+let fetchSystemsCached (client: SpaceTradersClient) (dbPath: string) (agentSymbol: string) (token: string) : Async<StarSystem list> =
+    let cacheKey = $"galaxy:{agentSymbol}:systems"
+
+    async {
+        match! Persistence.ApiCacheRepository.tryGetFresh dbPath cacheKey galaxyCatalogTtl with
+        | Some json -> return JsonSerializer.Deserialize<StarSystem list>(json, jsonOptions)
+        | None ->
+            let! systems =
+                RequestQueue.enqueue dbPath 1 "GET /systems" None (fun () -> client.ListSystems(token))
+
+            do!
+                Persistence.ApiCacheRepository.put dbPath cacheKey (JsonSerializer.Serialize(systems, jsonOptions))
+
+            return systems
+    }
+
+let private fetchWaypointsCached
+    (client: SpaceTradersClient)
+    (dbPath: string)
+    (agentSymbol: string)
+    (token: string)
+    (systemSymbol: string)
+    : Async<Waypoint list> =
+    let cacheKey = $"galaxy:{agentSymbol}:waypoints:{systemSymbol}"
+
+    async {
+        match! Persistence.ApiCacheRepository.tryGetFresh dbPath cacheKey galaxyCatalogTtl with
+        | Some json -> return JsonSerializer.Deserialize<Waypoint list>(json, jsonOptions)
+        | None ->
+            let! waypoints =
+                RequestQueue.enqueue dbPath 1 $"GET /systems/{systemSymbol}/waypoints" None (fun () ->
+                    client.ListWaypoints(token, systemSymbol))
+
+            do!
+                Persistence.ApiCacheRepository.put dbPath cacheKey (JsonSerializer.Serialize(waypoints, jsonOptions))
+
+            return waypoints
+    }
 
 /// Takes the agent already fetched by the caller — no need to re-fetch it.
 /// Priority 1 (§13's top tier): these are direct interactive user actions, not
@@ -29,12 +73,8 @@ let loadRestOfState
         let! systems, waypoints, markets =
             if includeGalaxyCatalog then
                 async {
-                    let! systems =
-                        RequestQueue.enqueue dbPath 1 "GET /systems" None (fun () -> client.ListSystems(token))
-
-                    let! waypoints =
-                        RequestQueue.enqueue dbPath 1 "GET /systems/{system}/waypoints" None (fun () ->
-                            client.ListWaypoints(token, hqSystem))
+                    let! systems = fetchSystemsCached client dbPath agent.symbol token
+                    let! waypoints = fetchWaypointsCached client dbPath agent.symbol token hqSystem
 
                     let! market =
                         RequestQueue.enqueue dbPath 1 "GET /systems/{system}/waypoints/{waypoint}/market" None (fun () ->
@@ -237,6 +277,7 @@ type AgentRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                             // in `loadRestOfState` below still goes through the queue normally.
                             let! agent = client.GetAgent(token)
                             do! Persistence.AgentRepository.saveAgent dbPath agent.symbol token
+                            do! Persistence.ApiCacheRepository.invalidateForAgent dbPath agent.symbol
                             // a fresh, accepted token means any prior server-reset is resolved (§13).
                             RequestQueue.clearServerReset ()
                             let! state = loadRestOfState client dbPath agent token true

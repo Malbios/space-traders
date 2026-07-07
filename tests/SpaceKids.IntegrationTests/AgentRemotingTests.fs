@@ -297,3 +297,37 @@ let ``loadRestOfState skips the galaxy catalog when includeGalaxyCatalog is fals
         Assert.Empty(refresh.waypoints)
         Assert.Empty(refresh.markets)
         Assert.NotEmpty(refresh.ships))
+
+[<Fact>]
+let ``fetchSystemsCached serves from api_cache without a second ListSystems call`` () =
+    use fixture = new AgentFixture()
+
+    withAgentTest (fun dbPath ->
+        let agent = fixture.Client.GetAgent(App.seededToken) |> Async.RunSynchronously
+
+        let countSystemsRequests () =
+            use conn = Database.openConnection dbPath
+            use cmd = conn.CreateCommand()
+            cmd.CommandText <- "SELECT COUNT(*) FROM request_queue_events WHERE endpoint LIKE 'GET /systems%';"
+            Convert.ToInt32(cmd.ExecuteScalar())
+
+        let before = countSystemsRequests ()
+
+        let first =
+            withPumpedQueue 20.0 (fun () ->
+                AgentRemoting.fetchSystemsCached fixture.Client dbPath agent.symbol App.seededToken
+                |> Async.RunSynchronously)
+
+        let afterFirst = countSystemsRequests ()
+
+        let second =
+            withPumpedQueue 20.0 (fun () ->
+                AgentRemoting.fetchSystemsCached fixture.Client dbPath agent.symbol App.seededToken
+                |> Async.RunSynchronously)
+
+        let afterSecond = countSystemsRequests ()
+
+        Assert.NotEmpty(first)
+        Assert.Equal(first.Length, second.Length)
+        Assert.True(afterFirst > before)
+        Assert.Equal(afterFirst, afterSecond))

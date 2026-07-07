@@ -310,7 +310,7 @@ type Model =
         /// `MapTick` (matching `WatchTick`'s own pattern) purely to force a
         /// re-render, so an in-transit ship's interpolated position stays
         /// current against `DateTimeOffset.UtcNow` without needing to store
-        /// "now" itself. Every 5th tick also reloads the dashboard.
+        /// "now" itself. Pilot polling uses `RefreshDashboard` (no galaxy catalog).
         mapTickCount: int
         /// Visual system map zoom/pan (Galaxie tab) — client-local view state,
         /// reset to the auto-fit default on `ResetMapView`. `mapZoom` scales the
