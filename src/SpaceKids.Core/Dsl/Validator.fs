@@ -193,27 +193,38 @@ let shipScopedInfoTypes =
         "getShipMounts"
     ]
 
-let rec private instructionNeedsShip (instr: Instruction) : bool =
+let rec private blockNeedsShipAtStart (program: CompiledProgram) (visited: Set<string>) (instructions: Instruction list) : bool =
+    instructions |> List.exists (instrNeedsShipAtStart program visited)
+
+and private instrNeedsShipAtStart (program: CompiledProgram) (visited: Set<string>) (instr: Instruction) : bool =
     match instr with
     | ApiAction(_, actionType, _) -> shipScopedActionTypes.Contains actionType
     | InfoRead(_, infoType, _, _) -> shipScopedInfoTypes.Contains infoType
     | If(_, branches, elseBranch) ->
-        (branches |> List.exists (snd >> List.exists instructionNeedsShip))
-        || (elseBranch |> Option.map (List.exists instructionNeedsShip) |> Option.defaultValue false)
+        (branches |> List.exists (snd >> blockNeedsShipAtStart program visited))
+        || (elseBranch |> Option.map (blockNeedsShipAtStart program visited) |> Option.defaultValue false)
     | Repeat(_, _, body)
     | WhileUntil(_, _, _, body)
-    | ForEach(_, _, _, body) -> body |> List.exists instructionNeedsShip
-    | Parallel(_, branches) -> branches |> List.exists (List.exists instructionNeedsShip)
-    | WithShip _ -> true
+    | ForEach(_, _, _, body) -> blockNeedsShipAtStart program visited body
+    | Parallel(_, branches) -> branches |> List.exists (blockNeedsShipAtStart program visited)
+    | WithShip(_, _, _, elseBranch) ->
+        // The `DO` body acquires its ship dynamically at runtime — only the optional
+        // unavailable (`sonst`/`else`) branch still runs on the pilot-tab ship, if any.
+        elseBranch |> Option.map (blockNeedsShipAtStart program visited) |> Option.defaultValue false
+    | CallCustomBlock(_, customBlockId, _, _) ->
+        if Set.contains customBlockId visited then
+            false
+        else
+            match program.customBlocks.TryFind customBlockId with
+            | None -> false
+            | Some cb -> blockNeedsShipAtStart program (Set.add customBlockId visited) cb.instructions
     | _ -> false
 
-/// Whether a compiled program touches any ship-scoped block anywhere — in the main
-/// program or in any custom block it references (the latter's own body isn't walked
-/// per call site; `program.customBlocks` is already exactly the transitive closure of
-/// blocks actually called, so checking it flatly is correct and simpler).
+/// Whether a compiled program needs a pilot-tab ship selected before it can start.
+/// Ship-scoped work inside `mitSchiff`/`withShip` scopes (and custom blocks reached
+/// only from there) does not count — those ships are picked up at runtime.
 let programRequiresShip (program: CompiledProgram) : bool =
-    (program.instructions |> List.exists instructionNeedsShip)
-    || (program.customBlocks |> Map.exists (fun _ cb -> cb.instructions |> List.exists instructionNeedsShip))
+    blockNeedsShipAtStart program Set.empty program.instructions
 
 /// The real stored labels for a numeric custom-block input (`blocks.ts`'s
 /// `INPUT_TYPE_LABELS_DE`/`_EN`, via `TYPE_LABEL_TO_CHECK`'s `"Number"` entries) —

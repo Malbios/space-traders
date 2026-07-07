@@ -369,6 +369,66 @@ let ``programRequiresShip detects a ship-scoped block inside a called custom blo
 
     Assert.True(Validator.programRequiresShip program)
 
+[<Fact>]
+let ``programRequiresShip is false when ship-scoped work is only inside withShip`` () =
+    let program =
+        aProgram
+            [ WithShip(
+                  "ws1",
+                  Literal(StringLit "FAKE-AGENT-1"),
+                  [ ApiAction("b1", "negotiateContract", Map.empty); ExitShipScope "ws1:exit" ],
+                  None
+              ) ]
+
+    Assert.False(Validator.programRequiresShip program)
+
+[<Fact>]
+let ``programRequiresShip is true when withShip unavailable branch uses a ship-scoped block`` () =
+    let program =
+        aProgram
+            [ WithShip(
+                  "ws1",
+                  Literal(StringLit "FAKE-AGENT-2"),
+                  [ ApiAction("b1", "orbit", Map.empty); ExitShipScope "ws1:exit" ],
+                  Some [ ApiAction("b2", "dock", Map.empty) ]
+              ) ]
+
+    Assert.True(Validator.programRequiresShip program)
+
+[<Fact>]
+let ``programRequiresShip is false when a ship-scoped custom block is only called inside withShip`` () =
+    let shipScopedBlock: CompiledCustomBlock =
+        { signature = { inputs = []; output = None; outputFields = None }
+          instructions = [ ApiAction("b1", "orbit", Map.empty) ]
+          returnExpr = None }
+
+    let program =
+        { version = 1
+          customBlocks = Map [ "custom-1", shipScopedBlock ]
+          instructions =
+            [ WithShip(
+                  "ws1",
+                  Literal(StringLit "FAKE-AGENT-1"),
+                  [ CallCustomBlock("b2", "custom-1", Map.empty, None); ExitShipScope "ws1:exit" ],
+                  None
+              ) ] }
+
+    Assert.False(Validator.programRequiresShip program)
+
+[<Fact>]
+let ``programRequiresShip ignores unreachable custom blocks that contain ship-scoped work`` () =
+    let shipScopedBlock: CompiledCustomBlock =
+        { signature = { inputs = []; output = None; outputFields = None }
+          instructions = [ ApiAction("b1", "orbit", Map.empty) ]
+          returnExpr = None }
+
+    let program =
+        { version = 1
+          customBlocks = Map [ "custom-1", shipScopedBlock ]
+          instructions = [ ApiAction("b2", "acceptContract", Map [ "contractId", Literal(StringLit "c1") ]) ] }
+
+    Assert.False(Validator.programRequiresShip program)
+
 // --- Eval (previously-uncovered paths found in review) -------------------------------
 
 [<Fact>]

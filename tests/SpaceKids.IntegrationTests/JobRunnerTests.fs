@@ -214,6 +214,51 @@ let ``a ship-agnostic program starts and completes with no ship selected, taking
         Assert.False(shipLockExists dbPath "FAKE-AGENT-1"))
 
 [<Fact>]
+let ``a withShip-only program starts and completes with no pilot ship selected`` () =
+    use fixture = new JobFixture()
+
+    withJobTest fixture.RawClient (fun dbPath ->
+        let instructions =
+            [ WithShip(
+                  "with-ship-1",
+                  Literal(StringLit "FAKE-AGENT-1"),
+                  [ ApiAction("orbit-1", "orbit", Map.empty); ExitShipScope "with-ship-1:exit" ],
+                  None
+              ) ]
+
+        WorkspaceRepository.save dbPath "test-workspace" "{}" |> Async.RunSynchronously
+
+        let jobId =
+            match
+                JobRunner.startJob
+                    fixture.Client
+                    dbPath
+                    App.seededToken
+                    "test-workspace"
+                    (JobStateJson.serializeProgram (program instructions))
+                    (program instructions)
+                    None
+                    None
+                    2
+                    2
+                |> Async.RunSynchronously
+            with
+            | Ok jobId -> jobId
+            | Error message -> failwith message
+
+        withPumpedQueue 20.0 (fun () ->
+            JobRunner.runToCompletion fixture.Client dbPath 1 App.seededToken jobId
+            |> Async.RunSynchronously)
+
+        match JobRunner.getStatus jobId with
+        | Some job -> Assert.Equal(Completed, job.status)
+        | None -> Assert.Fail("job not found")
+
+        let ship = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+        Assert.Equal("IN_ORBIT", ship.nav.status)
+        Assert.False(shipLockExists dbPath "FAKE-AGENT-1"))
+
+[<Fact>]
 let ``happy path runs orbit, navigate, dock, extract, and sell to completion`` () =
     use fixture = new JobFixture()
 
