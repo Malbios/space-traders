@@ -103,15 +103,30 @@ type TradeResult =
       cargo: ShipCargo
       transaction: MarketTransaction }
 
+type ContractPayment = { onAccepted: int; onFulfilled: int }
+
+type ContractDeliverGood =
+    { tradeSymbol: string
+      destinationSymbol: string
+      unitsRequired: int
+      unitsFulfilled: int }
+
+type ContractTerms =
+    { deadline: string
+      payment: ContractPayment
+      deliver: ContractDeliverGood list }
+
 type Contract =
     { id: string
       factionSymbol: string
       ``type``: string
+      terms: ContractTerms
       accepted: bool
       fulfilled: bool
       /// Deprecated in the real API in favor of `deadlineToAccept` — some real accounts'
       /// contracts omit/null it, unlike our fake server's always-populated fixture.
-      expiration: string option }
+      expiration: string option
+      deadlineToAccept: string option }
 
 /// A waypoint's trait signals what's actually there (a market, a shipyard, a
 /// mineable deposit, ...) — the inspector (visual-map feature) uses `symbol` to
@@ -175,9 +190,7 @@ type Survey =
 /// actually uses survey signatures to target extraction.
 type SurveyResult = { cooldown: Cooldown; surveys: Survey list }
 
-/// `POST /my/contracts/{contractId}/deliver` response. `Contract` already covers every
-/// field the DSL's Auftrag record needs (§8) — extra real-API fields (`terms`,
-/// `deadlineToAccept`) are simply ignored by `System.Text.Json`.
+/// `POST /my/contracts/{contractId}/deliver` response.
 type DeliverContractResult = { contract: Contract; cargo: ShipCargo }
 
 /// `POST /my/contracts/{contractId}/accept` response.

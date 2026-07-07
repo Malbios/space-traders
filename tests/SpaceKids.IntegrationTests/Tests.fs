@@ -42,11 +42,12 @@ let ``ListShips returns the seeded ships`` () =
     Assert.Contains(ships, fun s -> s.symbol = "FAKE-AGENT-2")
 
 [<Fact>]
-let ``ListContracts returns the seeded contract`` () =
+let ``ListContracts returns the seeded contracts`` () =
     use fixture = new FakeSpaceTradersFixture()
     let contracts = fixture.Client.ListContracts(App.seededToken) |> Async.RunSynchronously
-    Assert.Single(contracts) |> ignore
-    Assert.Equal("fake-contract-1", contracts.[0].id)
+    Assert.Equal(2, contracts.Length)
+    Assert.Contains(contracts, fun c -> c.id = "fake-contract-1" && c.accepted)
+    Assert.Contains(contracts, fun c -> c.id = "fake-contract-2" && not c.accepted)
 
 [<Fact>]
 let ``ListWaypoints returns the seeded waypoints`` () =

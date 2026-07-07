@@ -85,16 +85,38 @@ let private routeShipSymbol (ctx: HttpContext) : string = ctx.Request.RouteValue
 let private routeContractId (ctx: HttpContext) : string = ctx.Request.RouteValues.["contractId"] :?> string
 let private routeWaypointSymbol (ctx: HttpContext) : string = ctx.Request.RouteValues.["waypointSymbol"] :?> string
 
-/// Milestone 9/Part A: `acceptContract`/`deliverContract` mutate this, so the single
-/// seeded contract becomes a `Map`-keyed-by-id like `ships`, guarded by the same lock.
+/// Milestone 9/Part A: `acceptContract`/`deliverContract` mutate this, so the
+/// seeded contracts become a `Map`-keyed-by-id like `ships`, guarded by the same lock.
+/// Two seeded: `fake-contract-1` is already accepted (exercises the "active,
+/// in-progress" contracts-tab display), `fake-contract-2` isn't (exercises the
+/// Accept button).
 let mutable private contracts: Map<string, Contract> =
     [ "fake-contract-1",
       { id = "fake-contract-1"
         factionSymbol = "COSMIC"
         ``type`` = "PROCUREMENT"
+        terms =
+          { deadline = "2026-12-31T00:00:00.000Z"
+            payment = { onAccepted = 5000; onFulfilled = 20000 }
+            deliver =
+              [ { tradeSymbol = "IRON"; destinationSymbol = "X1-TEST-A1"; unitsRequired = 10; unitsFulfilled = 0 } ] }
         accepted = true
         fulfilled = false
-        expiration = Some "2026-12-31T00:00:00.000Z" } ]
+        expiration = Some "2026-12-31T00:00:00.000Z"
+        deadlineToAccept = None }
+      "fake-contract-2",
+      { id = "fake-contract-2"
+        factionSymbol = "COSMIC"
+        ``type`` = "PROCUREMENT"
+        terms =
+          { deadline = "2026-12-31T00:00:00.000Z"
+            payment = { onAccepted = 3000; onFulfilled = 12000 }
+            deliver =
+              [ { tradeSymbol = "IRON"; destinationSymbol = "X1-TEST-A1"; unitsRequired = 5; unitsFulfilled = 0 } ] }
+        accepted = false
+        fulfilled = false
+        expiration = None
+        deadlineToAccept = Some "2026-12-31T00:00:00.000Z" } ]
     |> Map.ofList
 
 let private readContract (contractId: string) : Contract = lock shipLock (fun () -> contracts.[contractId])
@@ -881,7 +903,26 @@ let resetForTests () =
           { id = "fake-contract-1"
             factionSymbol = "COSMIC"
             ``type`` = "PROCUREMENT"
+            terms =
+              { deadline = "2026-12-31T00:00:00.000Z"
+                payment = { onAccepted = 5000; onFulfilled = 20000 }
+                deliver =
+                  [ { tradeSymbol = "IRON"; destinationSymbol = "X1-TEST-A1"; unitsRequired = 10; unitsFulfilled = 0 } ] }
             accepted = true
             fulfilled = false
-            expiration = Some "2026-12-31T00:00:00.000Z" } ]
+            expiration = Some "2026-12-31T00:00:00.000Z"
+            deadlineToAccept = None }
+          "fake-contract-2",
+          { id = "fake-contract-2"
+            factionSymbol = "COSMIC"
+            ``type`` = "PROCUREMENT"
+            terms =
+              { deadline = "2026-12-31T00:00:00.000Z"
+                payment = { onAccepted = 3000; onFulfilled = 12000 }
+                deliver =
+                  [ { tradeSymbol = "IRON"; destinationSymbol = "X1-TEST-A1"; unitsRequired = 5; unitsFulfilled = 0 } ] }
+            accepted = false
+            fulfilled = false
+            expiration = None
+            deadlineToAccept = Some "2026-12-31T00:00:00.000Z" } ]
         |> Map.ofList
