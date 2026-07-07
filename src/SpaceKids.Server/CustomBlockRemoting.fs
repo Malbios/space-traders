@@ -53,29 +53,39 @@ type CustomBlockRemoteHandler(ctx: IRemoteContext) =
 
                             return Error message
                         else
-                            // The signature to persist must reflect *this* save's mutator
-                            // edits, not whatever version is already on disk — derived
-                            // fresh from the raw JSON (`Compiler.deriveCustomBlockSignature`),
-                            // the server-side counterpart to the client's own `readSignature`.
-                            let signature = SpaceKids.Core.Dsl.Compiler.deriveCustomBlockSignature workspaceJson
+                            let! existing = Persistence.CustomBlockRepository.load dbPath id
 
-                            let lookup (lookupId: string) : SpaceKids.Core.Dsl.CustomBlockDefinition option =
-                                if lookupId = id then
-                                    Some
-                                        { id = id
-                                          signature = signature
-                                          workspaceJson = workspaceJson }
-                                else
-                                    Persistence.CustomBlockRepository.load dbPath lookupId |> Async.RunSynchronously
-
-                            match SpaceKids.Core.Dsl.Compiler.resolveCustomBlockCall locale lookup id with
-                            | Error errors ->
-                                let message = errors |> List.map (fun e -> e.message) |> String.concat "; "
-                                return Error message
-                            | Ok compiledMap ->
-                                let compiled = compiledMap.[id]
-                                let! version = Persistence.CustomBlockRepository.saveVersion dbPath id workspaceJson compiled
+                            match existing with
+                            | Some definition when definition.workspaceJson = workspaceJson ->
+                                let! version = Persistence.CustomBlockRepository.currentVersion dbPath id
                                 return Ok version
+                            | _ ->
+                                // The signature to persist must reflect *this* save's mutator
+                                // edits, not whatever version is already on disk — derived
+                                // fresh from the raw JSON (`Compiler.deriveCustomBlockSignature`),
+                                // the server-side counterpart to the client's own `readSignature`.
+                                let signature = SpaceKids.Core.Dsl.Compiler.deriveCustomBlockSignature workspaceJson
+
+                                let lookup (lookupId: string) : SpaceKids.Core.Dsl.CustomBlockDefinition option =
+                                    if lookupId = id then
+                                        Some
+                                            { id = id
+                                              signature = signature
+                                              workspaceJson = workspaceJson }
+                                    else
+                                        Persistence.CustomBlockRepository.load dbPath lookupId |> Async.RunSynchronously
+
+                                match SpaceKids.Core.Dsl.Compiler.resolveCustomBlockCall locale lookup id with
+                                | Error errors ->
+                                    let message = errors |> List.map (fun e -> e.message) |> String.concat "; "
+                                    return Error message
+                                | Ok compiledMap ->
+                                    let compiled = compiledMap.[id]
+
+                                    let! version =
+                                        Persistence.CustomBlockRepository.saveVersionIfChanged dbPath id workspaceJson compiled
+
+                                    return Ok version
                     }
             rename = fun (id, name) -> Persistence.CustomBlockRepository.rename dbPath id name
             delete =

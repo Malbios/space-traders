@@ -138,6 +138,32 @@ let ``custom block repository round-trips a saved definition, always returning t
         deleteDbFiles dbPath
 
 [<Fact>]
+let ``saveVersionIfChanged keeps the version when workshop JSON is unchanged`` () =
+    let dbPath = tempDbPath ()
+    try
+        MigrationRunner.run dbPath
+        let id = CustomBlockRepository.insert dbPath "Unveraendert" None |> Async.RunSynchronously
+        let json = """{"blocks":{"languageVersion":0,"blocks":[]}}"""
+        let compiled = aCompiledBlock [] None
+
+        let v1 =
+            CustomBlockRepository.saveVersionIfChanged dbPath id json compiled
+            |> Async.RunSynchronously
+
+        Assert.Equal(1, v1)
+
+        let v2 =
+            CustomBlockRepository.saveVersionIfChanged dbPath id json compiled
+            |> Async.RunSynchronously
+
+        Assert.Equal(1, v2)
+
+        let listed = CustomBlockRepository.list dbPath |> Async.RunSynchronously
+        Assert.Contains(listed, fun b -> b.id = id && b.version = 1)
+    finally
+        deleteDbFiles dbPath
+
+[<Fact>]
 let ``custom block repository lists and renames blocks`` () =
     let dbPath = tempDbPath ()
     try

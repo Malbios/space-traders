@@ -57,14 +57,41 @@ let delete (dbPath: string) (id: string) : Async<unit> =
         cmd.ExecuteNonQuery() |> ignore
     }
 
-let private nextVersion (dbPath: string) (customBlockId: string) : Async<int> =
+let currentVersion (dbPath: string) (customBlockId: string) : Async<int> =
     async {
         use conn = Database.openConnection dbPath
         use cmd = conn.CreateCommand()
         cmd.CommandText <- "SELECT COALESCE(MAX(version), 0) FROM custom_block_versions WHERE custom_block_id = $id;"
         cmd.Parameters.AddWithValue("$id", customBlockId) |> ignore
-        let current = cmd.ExecuteScalar() :?> int64
-        return int current + 1
+        return int (cmd.ExecuteScalar() :?> int64)
+    }
+
+let private nextVersion (dbPath: string) (customBlockId: string) : Async<int> =
+    async {
+        let! current = currentVersion dbPath customBlockId
+        return current + 1
+    }
+
+let private latestVersionRow (dbPath: string) (customBlockId: string) : Async<(string * string option) option> =
+    async {
+        use conn = Database.openConnection dbPath
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <-
+            """
+            SELECT definition_json, compiled_body_json FROM custom_block_versions
+            WHERE custom_block_id = $id ORDER BY version DESC LIMIT 1;
+            """
+
+        cmd.Parameters.AddWithValue("$id", customBlockId) |> ignore
+        use reader = cmd.ExecuteReader()
+
+        if reader.Read() then
+            let definitionJson = reader.GetString(0)
+            let compiledBodyJson = if reader.IsDBNull(1) then None else Some(reader.GetString(1))
+            return Some(definitionJson, compiledBodyJson)
+        else
+            return None
     }
 
 /// Saves a new version — never updates an existing row (see the module doc comment).
@@ -97,26 +124,17 @@ let saveVersion (dbPath: string) (customBlockId: string) (definitionJson: string
         return version
     }
 
-let private latestVersionRow (dbPath: string) (customBlockId: string) : Async<(string * string option) option> =
+/// Appends a new version only when `definitionJson` differs from the latest stored
+/// workshop JSON; otherwise returns the current version number unchanged.
+let saveVersionIfChanged (dbPath: string) (customBlockId: string) (definitionJson: string) (compiled: CompiledCustomBlock) : Async<int> =
     async {
-        use conn = Database.openConnection dbPath
-        use cmd = conn.CreateCommand()
+        let! row = latestVersionRow dbPath customBlockId
 
-        cmd.CommandText <-
-            """
-            SELECT definition_json, compiled_body_json FROM custom_block_versions
-            WHERE custom_block_id = $id ORDER BY version DESC LIMIT 1;
-            """
-
-        cmd.Parameters.AddWithValue("$id", customBlockId) |> ignore
-        use reader = cmd.ExecuteReader()
-
-        if reader.Read() then
-            let definitionJson = reader.GetString(0)
-            let compiledBodyJson = if reader.IsDBNull(1) then None else Some(reader.GetString(1))
-            return Some(definitionJson, compiledBodyJson)
-        else
-            return None
+        match row with
+        | Some(storedJson, _) when storedJson = definitionJson ->
+            let! version = currentVersion dbPath customBlockId
+            return version
+        | _ -> return! saveVersion dbPath customBlockId definitionJson compiled
     }
 
 /// The `lookup: string -> CustomBlockDefinition option` function `Compiler`/
