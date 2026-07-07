@@ -285,9 +285,14 @@ type Tab =
     | AgentsTab
     | SettingsTab
 
+type ProgramSubTab =
+    | ProgramsSubTab
+    | CustomBlocksSubTab
+
 type Model =
     {
         activeTab: Tab
+        activeProgramSubTab: ProgramSubTab
         containerId: string
         workshopContainerId: string
         lastBlockId: string option
@@ -444,6 +449,7 @@ let internal pilotName (key: string) : string =
 let initModel =
     {
         activeTab = ProgrammierenTab
+        activeProgramSubTab = ProgramsSubTab
         containerId = ""
         workshopContainerId = "blockly-workshop-spike"
         lastBlockId = None
@@ -618,6 +624,7 @@ type Message =
     | SetLocale of string
     | LocaleSet
     | SwitchTab of Tab
+    | SwitchProgramSubTab of ProgramSubTab
     | LoadPollInterval
     | PollIntervalLoaded of int
     | SetPollInterval of int
@@ -833,6 +840,8 @@ type Strings =
       publishSignatureButton: string
 
       tabProgrammieren: string
+      tabProgramsSub: string
+      tabCustomBlocksSub: string
       tabPiloten: string
       tabGalaxie: string
       tabFactions: string
@@ -1048,6 +1057,8 @@ let private stringsDe: Strings =
       publishSignatureButton = "Signatur an Programm übergeben"
 
       tabProgrammieren = "Programmieren"
+      tabProgramsSub = "Programme"
+      tabCustomBlocksSub = "Eigene Blöcke"
       tabPiloten = "Piloten"
       tabGalaxie = "Galaxie"
       tabFactions = "Fraktionen"
@@ -1261,6 +1272,8 @@ let private stringsEn: Strings =
       publishSignatureButton = "Hand signature to program"
 
       tabProgrammieren = "Code"
+      tabProgramsSub = "Programs"
+      tabCustomBlocksSub = "Custom blocks"
       tabPiloten = "Pilots"
       tabGalaxie = "Galaxy"
       tabFactions = "Factions"
@@ -2102,6 +2115,8 @@ let update
         Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.setLogLevel" [| box logLevel |]) () (fun () -> LogLevelSet)
     | LogLevelSet -> model, Cmd.none
 
+    | SwitchProgramSubTab subTab ->
+        { model with activeProgramSubTab = subTab }, Cmd.none
     | SwitchTab tab ->
         let lazyLoadCmds =
             [
@@ -2892,6 +2907,21 @@ let private tabButton (model: Model) dispatch (tab: Tab) (label: string) =
         label
     }
 
+let private programSubTabStyle (model: Model) (subTab: ProgramSubTab) =
+    if model.activeProgramSubTab = subTab then "" else "display: none"
+
+let private programSubTabButton (model: Model) dispatch (subTab: ProgramSubTab) (label: string) =
+    button {
+        attr.style (
+            if model.activeProgramSubTab = subTab then
+                "font-weight: bold; text-decoration: underline; margin-right: 0.75rem"
+            else
+                "margin-right: 0.75rem"
+        )
+        on.click (fun _ -> dispatch (SwitchProgramSubTab subTab))
+        label
+    }
+
 let private pollIntervalPresets = [ 1; 5; 10; 30 ]
 let private logLevelPresets = [ "off"; "info"; "trace" ]
 
@@ -3114,48 +3144,58 @@ let view model dispatch =
 
         div {
             attr.style (tabStyle model ProgrammierenTab)
-            viewProgramLibrary model dispatch
-            match model.currentProgramId with
-            | None -> p { s.noProgramOpen }
-            | Some _ ->
-                div {
-                    if not model.staleWarnings.IsEmpty then
-                        div {
-                            attr.style "border: 1px solid #cc8800; background: #fff8e6; padding: 0.5rem; margin-bottom: 0.5rem"
-                            p { s.staleWarningsBanner }
-                            ul {
-                                for w in model.staleWarnings do
-                                    li { w }
-                            }
-                        }
-                    div {
-                        button { on.click (fun _ -> dispatch Save); s.saveButton }
-                        button { on.click (fun _ -> dispatch Load); s.loadButton }
-                        button { on.click (fun _ -> dispatch HighlightFirstBlock); s.highlightFirstBlockButton }
-                        button {
-                            attr.disabled model.watchModeLocked
-                            on.click (fun _ -> dispatch ToggleReadOnly)
-                            if model.readOnly then s.allowEditing else s.viewOnly
-                        }
-                        button { on.click (fun _ -> dispatch SimulateRun); s.simulateRunButton }
-                    }
-                    if model.watchModeLocked then
-                        p { s.watchModeLockedBanner }
-                    h2 { s.programHeading }
-                    div {
-                        attr.id model.containerId
-                        attr.style "height: 360px; width: 100%; border: 1px solid #ccc; margin-top: 0.5rem"
-                    }
-                }
-            viewCustomBlockLibrary model dispatch
-            h2 { s.workshopHeading }
-            p {
-                s.workshopHint
-                button { on.click (fun _ -> dispatch PublishSignature); s.publishSignatureButton }
+            div {
+                attr.style "margin-bottom: 0.75rem"
+                programSubTabButton model dispatch ProgramsSubTab s.tabProgramsSub
+                programSubTabButton model dispatch CustomBlocksSubTab s.tabCustomBlocksSub
             }
             div {
-                attr.id model.workshopContainerId
-                attr.style "height: 360px; width: 100%; border: 1px solid #ccc; margin-top: 0.5rem"
+                attr.style (programSubTabStyle model ProgramsSubTab)
+                viewProgramLibrary model dispatch
+                match model.currentProgramId with
+                | None -> p { s.noProgramOpen }
+                | Some _ ->
+                    div {
+                        if not model.staleWarnings.IsEmpty then
+                            div {
+                                attr.style "border: 1px solid #cc8800; background: #fff8e6; padding: 0.5rem; margin-bottom: 0.5rem"
+                                p { s.staleWarningsBanner }
+                                ul {
+                                    for w in model.staleWarnings do
+                                        li { w }
+                                }
+                            }
+                        div {
+                            button { on.click (fun _ -> dispatch Save); s.saveButton }
+                            button { on.click (fun _ -> dispatch Load); s.loadButton }
+                            button { on.click (fun _ -> dispatch HighlightFirstBlock); s.highlightFirstBlockButton }
+                            button {
+                                attr.disabled model.watchModeLocked
+                                on.click (fun _ -> dispatch ToggleReadOnly)
+                                if model.readOnly then s.allowEditing else s.viewOnly
+                            }
+                            button { on.click (fun _ -> dispatch SimulateRun); s.simulateRunButton }
+                        }
+                        if model.watchModeLocked then
+                            p { s.watchModeLockedBanner }
+                        h2 { s.programHeading }
+                        div {
+                            attr.id model.containerId
+                            attr.style "height: 480px; width: 100%; border: 1px solid #ccc; margin-top: 0.5rem"
+                        }
+                    }
+            }
+            div {
+                attr.style (programSubTabStyle model CustomBlocksSubTab)
+                viewCustomBlockLibrary model dispatch
+                p {
+                    s.workshopHint
+                    button { on.click (fun _ -> dispatch PublishSignature); s.publishSignatureButton }
+                }
+                div {
+                    attr.id model.workshopContainerId
+                    attr.style "height: 480px; width: 100%; border: 1px solid #ccc; margin-top: 0.5rem"
+                }
             }
         }
 
