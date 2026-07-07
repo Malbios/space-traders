@@ -320,7 +320,7 @@ Auftrag (one item of getContracts' list)
   Id, Type, Accepted, Fulfilled
 
 Wegpunkt (one item of getWaypoints' list)
-  Symbol, Type, HasShipyard, HasMarket
+  Symbol, Type, System, HasShipyard, HasMarket
 ```
 
 Accessor blocks (Blockly type -> German label -> record field, all colour 65,
@@ -356,6 +356,7 @@ contractAccepted     Angenommen aus Auftrag        -> Auftrag.Accepted
 contractFulfilled    Erfüllt aus Auftrag           -> Auftrag.Fulfilled
 waypointSymbolField  Symbol aus Wegpunkt           -> Wegpunkt.Symbol
 waypointTypeField    Typ aus Wegpunkt              -> Wegpunkt.Type
+waypointSystemField  System aus Wegpunkt           -> Wegpunkt.System
 waypointHasShipyard  Hat Werft aus Wegpunkt        -> Wegpunkt.HasShipyard
 waypointHasMarket    Hat Markt aus Wegpunkt        -> Wegpunkt.HasMarket
 ```

@@ -1091,6 +1091,31 @@ let ``a program calling a custom block loaded from the repository compiles and r
         | None -> Assert.Fail("job not found"))
 
 [<Fact>]
+let ``getWaypoint System accessor resolves against the real fake over HTTP`` () =
+    use fixture = new JobFixture()
+
+    withJobTest fixture.RawClient (fun dbPath ->
+        let instructions =
+            [ InfoRead("b1", "getWaypoint", Map [ "waypointSymbol", Literal(StringLit "X1-TEST-A1") ], "$t1")
+              SetVariable("b2", "system", Accessor("System", TempRef "$t1")) ]
+
+        let initialShip = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+        let jobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" (program instructions) initialShip
+
+        withPumpedQueue 20.0 (fun () ->
+            JobRunner.runToCompletion fixture.Client dbPath 1 App.seededToken jobId
+            |> Async.RunSynchronously)
+
+        match JobRunner.getStatus jobId with
+        | Some job ->
+            Assert.Equal(Completed, job.status)
+
+            match job.stack with
+            | top :: _ -> Assert.Equal(VString "X1-TEST", top.locals.["system"])
+            | [] -> Assert.Fail("expected a stack frame")
+        | None -> Assert.Fail("job not found"))
+
+[<Fact>]
 let ``an info-read plus accessor chain resolves against the real fake over HTTP`` () =
     use fixture = new JobFixture()
 

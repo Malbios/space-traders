@@ -745,6 +745,35 @@ let ``revalidateAgainstCurrentDefinitions catches a signature that changed after
 // --- Part B (Milestone 9, §8): accessor blocks compile to Accessor, Eval resolves them ---
 
 [<Fact>]
+let ``waypointSystemField compiles to Accessor over System`` () =
+    let json =
+        """
+        { "blocks": { "languageVersion": 0, "blocks": [
+            { "type": "variables_set", "id": "b1", "fields": { "VAR": "system" }, "inputs": {
+                "VALUE": { "block": { "type": "waypointSystemField", "id": "b2", "inputs": {
+                    "TARGET": { "block": { "type": "getWaypoint", "id": "b3", "inputs": {
+                        "WAYPOINT_SYMBOL": { "block": """ + textBlock "b4" "X1-TEST-A1" + """ }
+                    } } }
+                } } }
+            } }
+        ] } }
+        """
+
+    match Compiler.compileWorkspace De noCustomBlocks json with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        Assert.Equal<Instruction list>(
+            [ InfoRead(
+                  "b3",
+                  "getWaypoint",
+                  Map [ "waypointSymbol", Literal(StringLit "X1-TEST-A1") ],
+                  "$t1"
+              )
+              SetVariable("b1", "system", Accessor("System", TempRef "$t1")) ],
+            program.instructions
+        )
+
+[<Fact>]
 let ``an accessor block compiles to Accessor over its TARGET input`` () =
     let json =
         """

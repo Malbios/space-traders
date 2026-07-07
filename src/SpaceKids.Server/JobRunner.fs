@@ -105,6 +105,7 @@ let private waypointRecord (w: Waypoint) : Value =
         Map.ofList
             [ "Symbol", VString w.symbol
               "Type", VString w.``type``
+              "System", VString w.systemSymbol
               "HasShipyard", VBool(hasTrait "SHIPYARD")
               "HasMarket", VBool(hasTrait "MARKETPLACE") ]
     )

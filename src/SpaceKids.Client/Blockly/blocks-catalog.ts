@@ -554,6 +554,7 @@ const ACCESSOR_BLOCKS: AccessorBlockSpec[] = [
     // Wegpunkt (getWaypoints items)
     { type: "waypointSymbolField", label: { de: "Symbol aus Wegpunkt", en: "Symbol from waypoint" }, tooltip: { de: "Gibt das Symbol eines Wegpunkts zurück.", en: "Returns a waypoint's symbol." }, fieldName: "Symbol", targetCheck: "WaypointRecord", outputCheck: "String" },
     { type: "waypointTypeField", label: { de: "Typ aus Wegpunkt", en: "Type from waypoint" }, tooltip: { de: "Gibt den Typ eines Wegpunkts zurück.", en: "Returns a waypoint's type." }, fieldName: "Type", targetCheck: "WaypointRecord", outputCheck: "String" },
+    { type: "waypointSystemField", label: { de: "System aus Wegpunkt", en: "System from waypoint" }, tooltip: { de: "Gibt das Sternensystem eines Wegpunkts zurück.", en: "Returns a waypoint's star system." }, fieldName: "System", targetCheck: "WaypointRecord", outputCheck: "String" },
     { type: "waypointHasShipyard", label: { de: "Hat Werft aus Wegpunkt", en: "Has shipyard from waypoint" }, tooltip: { de: "Gibt zurück, ob ein Wegpunkt eine Werft hat.", en: "Returns whether a waypoint has a shipyard." }, fieldName: "HasShipyard", targetCheck: "WaypointRecord", outputCheck: "Boolean" },
     { type: "waypointHasMarket", label: { de: "Hat Markt aus Wegpunkt", en: "Has market from waypoint" }, tooltip: { de: "Gibt zurück, ob ein Wegpunkt einen Markt hat.", en: "Returns whether a waypoint has a market." }, fieldName: "HasMarket", targetCheck: "WaypointRecord", outputCheck: "Boolean" },
 ];

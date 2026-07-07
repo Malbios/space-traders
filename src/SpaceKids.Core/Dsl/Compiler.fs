@@ -109,6 +109,7 @@ let private ACCESSOR_BLOCKS: Map<string, string> =
         "contractFulfilled", "Fulfilled"
         "waypointSymbolField", "Symbol"
         "waypointTypeField", "Type"
+        "waypointSystemField", "System"
         "waypointHasShipyard", "HasShipyard"
         "waypointHasMarket", "HasMarket"
     ]
