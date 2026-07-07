@@ -193,38 +193,59 @@ let shipScopedInfoTypes =
         "getShipMounts"
     ]
 
-let rec private blockNeedsShipAtStart (program: CompiledProgram) (visited: Set<string>) (instructions: Instruction list) : bool =
-    instructions |> List.exists (instrNeedsShipAtStart program visited)
+type ShipRequirementAtStart =
+    { blockId: string
+      kind: string }
 
-and private instrNeedsShipAtStart (program: CompiledProgram) (visited: Set<string>) (instr: Instruction) : bool =
+let rec private findShipRequirementInBlock
+    (program: CompiledProgram)
+    (visited: Set<string>)
+    (instructions: Instruction list)
+    : ShipRequirementAtStart option =
+    instructions |> List.tryPick (findShipRequirementInInstr program visited)
+
+and private findShipRequirementInInstr
+    (program: CompiledProgram)
+    (visited: Set<string>)
+    (instr: Instruction)
+    : ShipRequirementAtStart option =
     match instr with
-    | ApiAction(_, actionType, _) -> shipScopedActionTypes.Contains actionType
-    | InfoRead(_, infoType, _, _) -> shipScopedInfoTypes.Contains infoType
+    | ApiAction(blockId, actionType, _) when shipScopedActionTypes.Contains actionType ->
+        Some { blockId = blockId; kind = actionType }
+    | InfoRead(blockId, infoType, _, _) when shipScopedInfoTypes.Contains infoType ->
+        Some { blockId = blockId; kind = infoType }
     | If(_, branches, elseBranch) ->
-        (branches |> List.exists (snd >> blockNeedsShipAtStart program visited))
-        || (elseBranch |> Option.map (blockNeedsShipAtStart program visited) |> Option.defaultValue false)
+        branches
+        |> List.tryPick (snd >> findShipRequirementInBlock program visited)
+        |> Option.orElse (elseBranch |> Option.bind (findShipRequirementInBlock program visited))
     | Repeat(_, _, body)
     | WhileUntil(_, _, _, body)
-    | ForEach(_, _, _, body) -> blockNeedsShipAtStart program visited body
-    | Parallel(_, branches) -> branches |> List.exists (blockNeedsShipAtStart program visited)
+    | ForEach(_, _, _, body) -> findShipRequirementInBlock program visited body
+    | Parallel(_, branches) -> branches |> List.tryPick (findShipRequirementInBlock program visited)
     | WithShip(_, _, _, elseBranch) ->
         // The `DO` body acquires its ship dynamically at runtime — only the optional
         // unavailable (`sonst`/`else`) branch still runs on the pilot-tab ship, if any.
-        elseBranch |> Option.map (blockNeedsShipAtStart program visited) |> Option.defaultValue false
+        elseBranch |> Option.bind (findShipRequirementInBlock program visited)
     | CallCustomBlock(_, customBlockId, _, _) ->
         if Set.contains customBlockId visited then
-            false
+            None
         else
             match program.customBlocks.TryFind customBlockId with
-            | None -> false
-            | Some cb -> blockNeedsShipAtStart program (Set.add customBlockId visited) cb.instructions
-    | _ -> false
+            | None -> None
+            | Some cb -> findShipRequirementInBlock program (Set.add customBlockId visited) cb.instructions
+    | _ -> None
+
+/// First ship-scoped block (outside any `mitSchiff`/`withShip` body) that forces a
+/// pilot-tab ship to be selected before start — `None` when the program can run
+/// ship-less.
+let findShipRequirementAtStart (program: CompiledProgram) : ShipRequirementAtStart option =
+    findShipRequirementInBlock program Set.empty program.instructions
 
 /// Whether a compiled program needs a pilot-tab ship selected before it can start.
 /// Ship-scoped work inside `mitSchiff`/`withShip` scopes (and custom blocks reached
 /// only from there) does not count — those ships are picked up at runtime.
 let programRequiresShip (program: CompiledProgram) : bool =
-    blockNeedsShipAtStart program Set.empty program.instructions
+    findShipRequirementAtStart program |> Option.isSome
 
 /// The real stored labels for a numeric custom-block input (`blocks.ts`'s
 /// `INPUT_TYPE_LABELS_DE`/`_EN`, via `TYPE_LABEL_TO_CHECK`'s `"Number"` entries) —

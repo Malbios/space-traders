@@ -780,6 +780,7 @@ type Strings =
       jobRunnerHeading: string
       pleaseLoginFirst: string
       shipLabel: string
+      shipOptionalHint: string
       chooseOption: string
       start: string
       refreshPilots: string
@@ -998,8 +999,9 @@ let private stringsDe: Strings =
 
       jobRunnerHeading = "Programm ausführen"
       pleaseLoginFirst = "Zuerst anmelden, um ein Schiff auszuwählen."
-      shipLabel = "Schiff: "
-      chooseOption = "-- wählen --"
+      shipLabel = "Schiff (optional): "
+      shipOptionalHint = "„— keins —“ für Programme ohne Schiff (z. B. nur „Kaufe Schiff“). Die Liste unten zeigt laufende Piloten, nicht Programme."
+      chooseOption = "— keins —"
       start = "Start"
       refreshPilots = "Piloten aktualisieren"
       pilotsHeading = "Piloten"
@@ -1213,8 +1215,9 @@ let private stringsEn: Strings =
 
       jobRunnerHeading = "Run program"
       pleaseLoginFirst = "Log in first to select a ship."
-      shipLabel = "Ship: "
-      chooseOption = "-- choose --"
+      shipLabel = "Ship (optional): "
+      shipOptionalHint = "Choose \"— none —\" for ship-less programs (e.g. only \"Buy ship\"). The list below shows running pilots, not programs."
+      chooseOption = "— none —"
       start = "Start"
       refreshPilots = "Refresh pilots"
       pilotsHeading = "Pilots"
@@ -2687,11 +2690,13 @@ let private viewJobRunner model dispatch =
             div {
                 label { s.shipLabel }
                 select {
+                    attr.value (model.selectedShipSymbol |> Option.defaultValue "")
                     on.change (fun e -> dispatch (SelectShip(string e.Value)))
                     option { attr.value ""; s.chooseOption }
                     for ship in state.ships do
                         option { attr.value ship.symbol; ship.symbol }
                 }
+                p { attr.style "font-size: 0.85em; opacity: 0.85; margin: 0.25rem 0 0.5rem 0"; s.shipOptionalHint }
                 button {
                     // No ship-selected gate here (§14 follow-up) — a ship-agnostic
                     // program is meant to start with no ship picked; the server

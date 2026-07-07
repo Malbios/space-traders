@@ -416,6 +416,25 @@ let ``programRequiresShip is false when a ship-scoped custom block is only calle
     Assert.False(Validator.programRequiresShip program)
 
 [<Fact>]
+let ``findShipRequirementAtStart names the first ship-scoped block outside withShip`` () =
+    let program = aProgram [ ApiAction("nav-1", "navigate", Map [ "destination", Literal(StringLit "X1") ]) ]
+    let req = Validator.findShipRequirementAtStart program |> Option.get
+    Assert.Equal("nav-1", req.blockId)
+    Assert.Equal("navigate", req.kind)
+
+[<Fact>]
+let ``findShipRequirementAtStart returns None for purchaseShip only`` () =
+    let program =
+        aProgram
+            [ ApiAction(
+                  "buy-1",
+                  "purchaseShip",
+                  Map [ "shipType", Literal(StringLit "SHIP_MINING_DRONE"); "waypointSymbol", Literal(StringLit "X1-TEST-A1") ]
+              ) ]
+
+    Assert.True(Validator.findShipRequirementAtStart program |> Option.isNone)
+
+[<Fact>]
 let ``programRequiresShip ignores unreachable custom blocks that contain ship-scoped work`` () =
     let shipScopedBlock: CompiledCustomBlock =
         { signature = { inputs = []; output = None; outputFields = None }

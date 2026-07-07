@@ -132,48 +132,57 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                             | Error errors ->
                                 let message = errors |> List.map (fun e -> e.message) |> String.concat "; "
                                 return Error message
-                            | Ok program when SpaceKids.Core.Dsl.Validator.programRequiresShip program && shipSymbol.IsNone ->
-                                let message =
-                                    match locale with
-                                    | SpaceKids.Core.Dsl.De -> "Dieses Programm braucht ein Schiff. Bitte zuerst eins auswählen."
-                                    | SpaceKids.Core.Dsl.En -> "This program needs a ship. Please select one first."
-
-                                return Error message
                             | Ok program ->
-                                let! shipOpt =
-                                    async {
-                                        match shipSymbol with
-                                        | Some sym ->
-                                            let! ship =
-                                                RequestQueue.enqueue dbPath 1 $"getShip:{sym}" None (fun () -> client.GetShip(token, sym))
+                                let shipRequiredMessage =
+                                    match shipSymbol, SpaceKids.Core.Dsl.Validator.findShipRequirementAtStart program with
+                                    | None, Some req ->
+                                        Some(
+                                            match locale with
+                                            | SpaceKids.Core.Dsl.De ->
+                                                $"Dieses Programm braucht ein Schiff wegen Block „{req.kind}“ ({req.blockId}). Wähle oben ein Schiff, packe den Block in „mit Schiff“, oder entferne ihn. „Kaufe Schiff“ allein braucht kein Schiff."
+                                            | SpaceKids.Core.Dsl.En ->
+                                                $"This program needs a ship because of block \"{req.kind}\" ({req.blockId}). Select a ship above, wrap the block in \"with ship\", or remove it. \"Buy ship\" alone does not need a ship."
+                                        )
+                                    | _ -> None
 
-                                            return Some ship
-                                        | None -> return None
-                                    }
+                                match shipRequiredMessage with
+                                | Some message -> return Error message
+                                | None ->
+                                    let! shipOpt =
+                                        async {
+                                            match shipSymbol with
+                                            | Some sym ->
+                                                let! ship =
+                                                    RequestQueue.enqueue dbPath 1 $"getShip:{sym}" None (fun () -> client.GetShip(token, sym))
 
-                                let! agent = RequestQueue.enqueue dbPath 1 "getAgent" None (fun () -> client.GetAgent(token))
+                                                return Some ship
+                                            | None -> return None
+                                        }
 
-                                let! contracts =
-                                    RequestQueue.enqueue dbPath 1 "listContracts" None (fun () -> client.ListContracts(token))
+                                    let! agent = RequestQueue.enqueue dbPath 1 "getAgent" None (fun () -> client.GetAgent(token))
 
-                                // `programs.workspace_id` references `workspaces(id)`
-                                // — ensure that row exists regardless of whether the
-                                // player has clicked "Speichern" yet; the program
-                                // being run is exactly the workspace state to persist.
-                                do! Persistence.WorkspaceRepository.save dbPath programId workspaceJson
-                                let compiledDslJson = Persistence.JobStateJson.serializeProgram program
-                                return!
-                                    JobRunner.startJob
-                                        client
-                                        dbPath
-                                        token
-                                        programId
-                                        compiledDslJson
-                                        program
-                                        shipSymbol
-                                        shipOpt
-                                        agent.shipCount
-                                        (List.length contracts)
+                                    let! contracts =
+                                        RequestQueue.enqueue dbPath 1 "listContracts" None (fun () -> client.ListContracts(token))
+
+                                    // `programs.workspace_id` references `workspaces(id)`
+                                    // — ensure that row exists regardless of whether the
+                                    // player has clicked "Speichern" yet; the program
+                                    // being run is exactly the workspace state to persist.
+                                    do! Persistence.WorkspaceRepository.save dbPath programId workspaceJson
+                                    let compiledDslJson = Persistence.JobStateJson.serializeProgram program
+
+                                    return!
+                                        JobRunner.startJob
+                                            client
+                                            dbPath
+                                            token
+                                            programId
+                                            compiledDslJson
+                                            program
+                                            shipSymbol
+                                            shipOpt
+                                            agent.shipCount
+                                            (List.length contracts)
                     }
             step =
                 fun jobId ->
