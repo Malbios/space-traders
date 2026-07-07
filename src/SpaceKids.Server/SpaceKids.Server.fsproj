@@ -20,6 +20,7 @@
     <Compile Include="Persistence/SettingsRepository.fs" />
     <Compile Include="Persistence/Backup.fs" />
     <Compile Include="RequestQueue.fs" />
+    <Compile Include="GalaxyHydration.fs" />
     <Compile Include="JobRunner.fs" />
     <Compile Include="JobScheduler.fs" />
     <Compile Include="WorkspaceRemoting.fs" />

@@ -36,13 +36,24 @@ type DashboardState =
         markets: Market list
     }
 
-/// Lazy-loaded slice for the Galaxie tab — never fetched during token login.
-type GalaxyCatalog =
+type GalaxySyncStatusDto =
+    {
+        phase: string
+        systemsLoaded: int
+        systemsTotal: int option
+        isStale: bool
+        error: string option
+    }
+
+/// Galaxie-tab snapshot — served from SQLite cache immediately; background sync
+/// fills in paginated systems without blocking this RPC.
+type GalaxyCatalogSnapshot =
     {
         systems: StarSystem list
         selectedSystemSymbol: string
         waypoints: Waypoint list
         markets: Market list
+        sync: GalaxySyncStatusDto
     }
 
 type FactionsSnapshot =
@@ -58,8 +69,10 @@ type AgentService =
         /// Ship/contract/agent only — skips the paginated galaxy catalog (`ListSystems`
         /// and friends) so pilot-completion refreshes don't burn rate limit.
         refreshDashboard: unit -> Async<DashboardState option>
-        /// Paginated galaxy map data — loaded when the Galaxie tab is opened, not at login.
-        loadGalaxyCatalog: unit -> Async<Result<GalaxyCatalog, string>>
+        /// Cached galaxy snapshot (stale-while-revalidate) — fast read, background sync.
+        getGalaxyCatalog: unit -> Async<Result<GalaxyCatalogSnapshot, string>>
+        reloadGalaxy: unit -> Async<Result<unit, string>>
+        reloadSystem: string -> Async<Result<GalaxyCatalogSnapshot, string>>
         loadFactions: unit -> Async<Result<FactionsSnapshot, string>>
         loadSystemWaypoints: string -> Async<Result<Waypoint list, string>>
         loadPublicAgents: unit -> Async<Result<Agent list, string>>
@@ -285,7 +298,10 @@ type Model =
         dashboard: DashboardState option
         dashboardLoading: bool
         dashboardError: string option
-        galaxyCatalogLoading: bool
+        galaxySync: GalaxySyncStatusDto option
+        galaxyInitialLoad: bool
+        galaxyReloading: bool
+        systemReloading: bool
         galaxyCatalogError: string option
         queueStatus: QueueStatusDto option
         selectedShipSymbol: string option
@@ -436,7 +452,10 @@ let initModel =
         dashboard = None
         dashboardLoading = false
         dashboardError = None
-        galaxyCatalogLoading = false
+        galaxySync = None
+        galaxyInitialLoad = false
+        galaxyReloading = false
+        systemReloading = false
         galaxyCatalogError = None
         queueStatus = None
         selectedShipSymbol = None
@@ -517,7 +536,12 @@ type Message =
     | LoadDashboard
     | RefreshDashboard
     | LoadGalaxyCatalog
-    | GalaxyCatalogLoaded of Result<GalaxyCatalog, string>
+    | PollGalaxyCatalog
+    | GalaxyCatalogLoaded of Result<GalaxyCatalogSnapshot, string>
+    | ReloadGalaxy
+    | ReloadGalaxyDone of Result<unit, string>
+    | ReloadSystem
+    | ReloadSystemDone of Result<GalaxyCatalogSnapshot, string>
     | DashboardLoaded of DashboardState option
     | DashboardLoadFailed of string
     | LoadQueueStatus
@@ -719,6 +743,10 @@ type Strings =
       agentsHeading: string
       refreshAgents: string
       agentPublicLine: string * string * int64 * int -> string
+      refreshGalaxy: string
+      refreshSystem: string
+      galaxySyncProgress: int * int option -> string
+      galaxySyncStale: string
 
       queueHeading: string
       refresh: string
@@ -909,6 +937,13 @@ let private stringsDe: Strings =
       agentsHeading = "Agenten"
       refreshAgents = "Agenten aktualisieren"
       agentPublicLine = fun (symbol, hq, credits, ships) -> $"{symbol} — HQ {hq}, {credits} Credits, {ships} Schiffe"
+      refreshGalaxy = "Galaxie aktualisieren"
+      refreshSystem = "System aktualisieren"
+      galaxySyncProgress = fun (loaded, total) ->
+          match total with
+          | Some t -> $"Galaxie wird geladen: {loaded}/{t}"
+          | None -> $"Galaxie wird geladen: {loaded}…"
+      galaxySyncStale = "Zwischengespeicherte Galaxiedaten (Aktualisierung läuft im Hintergrund)."
 
       queueHeading = "Warteschlange"
       refresh = "Daten aktualisieren"
@@ -1114,6 +1149,13 @@ let private stringsEn: Strings =
       agentsHeading = "Agents"
       refreshAgents = "Refresh agents"
       agentPublicLine = fun (symbol, hq, credits, ships) -> $"{symbol} — HQ {hq}, {credits} credits, {ships} ships"
+      refreshGalaxy = "Reload galaxy"
+      refreshSystem = "Reload system"
+      galaxySyncProgress = fun (loaded, total) ->
+          match total with
+          | Some t -> $"Loading galaxy: {loaded}/{t}"
+          | None -> $"Loading galaxy: {loaded}…"
+      galaxySyncStale = "Showing cached galaxy data (refresh running in the background)."
 
       queueHeading = "Queue"
       refresh = "Update data"
@@ -1228,6 +1270,32 @@ let private stringsEn: Strings =
 
 let private stringsFor (locale: string) : Strings = if locale = "en" then stringsEn else stringsDe
 
+let private applyGalaxySnapshot (state: DashboardState) (catalog: GalaxyCatalogSnapshot) : DashboardState =
+    let waypoints =
+        if catalog.selectedSystemSymbol = state.selectedSystemSymbol then
+            catalog.waypoints
+        else
+            state.waypoints
+
+    let markets =
+        if catalog.markets.IsEmpty then state.markets else catalog.markets
+
+    { state with
+        systems = catalog.systems
+        selectedSystemSymbol =
+            if catalog.waypoints.Length > 0 then
+                catalog.selectedSystemSymbol
+            else
+                state.selectedSystemSymbol
+        waypoints = waypoints
+        markets = markets }
+
+let private galaxyPollDelayCmd =
+    Cmd.OfAsync.perform (fun () -> Async.Sleep 1000) () (fun () -> PollGalaxyCatalog)
+
+let private galaxyFollowUpCmds (sync: GalaxySyncStatusDto) : Cmd<Message> =
+    if sync.phase = "syncing" then galaxyPollDelayCmd else Cmd.none
+
 let update
     (js: IJSRuntime)
     (remote: WorkspaceService)
@@ -1327,27 +1395,65 @@ let update
         model,
         Cmd.OfAsync.either (fun () -> agentRemote.refreshDashboard ()) () DashboardLoaded (fun ex -> DashboardLoadFailed ex.Message)
     | LoadGalaxyCatalog ->
-        { model with galaxyCatalogLoading = true; galaxyCatalogError = None },
-        Cmd.OfAsync.either (fun () -> agentRemote.loadGalaxyCatalog ()) () GalaxyCatalogLoaded (fun ex -> GalaxyCatalogLoaded(Error ex.Message))
+        { model with galaxyInitialLoad = true; galaxyCatalogError = None },
+        Cmd.OfAsync.either (fun () -> agentRemote.getGalaxyCatalog ()) () GalaxyCatalogLoaded (fun ex -> GalaxyCatalogLoaded(Error ex.Message))
+    | PollGalaxyCatalog ->
+        model,
+        Cmd.OfAsync.either (fun () -> agentRemote.getGalaxyCatalog ()) () GalaxyCatalogLoaded (fun ex -> GalaxyCatalogLoaded(Error ex.Message))
     | GalaxyCatalogLoaded(Ok catalog) ->
         let mergedDashboard =
             match model.dashboard with
-            | Some existing ->
-                Some
-                    { existing with
-                        systems = catalog.systems
-                        selectedSystemSymbol = catalog.selectedSystemSymbol
-                        waypoints = catalog.waypoints
-                        markets = catalog.markets }
+            | Some existing -> Some(applyGalaxySnapshot existing catalog)
+            | None -> None
+
+        let syncError =
+            catalog.sync.error |> Option.map (fun msg -> $"Galaxie-Sync: {msg}")
+
+        { model with
+            dashboard = mergedDashboard
+            galaxySync = Some catalog.sync
+            galaxyInitialLoad = false
+            galaxyReloading = false
+            galaxyCatalogError = syncError },
+        galaxyFollowUpCmds catalog.sync
+    | GalaxyCatalogLoaded(Error message) ->
+        { model with
+            galaxyInitialLoad = false
+            galaxyReloading = false
+            galaxyCatalogError = Some message },
+        Cmd.none
+    | ReloadGalaxy ->
+        { model with galaxyReloading = true; galaxyCatalogError = None },
+        Cmd.OfAsync.either (fun () -> agentRemote.reloadGalaxy ()) () ReloadGalaxyDone (fun ex -> ReloadGalaxyDone(Error ex.Message))
+    | ReloadGalaxyDone(Ok()) ->
+        { model with galaxyReloading = false },
+        Cmd.ofMsg PollGalaxyCatalog
+    | ReloadGalaxyDone(Error message) ->
+        { model with galaxyReloading = false; galaxyCatalogError = Some message }, Cmd.none
+    | ReloadSystem ->
+        match model.dashboard with
+        | Some state ->
+            { model with systemReloading = true; galaxyCatalogError = None },
+            Cmd.OfAsync.either
+                (fun () -> agentRemote.reloadSystem state.selectedSystemSymbol)
+                ()
+                ReloadSystemDone
+                (fun ex -> ReloadSystemDone(Error ex.Message))
+        | None -> model, Cmd.none
+    | ReloadSystemDone(Ok catalog) ->
+        let mergedDashboard =
+            match model.dashboard with
+            | Some existing -> Some(applyGalaxySnapshot existing catalog)
             | None -> None
 
         { model with
             dashboard = mergedDashboard
-            galaxyCatalogLoading = false
+            galaxySync = Some catalog.sync
+            systemReloading = false
             galaxyCatalogError = None },
-        Cmd.none
-    | GalaxyCatalogLoaded(Error message) ->
-        { model with galaxyCatalogLoading = false; galaxyCatalogError = Some message }, Cmd.none
+        galaxyFollowUpCmds catalog.sync
+    | ReloadSystemDone(Error message) ->
+        { model with systemReloading = false; galaxyCatalogError = Some message }, Cmd.none
     | DashboardLoaded stateOpt ->
         let merged =
             match stateOpt, model.dashboard with
@@ -1832,12 +1938,7 @@ let update
                     Some(LoadPublicAgents)
                 else
                     None
-                if tab = GalaxieTab && model.dashboard.IsSome then
-                    match model.dashboard with
-                    | Some state when state.systems.IsEmpty -> Some LoadGalaxyCatalog
-                    | _ -> None
-                else
-                    None ]
+                if tab = GalaxieTab && model.dashboard.IsSome then Some LoadGalaxyCatalog else None ]
             |> List.choose id
             |> List.map Cmd.ofMsg
 
@@ -2242,6 +2343,36 @@ let private viewGalaxyMap (s: Strings) (model: Model) (state: DashboardState) di
                     }
                 }
         }
+        button {
+            attr.style "font-size: 0.8em; padding: 0.2em 0.6em; margin-top: 0.3rem"
+            attr.disabled model.galaxyReloading
+            on.click (fun _ -> dispatch ReloadGalaxy)
+            s.refreshGalaxy
+        }
+        match model.galaxySync with
+        | Some sync when sync.phase = "syncing" || model.galaxyReloading ->
+            let pct =
+                match sync.systemsTotal with
+                | Some total when total > 0 -> min 100.0 (float sync.systemsLoaded / float total * 100.0)
+                | _ -> min 95.0 (float sync.systemsLoaded / 1.0)
+
+            p { s.galaxySyncProgress(sync.systemsLoaded, sync.systemsTotal) }
+
+            div {
+                attr.style "width: 100%; max-width: 400px; height: 0.5rem; background: #e0e0e0; border-radius: 0.25rem; margin-top: 0.2rem"
+                div {
+                    attr.style (sprintf "width: %.1f%%; height: 100%%; background: #4a90d9; border-radius: 0.25rem; transition: width 0.3s" pct)
+                    ()
+                }
+            }
+        | Some sync when sync.isStale ->
+            p { attr.style "font-size: 0.85em; opacity: 0.8"; s.galaxySyncStale }
+        | _ when model.galaxyInitialLoad ->
+            p { s.loadingEllipsis }
+        | _ -> ()
+        match model.galaxyCatalogError with
+        | Some err -> p { s.errorPrefix err }
+        | None -> ()
         button {
             attr.style "font-size: 0.8em; padding: 0.2em 0.6em; margin-top: 0.3rem"
             on.click (fun _ -> dispatch ResetGalaxyMapView)
@@ -2892,15 +3023,12 @@ let view model dispatch =
                         viewSystemMap s model state dispatch
                         button {
                             attr.style "font-size: 0.8em; padding: 0.2em 0.6em; margin-top: 0.3rem"
-                            attr.disabled model.galaxyCatalogLoading
-                            on.click (fun _ -> dispatch LoadGalaxyCatalog)
-                            s.refresh
+                            attr.disabled model.systemReloading
+                            on.click (fun _ -> dispatch ReloadSystem)
+                            s.refreshSystem
                         }
-                        if model.galaxyCatalogLoading then
+                        if model.systemWaypointsLoading || model.systemReloading then
                             p { s.loadingEllipsis }
-                        match model.galaxyCatalogError with
-                        | Some err -> p { s.errorPrefix err }
-                        | None -> ()
                     }
                     div {
                         attr.style "flex: 0 0 300px; min-width: 250px"

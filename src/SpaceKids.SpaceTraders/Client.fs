@@ -72,6 +72,17 @@ type SpaceTradersClient(httpClient: HttpClient) =
     /// page of ships/contracts/waypoints (confirmed: a real home system alone can
     /// exceed one page of waypoints). Walks every page until `meta.total` is
     /// satisfied.
+    member this.GetListPage<'a>(token: string, path: string, page: int, limit: int) : Async<PagedEnvelope<'a>> =
+        async {
+            let sep = if path.Contains("?") then "&" else "?"
+            use request = new HttpRequestMessage(HttpMethod.Get, $"{path}{sep}page={page}&limit={limit}")
+            request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+            let! response = httpClient.SendAsync(request) |> Async.AwaitTask
+            let! body = response.Content.ReadAsStringAsync() |> Async.AwaitTask
+            this.CheckStatus(response, body)
+            return JsonSerializer.Deserialize<PagedEnvelope<'a>>(body, jsonOptions)
+        }
+
     member private this.GetAllPages<'a>(token: string, path: string) : Async<'a list> =
         let pageSize = 20
 

@@ -789,7 +789,8 @@ let private runInfoRead
             "getSystems",
             (fun () ->
                 async {
-                    let! systems = client.ListSystems(token)
+                    let! agent = client.GetAgent(token)
+                    let! systems = GalaxyHydration.fetchSystemsCached client dbPath agent.symbol token
                     return InfoOk(VList(systems |> List.map systemRecord))
                 })
         | "getSystem" ->

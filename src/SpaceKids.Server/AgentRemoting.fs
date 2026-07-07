@@ -7,48 +7,10 @@ open Bolero.Remoting.Server
 open SpaceKids.SpaceTraders
 open SpaceKids.Client.Main
 
-let private galaxyCatalogTtl = TimeSpan.FromHours(6.0)
-
 let private jsonOptions = JsonSerializerOptions(PropertyNameCaseInsensitive = true)
 
 let fetchSystemsCached (client: SpaceTradersClient) (dbPath: string) (agentSymbol: string) (token: string) : Async<StarSystem list> =
-    let cacheKey = $"galaxy:{agentSymbol}:systems"
-
-    async {
-        match! Persistence.ApiCacheRepository.tryGetFresh dbPath cacheKey galaxyCatalogTtl with
-        | Some json -> return JsonSerializer.Deserialize<StarSystem list>(json, jsonOptions)
-        | None ->
-            let! systems =
-                RequestQueue.enqueue dbPath 1 "GET /systems" None (fun () -> client.ListSystems(token))
-
-            do!
-                Persistence.ApiCacheRepository.put dbPath cacheKey (JsonSerializer.Serialize(systems, jsonOptions))
-
-            return systems
-    }
-
-let private fetchWaypointsCached
-    (client: SpaceTradersClient)
-    (dbPath: string)
-    (agentSymbol: string)
-    (token: string)
-    (systemSymbol: string)
-    : Async<Waypoint list> =
-    let cacheKey = $"galaxy:{agentSymbol}:waypoints:{systemSymbol}"
-
-    async {
-        match! Persistence.ApiCacheRepository.tryGetFresh dbPath cacheKey galaxyCatalogTtl with
-        | Some json -> return JsonSerializer.Deserialize<Waypoint list>(json, jsonOptions)
-        | None ->
-            let! waypoints =
-                RequestQueue.enqueue dbPath 1 $"GET /systems/{systemSymbol}/waypoints" None (fun () ->
-                    client.ListWaypoints(token, systemSymbol))
-
-            do!
-                Persistence.ApiCacheRepository.put dbPath cacheKey (JsonSerializer.Serialize(waypoints, jsonOptions))
-
-            return waypoints
-    }
+    GalaxyHydration.fetchSystemsCached client dbPath agentSymbol token
 
 /// Takes the agent already fetched by the caller — no need to re-fetch it.
 /// Priority 1 (§13's top tier): these are direct interactive user actions, not
@@ -74,13 +36,8 @@ let loadRestOfState
             if includeGalaxyCatalog then
                 async {
                     let! systems = fetchSystemsCached client dbPath agent.symbol token
-                    let! waypoints = fetchWaypointsCached client dbPath agent.symbol token hqSystem
-
-                    let! market =
-                        RequestQueue.enqueue dbPath 1 "GET /systems/{system}/waypoints/{waypoint}/market" None (fun () ->
-                            client.GetMarket(token, hqSystem, agent.headquarters))
-
-                    return systems, waypoints, [ market ]
+                    let! snapshot = GalaxyHydration.buildCatalogSnapshot client dbPath agent token
+                    return systems, snapshot.waypoints, snapshot.markets
                 }
             else
                 async {
@@ -266,19 +223,19 @@ type AgentRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                 fun token ->
                     async {
                         try
-                            // Deliberately bypasses `RequestQueue.enqueue` for this one
-                            // verification call: the Worker pauses *all* dispatching while
-                            // `serverResetFlag` is set (§13), and that flag can only be
-                            // cleared below, after a fresh token is confirmed valid — routing
-                            // this call through the same paused queue would mean nothing could
-                            // ever clear it (the exact deadlock a real user hit). A one-off
-                            // interactive token check doesn't need the queue's
-                            // retry/backoff/priority-aging machinery anyway. Every other call
-                            // in `loadRestOfState` below still goes through the queue normally.
                             let! agent = client.GetAgent(token)
+                            let! stored = Persistence.AgentRepository.loadStoredAgent dbPath
+
+                            let tokenChanged =
+                                match stored with
+                                | Some(symbol, existingToken) -> symbol <> agent.symbol || existingToken <> token
+                                | None -> true
+
                             do! Persistence.AgentRepository.saveAgent dbPath agent.symbol token
-                            do! Persistence.ApiCacheRepository.invalidateForAgent dbPath agent.symbol
-                            // a fresh, accepted token means any prior server-reset is resolved (§13).
+
+                            if tokenChanged then
+                                do! Persistence.ApiCacheRepository.invalidateForAgent dbPath agent.symbol
+
                             RequestQueue.clearServerReset ()
                             let! state = loadRestOfState client dbPath agent token false
                             return Ok state
@@ -306,7 +263,7 @@ type AgentRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                         | None -> return None
                         | Some(_, token) -> return! loadDashboardWithToken client dbPath token false
                     }
-            loadGalaxyCatalog =
+            getGalaxyCatalog =
                 fun () ->
                     async {
                         let! stored = Persistence.AgentRepository.loadStoredAgent dbPath
@@ -318,25 +275,47 @@ type AgentRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                                 let! agent =
                                     RequestQueue.enqueue dbPath 1 "GET /my/agent" None (fun () -> client.GetAgent(token))
 
-                                let hqSystem = Waypoint.systemSymbolOf agent.headquarters
-                                let! systems = fetchSystemsCached client dbPath agent.symbol token
-                                let! waypoints = fetchWaypointsCached client dbPath agent.symbol token hqSystem
-
-                                let! market =
-                                    RequestQueue.enqueue dbPath 1 "GET /systems/{system}/waypoints/{waypoint}/market" None (fun () ->
-                                        client.GetMarket(token, hqSystem, agent.headquarters))
-
-                                return
-                                    Ok
-                                        { systems = systems
-                                          selectedSystemSymbol = hqSystem
-                                          waypoints = waypoints
-                                          markets = [ market ] }
+                                let! snapshot = GalaxyHydration.buildCatalogSnapshot client dbPath agent token
+                                return Ok snapshot
                             with
                             | SpaceTradersApiException(statusCode, _) ->
                                 return Error $"Galaxiedaten konnten nicht geladen werden (Status {statusCode})."
                             | ex ->
-                                return Error $"Verbindung zu SpaceTraders fehlgeschlagen: {ex.Message}"
+                                return Error $"Galaxiedaten konnten nicht geladen werden: {ex.Message}"
+                    }
+            reloadGalaxy =
+                fun () ->
+                    async {
+                        let! stored = Persistence.AgentRepository.loadStoredAgent dbPath
+
+                        match stored with
+                        | None -> return Error "Nicht angemeldet."
+                        | Some(agentSymbol, token) ->
+                            try
+                                do! GalaxyHydration.reloadGalaxy client dbPath agentSymbol token
+                                return Ok ()
+                            with ex ->
+                                return Error $"Galaxie konnte nicht aktualisiert werden: {ex.Message}"
+                    }
+            reloadSystem =
+                fun systemSymbol ->
+                    async {
+                        let! stored = Persistence.AgentRepository.loadStoredAgent dbPath
+
+                        match stored with
+                        | None -> return Error "Nicht angemeldet."
+                        | Some(_, token) ->
+                            try
+                                let! agent =
+                                    RequestQueue.enqueue dbPath 1 "GET /my/agent" None (fun () -> client.GetAgent(token))
+
+                                let! snapshot = GalaxyHydration.reloadSystem client dbPath agent token systemSymbol
+                                return Ok snapshot
+                            with
+                            | SpaceTradersApiException(statusCode, _) ->
+                                return Error $"Systemdaten konnten nicht aktualisiert werden (Status {statusCode})."
+                            | ex ->
+                                return Error $"Systemdaten konnten nicht aktualisiert werden: {ex.Message}"
                     }
             getWaypointMarket =
                 fun waypointSymbol ->
