@@ -9,22 +9,43 @@ open SpaceKids.Client.Main
 /// Takes the agent already fetched by the caller — no need to re-fetch it.
 /// Priority 1 (§13's top tier): these are direct interactive user actions, not
 /// background/job work.
-let private loadRestOfState (client: SpaceTradersClient) (dbPath: string) (agent: Agent) (token: string) : Async<DashboardState> =
+///
+/// `includeGalaxyCatalog` gates the expensive, rarely-changing reads (`ListSystems`
+/// walks every paginated page in the galaxy; HQ waypoints/market are similar).
+/// Pilot-completion refreshes pass `false` and the client merges ship/contract/agent
+/// deltas onto the cached galaxy snapshot — see `refreshDashboard` below.
+let loadRestOfState
+    (client: SpaceTradersClient)
+    (dbPath: string)
+    (agent: Agent)
+    (token: string)
+    (includeGalaxyCatalog: bool)
+    : Async<DashboardState> =
     async {
         let! ships = RequestQueue.enqueue dbPath 1 "GET /my/ships" None (fun () -> client.ListShips(token))
         let! contracts = RequestQueue.enqueue dbPath 1 "GET /my/contracts" None (fun () -> client.ListContracts(token))
         let hqSystem = Waypoint.systemSymbolOf agent.headquarters
 
-        let! systems =
-            RequestQueue.enqueue dbPath 1 "GET /systems" None (fun () -> client.ListSystems(token))
+        let! systems, waypoints, markets =
+            if includeGalaxyCatalog then
+                async {
+                    let! systems =
+                        RequestQueue.enqueue dbPath 1 "GET /systems" None (fun () -> client.ListSystems(token))
 
-        let! waypoints =
-            RequestQueue.enqueue dbPath 1 "GET /systems/{system}/waypoints" None (fun () ->
-                client.ListWaypoints(token, hqSystem))
+                    let! waypoints =
+                        RequestQueue.enqueue dbPath 1 "GET /systems/{system}/waypoints" None (fun () ->
+                            client.ListWaypoints(token, hqSystem))
 
-        let! market =
-            RequestQueue.enqueue dbPath 1 "GET /systems/{system}/waypoints/{waypoint}/market" None (fun () ->
-                client.GetMarket(token, hqSystem, agent.headquarters))
+                    let! market =
+                        RequestQueue.enqueue dbPath 1 "GET /systems/{system}/waypoints/{waypoint}/market" None (fun () ->
+                            client.GetMarket(token, hqSystem, agent.headquarters))
+
+                    return systems, waypoints, [ market ]
+                }
+            else
+                async {
+                    return [], [], []
+                }
 
         return
             { agent = agent
@@ -33,7 +54,28 @@ let private loadRestOfState (client: SpaceTradersClient) (dbPath: string) (agent
               systems = systems
               selectedSystemSymbol = hqSystem
               waypoints = waypoints
-              markets = [ market ] }
+              markets = markets }
+    }
+
+let private loadDashboardWithToken (client: SpaceTradersClient) (dbPath: string) (token: string) (includeGalaxyCatalog: bool) : Async<DashboardState option> =
+    async {
+        try
+            let! agent = RequestQueue.enqueue dbPath 1 "GET /my/agent" None (fun () -> client.GetAgent(token))
+            let! state = loadRestOfState client dbPath agent token includeGalaxyCatalog
+            return Some state
+        with _ ->
+            let! current = Persistence.AgentRepository.loadStoredAgent dbPath
+
+            match current with
+            | Some(_, freshToken) when freshToken <> token ->
+                try
+                    let! agent = client.GetAgent(freshToken)
+                    RequestQueue.clearServerReset ()
+                    let! state = loadRestOfState client dbPath agent freshToken includeGalaxyCatalog
+                    return Some state
+                with _ ->
+                    return None
+            | _ -> return None
     }
 
 let loadSystemWaypoints (client: SpaceTradersClient) (dbPath: string) (token: string) (systemSymbol: string) : Async<Result<Waypoint list, string>> =
@@ -197,7 +239,7 @@ type AgentRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                             do! Persistence.AgentRepository.saveAgent dbPath agent.symbol token
                             // a fresh, accepted token means any prior server-reset is resolved (§13).
                             RequestQueue.clearServerReset ()
-                            let! state = loadRestOfState client dbPath agent token
+                            let! state = loadRestOfState client dbPath agent token true
                             return Ok state
                         with
                         | SpaceTradersApiException(statusCode, _) ->
@@ -209,45 +251,19 @@ type AgentRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                 fun () ->
                     async {
                         let! stored = Persistence.AgentRepository.loadStoredAgent dbPath
+
                         match stored with
                         | None -> return None
-                        | Some(_, token) ->
-                            try
-                                let! agent = RequestQueue.enqueue dbPath 1 "GET /my/agent" None (fun () -> client.GetAgent(token))
-                                let! state = loadRestOfState client dbPath agent token
-                                return Some state
-                            with _ ->
-                                // The token used above can go stale mid-flight: this call is
-                                // queued behind `RequestQueue`'s Worker, which pauses entirely
-                                // once a reset is detected, so a login that completes *while
-                                // this request is still queued* leaves it holding the old
-                                // token by the time it's finally dispatched. Check whether a
-                                // fresher token was saved since, and retry once with it
-                                // directly (same queue-bypass reasoning as `submitToken`)
-                                // before concluding this is a genuine, unrecovered reset.
-                                let! current = Persistence.AgentRepository.loadStoredAgent dbPath
+                        | Some(_, token) -> return! loadDashboardWithToken client dbPath token true
+                    }
+            refreshDashboard =
+                fun () ->
+                    async {
+                        let! stored = Persistence.AgentRepository.loadStoredAgent dbPath
 
-                                match current with
-                                | Some(_, freshToken) when freshToken <> token ->
-                                    try
-                                        let! agent = client.GetAgent(freshToken)
-                                        // A stale closure's 401 above already paused the shared
-                                        // Worker via `markServerReset` — proving this fresher
-                                        // token works means the account is fine, so resume it
-                                        // (same as `submitToken`'s own recovery clear).
-                                        RequestQueue.clearServerReset ()
-                                        let! state = loadRestOfState client dbPath agent freshToken
-                                        return Some state
-                                    with _ -> return None
-                                | _ ->
-                                    // The stored token can be dead (post server-reset)
-                                    // independently of anything the player just did -- this
-                                    // fires automatically at page load and every few
-                                    // `MapTick`s (`Main.fs`), so it must degrade to "not
-                                    // logged in" rather than crash the request; the
-                                    // token/login form is already what renders when this is
-                                    // `None`.
-                                    return None
+                        match stored with
+                        | None -> return None
+                        | Some(_, token) -> return! loadDashboardWithToken client dbPath token false
                     }
             getWaypointMarket =
                 fun waypointSymbol ->

@@ -271,3 +271,29 @@ let ``loadSystemWaypoints returns waypoints for a different system`` () =
         match result with
         | Ok waypoints -> Assert.NotEmpty(waypoints)
         | Error message -> Assert.Fail(message))
+
+[<Fact>]
+let ``loadRestOfState skips the galaxy catalog when includeGalaxyCatalog is false`` () =
+    use fixture = new AgentFixture()
+
+    withAgentTest (fun dbPath ->
+        let agent = fixture.Client.GetAgent(App.seededToken) |> Async.RunSynchronously
+        AgentRepository.saveAgent dbPath agent.symbol App.seededToken |> Async.RunSynchronously
+
+        let full =
+            withPumpedQueue 20.0 (fun () ->
+                AgentRemoting.loadRestOfState fixture.Client dbPath agent App.seededToken true
+                |> Async.RunSynchronously)
+
+        let refresh =
+            withPumpedQueue 20.0 (fun () ->
+                AgentRemoting.loadRestOfState fixture.Client dbPath agent App.seededToken false
+                |> Async.RunSynchronously)
+
+        Assert.NotEmpty(full.systems)
+        Assert.NotEmpty(full.waypoints)
+        Assert.NotEmpty(full.markets)
+        Assert.Empty(refresh.systems)
+        Assert.Empty(refresh.waypoints)
+        Assert.Empty(refresh.markets)
+        Assert.NotEmpty(refresh.ships))

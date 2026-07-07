@@ -46,6 +46,9 @@ type AgentService =
     {
         submitToken: string -> Async<Result<DashboardState, string>>
         loadDashboard: unit -> Async<DashboardState option>
+        /// Ship/contract/agent only — skips the paginated galaxy catalog (`ListSystems`
+        /// and friends) so pilot-completion refreshes don't burn rate limit.
+        refreshDashboard: unit -> Async<DashboardState option>
         loadFactions: unit -> Async<Result<FactionsSnapshot, string>>
         loadSystemWaypoints: string -> Async<Result<Waypoint list, string>>
         loadPublicAgents: unit -> Async<Result<Agent list, string>>
@@ -497,6 +500,7 @@ type Message =
     | SubmitToken
     | TokenSubmitted of Result<DashboardState, string>
     | LoadDashboard
+    | RefreshDashboard
     | DashboardLoaded of DashboardState option
     | DashboardLoadFailed of string
     | LoadQueueStatus
@@ -1296,17 +1300,28 @@ let update
     | TokenSubmitted(Error message) ->
         { model with dashboardLoading = false; dashboardError = Some message }, Cmd.none
     | LoadDashboard ->
-        // Event-driven: fires once at page load (`Init`'s batch) and again whenever
-        // `PilotsLoaded` detects a job just transitioned into a terminal state --
-        // never on a timer. Unlike `SubmitToken`, a real user action, this shouldn't
-        // flash a loading indicator for something the player never asked for, so
-        // `dashboardLoading` is left untouched here. A failure (e.g. a
-        // deserialization error on unexpected real-account data) must still surface
-        // visibly rather than leaving the page stuck with no error and no result.
+        // Full catalog load (paginated `ListSystems` + HQ waypoints/market): page
+        // init, manual "Daten aktualisieren", and token submit — not pilot polling.
         model,
         Cmd.OfAsync.either (fun () -> agentRemote.loadDashboard ()) () DashboardLoaded (fun ex -> DashboardLoadFailed ex.Message)
+    | RefreshDashboard ->
+        // Volatile slice only (agent/ships/contracts) — `PilotsLoaded` after a job
+        // finishes, contract accept/fulfill. Galaxy fields are merged from cache.
+        model,
+        Cmd.OfAsync.either (fun () -> agentRemote.refreshDashboard ()) () DashboardLoaded (fun ex -> DashboardLoadFailed ex.Message)
     | DashboardLoaded stateOpt ->
-        { model with dashboard = stateOpt }, Cmd.none
+        let merged =
+            match stateOpt, model.dashboard with
+            | Some incoming, Some existing when incoming.systems.IsEmpty ->
+                Some
+                    { incoming with
+                        systems = existing.systems
+                        waypoints = existing.waypoints
+                        markets = existing.markets
+                        selectedSystemSymbol = existing.selectedSystemSymbol }
+            | _ -> stateOpt
+
+        { model with dashboard = merged }, Cmd.none
     | DashboardLoadFailed message ->
         { model with dashboardError = Some message }, Cmd.none
     | LoadQueueStatus ->
@@ -1386,7 +1401,7 @@ let update
             watchModeLocked = anyActive
             serverUnreachable = false
             pilotsPollBackoffTicks = 1 },
-        Cmd.batch [ readOnlyCmd; if justCompleted then Cmd.ofMsg LoadDashboard else Cmd.none ]
+        Cmd.batch [ readOnlyCmd; if justCompleted then Cmd.ofMsg RefreshDashboard else Cmd.none ]
     | WatchModeReadOnlySet value ->
         { model with readOnly = value }, Cmd.none
     | PausePilot jobId ->
@@ -1803,7 +1818,7 @@ let update
             ContractActionCompleted
             (fun ex -> ContractActionCompleted(Error ex.Message))
     | ContractActionCompleted(Ok()) ->
-        { model with acceptingContractId = None; fulfillingContractId = None }, Cmd.ofMsg LoadDashboard
+        { model with acceptingContractId = None; fulfillingContractId = None }, Cmd.ofMsg RefreshDashboard
     | ContractActionCompleted(Error message) ->
         { model with acceptingContractId = None; fulfillingContractId = None; contractActionError = Some message }, Cmd.none
     | ToggleContractsHistory -> { model with contractsHistoryExpanded = not model.contractsHistoryExpanded }, Cmd.none
