@@ -34,7 +34,8 @@ const ACTION_MAP = {
     "siphon-resources": "siphon",
     "transfer-cargo": "transferCargo",
     "warp-ship": "warp",
-    "supply-construction": null, // missing action block
+    "supply-construction": "supplyConstruction",
+    "patch-ship-nav": "patchShipNav",
 };
 
 const INFO_MAP = {
@@ -46,6 +47,15 @@ const INFO_MAP = {
     "get-contracts": "getContracts",
     "get-my-ship-cargo": "getCargo",
     "get-my-agent": "getCredits", // partial: only credits surfaced
+    "get-agents": "getPublicAgents",
+    "get-agent": "getPublicAgent",
+    "get-supply-chain": "getSupplyChain",
+    "get-ship-modules": "getShipModules",
+    "get-mounts": "getShipMounts",
+    "get-systems": "getSystems",
+    "get-system": "getSystem",
+    "get-construction": "getConstruction",
+    "get-jump-gate": "getJumpGate",
 };
 
 /** Endpoints we intentionally skip (meta/auth/websocket/register) */

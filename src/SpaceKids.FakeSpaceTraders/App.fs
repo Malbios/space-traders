@@ -137,6 +137,12 @@ let private makeCooldown (shipSymbol: string) : Cooldown =
 let private withCooldown (ship: Ship) : Ship =
     { ship with cooldown = makeCooldown ship.symbol }
 
+let private cargoUnitsOf (ship: Ship) (tradeSymbol: string) : int =
+    ship.cargo.inventory
+    |> List.tryFind (fun i -> i.symbol = tradeSymbol)
+    |> Option.map (fun i -> i.units)
+    |> Option.defaultValue 0
+
 let private removeCargoUnits (ship: Ship) (tradeSymbol: string) (units: int) : Ship =
     let newInventory =
         ship.cargo.inventory
@@ -152,6 +158,14 @@ let private removeCargoUnits (ship: Ship) (tradeSymbol: string) (units: int) : S
             { ship.cargo with
                 units = max 0 (ship.cargo.units - units)
                 inventory = newInventory } }
+
+let private tryRemoveCargoUnits (ship: Ship) (tradeSymbol: string) (units: int) : Result<Ship, string> =
+    if units <= 0 then
+        Error "units must be positive"
+    elif cargoUnitsOf ship tradeSymbol < units then
+        Error $"insufficient cargo: have {cargoUnitsOf ship tradeSymbol}, need {units}"
+    else
+        Ok(removeCargoUnits ship tradeSymbol units)
 
 let private contractDeliveriesComplete (contract: Contract) : bool =
     contract.terms.deliver |> List.forall (fun g -> g.unitsFulfilled >= g.unitsRequired)
@@ -851,35 +865,44 @@ let configureApp (app: WebApplication) =
                                 match constructions.TryFind waypointSymbol with
                                 | None -> return Results.NotFound()
                                 | Some _ ->
-                                    let updatedCargo, updatedConstruction =
+                                    match
                                         lock
                                             shipLock
                                             (fun () ->
-                                                let current = removeCargoUnits ships.[shipSymbol] tradeSymbol units
-                                                ships <- ships.Add(shipSymbol, current)
+                                                match tryRemoveCargoUnits ships.[shipSymbol] tradeSymbol units with
+                                                | Error message -> Error message
+                                                | Ok updatedShip ->
+                                                    ships <- ships.Add(shipSymbol, updatedShip)
 
-                                                let construction = constructions.[waypointSymbol]
+                                                    let construction = constructions.[waypointSymbol]
 
-                                                let updatedMaterials =
-                                                    construction.materials
-                                                    |> List.map (fun m ->
-                                                        if m.tradeSymbol = tradeSymbol then
-                                                            { m with fulfilled = m.fulfilled + units }
-                                                        else
-                                                            m)
+                                                    let updatedMaterials =
+                                                        construction.materials
+                                                        |> List.map (fun m ->
+                                                            if m.tradeSymbol = tradeSymbol then
+                                                                { m with fulfilled = m.fulfilled + units }
+                                                            else
+                                                                m)
 
-                                                let isComplete =
-                                                    updatedMaterials |> List.forall (fun m -> m.fulfilled >= m.required)
+                                                    let isComplete =
+                                                        updatedMaterials |> List.forall (fun m -> m.fulfilled >= m.required)
 
-                                                let updatedConstruction =
-                                                    { construction with
-                                                        materials = updatedMaterials
-                                                        isComplete = isComplete }
+                                                    let updatedConstruction =
+                                                        { construction with
+                                                            materials = updatedMaterials
+                                                            isComplete = isComplete }
 
-                                                constructions <- constructions.Add(waypointSymbol, updatedConstruction)
-                                                current.cargo, updatedConstruction)
-
-                                    return ok { construction = updatedConstruction; cargo = updatedCargo }
+                                                    constructions <- constructions.Add(waypointSymbol, updatedConstruction)
+                                                    Ok(updatedShip.cargo, updatedConstruction))
+                                    with
+                                    | Error message ->
+                                        return
+                                            Results.Json(
+                                                {| error = {| code = 4001; message = message; requestId = "fake-supply" |} |},
+                                                statusCode = 400
+                                            )
+                                    | Ok(updatedCargo, updatedConstruction) ->
+                                        return ok { construction = updatedConstruction; cargo = updatedCargo }
                             })))
     )
     |> ignore
@@ -1718,6 +1741,13 @@ let configureApp (app: WebApplication) =
     |> ignore
 
     app
+
+/// Test-only: seeds cargo on a ship without going through buy/extract — keeps supply-
+/// construction tests deterministic without a long setup chain.
+let seedCargoForTests (shipSymbol: string) (tradeSymbol: string) (units: int) =
+    lock shipLock (fun () ->
+        let current = addCargoUnits ships.[shipSymbol] tradeSymbol units
+        ships <- ships.Add(shipSymbol, current))
 
 /// Test-only: resets mutable ship/agent/fault state between test cases (this module is
 /// a process-wide singleton, matching `RequestQueue`/`JobRunner`'s own pattern).

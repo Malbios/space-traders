@@ -102,6 +102,115 @@ let ``A wrong token raises SpaceTradersApiException with 401`` () =
     | _ -> Assert.Fail("expected SpaceTradersApiException")
 
 // ---------------------------------------------------------------------------
+// Extended fake API coverage — endpoints added for new Blockly blocks / dashboard
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``ListAgents returns the seeded public agents`` () =
+    use fixture = new FakeSpaceTradersFixture()
+    let agents = fixture.Client.ListAgents(App.seededToken) |> Async.RunSynchronously
+    Assert.Equal(2, agents.Length)
+    Assert.Contains(agents, fun a -> a.symbol = "FAKE-AGENT")
+    Assert.Contains(agents, fun a -> a.symbol = "OTHER-AGENT")
+
+[<Fact>]
+let ``GetPublicAgent returns a single seeded agent`` () =
+    use fixture = new FakeSpaceTradersFixture()
+    let agent = fixture.Client.GetPublicAgent(App.seededToken, "OTHER-AGENT") |> Async.RunSynchronously
+    Assert.Equal("OTHER-AGENT", agent.symbol)
+    Assert.Equal("X1-NEARBY-A1", agent.headquarters)
+
+[<Fact>]
+let ``ListSystems and GetSystem return the seeded star systems`` () =
+    use fixture = new FakeSpaceTradersFixture()
+    let systems = fixture.Client.ListSystems(App.seededToken) |> Async.RunSynchronously
+    Assert.Equal(2, systems.Length)
+    Assert.Contains(systems, fun s -> s.symbol = "X1-TEST")
+    Assert.Contains(systems, fun s -> s.symbol = "X1-NEARBY")
+
+    let nearby = fixture.Client.GetSystem(App.seededToken, "X1-NEARBY") |> Async.RunSynchronously
+    Assert.Equal("X1-NEARBY", nearby.symbol)
+
+[<Fact>]
+let ``GetJumpGate returns the seeded jump gate`` () =
+    use fixture = new FakeSpaceTradersFixture()
+    let gate = fixture.Client.GetJumpGate(App.seededToken, "X1-NEARBY", "X1-NEARBY-JG1") |> Async.RunSynchronously
+    Assert.Equal("X1-NEARBY-JG1", gate.symbol)
+    Assert.Contains(gate.connections, fun s -> s = "X1-TEST")
+
+[<Fact>]
+let ``GetConstruction returns the seeded construction site`` () =
+    use fixture = new FakeSpaceTradersFixture()
+    let construction = fixture.Client.GetConstruction(App.seededToken, "X1-NEARBY", "X1-NEARBY-C1") |> Async.RunSynchronously
+    Assert.Equal("X1-NEARBY-C1", construction.symbol)
+    Assert.False(construction.isComplete)
+    Assert.Contains(construction.materials, fun m -> m.tradeSymbol = "IRON" && m.required = 100 && m.fulfilled = 0)
+
+[<Fact>]
+let ``SupplyConstruction deducts cargo and advances construction materials`` () =
+    use fixture = new FakeSpaceTradersFixture()
+
+    try
+        App.seedCargoForTests "FAKE-AGENT-1" "IRON" 20
+
+        let result =
+            fixture.Client.SupplyConstruction(App.seededToken, "X1-NEARBY", "X1-NEARBY-C1", "FAKE-AGENT-1", "IRON", 15)
+            |> Async.RunSynchronously
+
+        Assert.Equal(5, result.cargo.units)
+        Assert.Equal(15, result.construction.materials.[0].fulfilled)
+        Assert.False(result.construction.isComplete)
+    finally
+        App.resetForTests ()
+
+[<Fact>]
+let ``SupplyConstruction without enough cargo raises SpaceTradersApiException with 400`` () =
+    use fixture = new FakeSpaceTradersFixture()
+
+    let ex =
+        Assert.Throws<SpaceTradersApiException>(fun () ->
+            fixture.Client.SupplyConstruction(App.seededToken, "X1-NEARBY", "X1-NEARBY-C1", "FAKE-AGENT-1", "IRON", 1)
+            |> Async.RunSynchronously
+            |> ignore)
+
+    match ex :> exn with
+    | SpaceTradersApiException(statusCode, _) -> Assert.Equal(400, statusCode)
+    | _ -> Assert.Fail("expected SpaceTradersApiException")
+
+[<Fact>]
+let ``PatchShipNav updates the ship's flight mode`` () =
+    use fixture = new FakeSpaceTradersFixture()
+
+    try
+        let result = fixture.Client.PatchShipNav(App.seededToken, "FAKE-AGENT-1", "BURN") |> Async.RunSynchronously
+        Assert.Equal("BURN", result.nav.flightMode)
+
+        let ship = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+        Assert.Equal("BURN", ship.nav.flightMode)
+    finally
+        App.resetForTests ()
+
+[<Fact>]
+let ``GetSupplyChain returns the seeded export map`` () =
+    use fixture = new FakeSpaceTradersFixture()
+    let chain = fixture.Client.GetSupplyChain(App.seededToken) |> Async.RunSynchronously
+    Assert.Contains(chain, fun e -> e.exportSymbol = "FOOD" && e.importSymbol = "FUEL")
+    Assert.Contains(chain, fun e -> e.exportSymbol = "FOOD" && e.importSymbol = "IRON")
+
+[<Fact>]
+let ``GetShipNav GetShipModules and GetShipMounts return seeded fixtures`` () =
+    use fixture = new FakeSpaceTradersFixture()
+    let nav = fixture.Client.GetShipNav(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+    Assert.Equal("X1-TEST-A1", nav.nav.waypointSymbol)
+    Assert.Equal("CRUISE", nav.nav.flightMode)
+
+    let modules = fixture.Client.GetShipModules(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+    Assert.Contains(modules.modules, fun m -> m.symbol = "MODULE_MINERAL_PROCESSOR_I")
+
+    let mounts = fixture.Client.GetShipMounts(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+    Assert.Contains(mounts.mounts, fun m -> m.symbol = "MOUNT_MINING_LASER_I")
+
+// ---------------------------------------------------------------------------
 // Milestone 5: request queue (§13/§19) — priority/aging, retry classification,
 // server-reset detection, and API-unreachable handling, exercised against the fake's
 // fault injection (§13a) where the fake can produce the failure at all.

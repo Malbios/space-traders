@@ -65,6 +65,7 @@ let private toSnapshot (ship: Ship) : ShipSnapshot =
     { navStatus = ship.nav.status
       navWaypoint = ship.nav.waypointSymbol
       navArrival = Some ship.nav.route.arrival
+      flightMode = ship.nav.flightMode
       cargoUnits = ship.cargo.units
       cargoInventory = ship.cargo.inventory |> List.map (fun i -> i.symbol, i.units) |> Map.ofList
       cooldownExpiration = cooldownExpirationOf ship.cooldown

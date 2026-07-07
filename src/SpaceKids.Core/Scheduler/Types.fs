@@ -65,6 +65,9 @@ type ShipSnapshot =
     { navStatus: string
       navWaypoint: string
       navArrival: string option
+      /// Reconciliation signal for `patchShipNav` — nav status alone is unchanged
+      /// by a flight-mode-only patch, so this must be tracked separately.
+      flightMode: string
       cargoUnits: int
       cargoInventory: Map<string, int>
       cooldownExpiration: string option
@@ -114,6 +117,7 @@ type QueuedAction =
 type ActionBaseline =
     | NavigateBaseline of intendedWaypoint: string
     | DockOrbitBaseline of expectedStatus: string
+    | FlightModeBaseline of intendedFlightMode: string
     | CargoBaseline of unitsBefore: int
     | ExtractBaseline of cooldownExpirationBefore: string option * unitsBefore: int
     | SurveyBaseline of cooldownExpirationBefore: string option

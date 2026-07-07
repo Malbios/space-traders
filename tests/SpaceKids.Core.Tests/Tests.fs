@@ -62,6 +62,38 @@ let ``compiles purchaseShip's WAYPOINT input to the "waypointSymbol" arg key`` (
         )
 
 [<Fact>]
+let ``compiles supplyConstruction and patchShipNav arg keys`` () =
+    let json =
+        """
+        { "blocks": { "languageVersion": 0, "blocks": [
+            { "type": "supplyConstruction", "id": "b1", "inputs": {
+                "WAYPOINT_SYMBOL": { "block": """ + textBlock "b1a" "X1-NEARBY-C1" + """ },
+                "TRADE_SYMBOL": { "block": """ + textBlock "b1b" "IRON" + """ },
+                "UNITS": { "block": { "type": "math_number", "id": "b1c", "fields": { "NUM": 10 } } }
+            } },
+            { "type": "patchShipNav", "id": "b2", "inputs": {
+                "FLIGHT_MODE": { "block": """ + textBlock "b2a" "BURN" + """ }
+            } }
+        ] } }
+        """
+
+    match Compiler.compileWorkspace De noCustomBlocks json with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        Assert.Equal<Instruction list>(
+            [ ApiAction(
+                  "b1",
+                  "supplyConstruction",
+                  Map
+                      [ "waypointSymbol", Literal(StringLit "X1-NEARBY-C1")
+                        "tradeSymbol", Literal(StringLit "IRON")
+                        "units", Literal(NumberLit 10.0) ]
+              )
+              ApiAction("b2", "patchShipNav", Map [ "flightMode", Literal(StringLit "BURN") ]) ],
+            program.instructions
+        )
+
+[<Fact>]
 let ``an information block used inside an expression compiles to a hoisted temp (the §10 example)`` () =
     let json =
         """

@@ -70,6 +70,7 @@ let private defaultShip: ShipSnapshot =
     { navStatus = "DOCKED"
       navWaypoint = "X1-TEST-A1"
       navArrival = None
+      flightMode = "CRUISE"
       cargoUnits = 0
       cargoInventory = Map.empty
       cooldownExpiration = None
@@ -1140,6 +1141,116 @@ let ``refuel reconciliation both branches`` () =
     let refueled = { lowFuel with fuelCurrent = 400 }
     let job3b, _ = Step.step clock job2b (ApiResponseReceived("job1", 0, ReconciliationShip refueled))
     Assert.Equal(Completed, job3b.status)
+
+[<Fact>]
+let ``supplyConstruction happy path advances immediately`` () =
+    let clock = fakeClock (ref epoch)
+    let shipWithCargo = { defaultShip with cargoUnits = 20; cargoInventory = Map [ "IRON", 20 ] }
+
+    let job0 =
+        mkJob
+            [ ApiAction(
+                  "b1",
+                  "supplyConstruction",
+                  Map
+                      [ "waypointSymbol", Literal(StringLit "X1-NEARBY-C1")
+                        "tradeSymbol", Literal(StringLit "IRON")
+                        "units", Literal(NumberLit 15.0) ]
+              ) ]
+            (Some shipWithCargo)
+
+    let job1, _ = Step.step clock job0 WakeTick
+    Assert.Equal(AwaitingApiResponse(0, DoSupplyConstruction("X1-NEARBY-C1", "IRON", 15), CargoBaseline 20), job1.status)
+
+    let result = TradeOk(5, Map [ "IRON", 5 ], "SUPPLY", "IRON", 15, 0)
+    let job2, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, result))
+    Assert.Equal(Completed, job2.status)
+    Assert.Equal(5, job2.lastKnownShip.Value.cargoUnits)
+
+[<Fact>]
+let ``supplyConstruction reconciliation both branches`` () =
+    let clock = fakeClock (ref epoch)
+    let shipWithCargo = { defaultShip with cargoUnits = 20; cargoInventory = Map [ "IRON", 20 ] }
+    let job0 =
+        mkJob
+            [ ApiAction(
+                  "b1",
+                  "supplyConstruction",
+                  Map
+                      [ "waypointSymbol", Literal(StringLit "X1-NEARBY-C1")
+                        "tradeSymbol", Literal(StringLit "IRON")
+                        "units", Literal(NumberLit 10.0) ]
+              ) ]
+            (Some shipWithCargo)
+
+    let job1, _ = Step.step clock job0 WakeTick
+    let job2, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, ApiAmbiguous "timeout"))
+
+    let unchanged = shipWithCargo
+    let job3, effects3 = Step.step clock job2 (ApiResponseReceived("job1", 0, ReconciliationShip unchanged))
+    Assert.Equal(AwaitingApiResponse(1, DoSupplyConstruction("X1-NEARBY-C1", "IRON", 10), CargoBaseline 20), job3.status)
+    Assert.Contains(QueueApiCall("job1", Some "SHIP-1", DoSupplyConstruction("X1-NEARBY-C1", "IRON", 10), 1), effects3)
+
+    let job2b, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, ApiAmbiguous "timeout"))
+    let supplied = { shipWithCargo with cargoUnits = 10; cargoInventory = Map [ "IRON", 10 ] }
+    let job3b, _ = Step.step clock job2b (ApiResponseReceived("job1", 0, ReconciliationShip supplied))
+    Assert.Equal(Completed, job3b.status)
+
+[<Fact>]
+let ``patchShipNav happy path advances immediately`` () =
+    let clock = fakeClock (ref epoch)
+    let job0 = mkJob [ ApiAction("b1", "patchShipNav", Map [ "flightMode", Literal(StringLit "BURN") ]) ] (Some defaultShip)
+    let job1, _ = Step.step clock job0 WakeTick
+    Assert.Equal(AwaitingApiResponse(0, DoPatchShipNav "BURN", FlightModeBaseline "BURN"), job1.status)
+
+    let job2, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, NavResultOk("DOCKED", "X1-TEST-A1")))
+    Assert.Equal(Completed, job2.status)
+
+[<Fact>]
+let ``patchShipNav reconciliation both branches`` () =
+    let clock = fakeClock (ref epoch)
+    let job0 = mkJob [ ApiAction("b1", "patchShipNav", Map [ "flightMode", Literal(StringLit "BURN") ]) ] (Some defaultShip)
+    let job1, _ = Step.step clock job0 WakeTick
+    let job2, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, ApiAmbiguous "timeout"))
+
+    let unchanged = defaultShip
+    let job3, effects3 = Step.step clock job2 (ApiResponseReceived("job1", 0, ReconciliationShip unchanged))
+    Assert.Equal(AwaitingApiResponse(1, DoPatchShipNav "BURN", FlightModeBaseline "BURN"), job3.status)
+    Assert.Contains(QueueApiCall("job1", Some "SHIP-1", DoPatchShipNav "BURN", 1), effects3)
+
+    let job2b, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, ApiAmbiguous "timeout"))
+    let patched = { defaultShip with flightMode = "BURN" }
+    let job3b, _ = Step.step clock job2b (ApiResponseReceived("job1", 0, ReconciliationShip patched))
+    Assert.Equal(Completed, job3b.status)
+
+[<Fact>]
+let ``scrapShip happy path clears lastKnownShip and updates fleet count`` () =
+    let clock = fakeClock (ref epoch)
+    let job0 = mkJob [ ApiAction("b1", "scrapShip", Map.empty) ] (Some defaultShip)
+    let job1, _ = Step.step clock job0 WakeTick
+    Assert.Equal(AwaitingApiResponse(0, DoScrapShip, FleetBaseline 2), job1.status)
+
+    let job2, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, ScrapOk 1))
+    Assert.Equal(Completed, job2.status)
+    Assert.Equal(Some 1, job2.lastKnownFleetShipCount)
+    Assert.Equal(None, job2.lastKnownShip)
+
+[<Fact>]
+let ``scrapShip reconciliation via fleet fetch, not ship state`` () =
+    let clock = fakeClock (ref epoch)
+    let job0 = mkJob [ ApiAction("b1", "scrapShip", Map.empty) ] (Some defaultShip)
+    let job1, _ = Step.step clock job0 WakeTick
+    let job2, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, ApiAmbiguous "timeout"))
+    Assert.Equal(Reconciling(0, DoScrapShip, FleetBaseline 2), job2.status)
+
+    let job3, effects3 = Step.step clock job2 (ApiResponseReceived("job1", 0, ReconciliationFleet 2))
+    Assert.Equal(AwaitingApiResponse(1, DoScrapShip, FleetBaseline 2), job3.status)
+    Assert.Contains(QueueApiCall("job1", Some "SHIP-1", DoScrapShip, 1), effects3)
+
+    let job2b, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, ApiAmbiguous "timeout"))
+    let job3b, _ = Step.step clock job2b (ApiResponseReceived("job1", 0, ReconciliationFleet 1))
+    Assert.Equal(Completed, job3b.status)
+    Assert.Equal(None, job3b.lastKnownShip)
 
 /// The compiler never produces an action type outside `ACTION_BLOCKS`, so this
 /// defensive fallback in `emitApiAction` is only reachable via a hand-crafted

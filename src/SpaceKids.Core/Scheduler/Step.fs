@@ -285,6 +285,7 @@ let private reconcile (baseline: ActionBaseline) (current: ShipSnapshot) : bool 
     match baseline with
     | NavigateBaseline intended -> current.navWaypoint = intended
     | DockOrbitBaseline expected -> current.navStatus = expected
+    | FlightModeBaseline intended -> current.flightMode = intended
     | CargoBaseline unitsBefore -> current.cargoUnits <> unitsBefore
     | ExtractBaseline(cooldownBefore, unitsBefore) ->
         let cooldownAdvanced =
@@ -879,7 +880,7 @@ and private emitApiAction
                     $"Liefere {units}x {tradeSymbol} für Bau..."
             | "patchShipNav" ->
                 let flightMode = requireArg "flightMode" |> Eval.asString
-                awaiting (DockOrbitBaseline ship.navStatus) (DoPatchShipNav flightMode) $"Setze Flugmodus auf {flightMode}..."
+                awaiting (FlightModeBaseline flightMode) (DoPatchShipNav flightMode) $"Setze Flugmodus auf {flightMode}..."
             | other ->
                 let msg = $"Unbekannte Aktion: {other}"
                 { job with status = Failed msg }, [ JobFailed(job.jobId, msg) ]
@@ -1094,6 +1095,13 @@ and private handleApiResponse (clock: Clock) (job: JobState) (attemptNumber: int
                     { job' with
                         status = Running
                         log = "Bestätigt (bereits erledigt)." :: job'.log }
+                    []
+                    (fun j -> advance clock (advanceJobPosition j))
+            | FlightModeBaseline _ ->
+                settleOrDefer
+                    { job' with
+                        status = Running
+                        log = "Bestätigt: Flugmodus wurde bereits gesetzt." :: job'.log }
                     []
                     (fun j -> advance clock (advanceJobPosition j))
             | CargoBaseline _ ->
