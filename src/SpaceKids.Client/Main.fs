@@ -1320,6 +1320,21 @@ let private applyGalaxySnapshot (state: DashboardState) (catalog: GalaxyCatalogS
 let internal mapViewSize = 400.0
 let internal mapPadding = 30.0
 
+/// Marker sizes below are expressed as screen pixels at zoom = 1.0. The maps zoom
+/// by shrinking the SVG `viewBox`, which would otherwise scale circles/text up —
+/// divide by zoom so dots stay the same on-screen size while spacing spreads out.
+let internal mapMarkerSize (zoom: float) (screenPixels: float) = screenPixels / zoom
+
+let internal mapGalaxyDotRadius = 5.0
+let internal mapGalaxyDotRadiusSelected = 9.0
+let internal mapGalaxyDotStroke = 2.0
+let internal mapWaypointDotRadius = 6.0
+let internal mapLabelFontSize = 8.0
+let internal mapLabelOffsetY = 16.0
+let internal mapShipMarkerHalfWidth = 5.0
+let internal mapShipMarkerHeight = 6.0
+let internal mapShipLabelOffsetY = 8.0
+
 /// Guards against a degenerate single-point (or empty) range, which would
 /// otherwise divide by zero when scaling.
 let internal computeMapBounds (waypoints: Waypoint list) : float * float * float * float =
@@ -2466,6 +2481,7 @@ let private viewGalaxyMap (s: Strings) (model: Model) (state: DashboardState) di
         filterGalaxyMapNodes nodes viewX viewY viewSize (galaxyMapNodeBudget model.galaxyMapZoom) alwaysInclude
 
     let showLabels = galaxyMapShowLabels model.galaxyMapZoom visibleInView
+    let zoom = model.galaxyMapZoom
 
     div {
         h2 { s.galaxyMapHeading }
@@ -2482,21 +2498,23 @@ let private viewGalaxyMap (s: Strings) (model: Model) (state: DashboardState) di
 
             for node in rendered do
                 let selected = node.system.symbol = state.selectedSystemSymbol
+                let dotRadius =
+                    mapMarkerSize zoom (if selected then mapGalaxyDotRadiusSelected else mapGalaxyDotRadius)
 
                 elt "circle" {
                     "cx" => string node.sx
                     "cy" => string node.sy
-                    "r" => (if selected then "9" else "5")
+                    "r" => string dotRadius
                     "fill" => systemColor node.system.``type``
                     "stroke" => (if selected then "#000000" else "none")
-                    "stroke-width" => (if selected then "2" else "0")
+                    "stroke-width" => string (if selected then mapMarkerSize zoom mapGalaxyDotStroke else 0.0)
                 }
 
                 if showLabels || selected then
                     elt "text" {
                         "x" => string node.sx
-                        "y" => string (node.sy + 16.0)
-                        "font-size" => "8"
+                        "y" => string (node.sy + mapMarkerSize zoom mapLabelOffsetY)
+                        "font-size" => string (mapMarkerSize zoom mapLabelFontSize)
                         "text-anchor" => "middle"
                         "fill" => "currentColor"
                         "pointer-events" => "none"
@@ -2556,6 +2574,7 @@ let private viewSystemMap (s: Strings) (model: Model) (state: DashboardState) di
     let viewSize = mapViewSize / model.mapZoom
     let viewX = (mapViewSize - viewSize) / 2.0 + model.mapPanX
     let viewY = (mapViewSize - viewSize) / 2.0 + model.mapPanY
+    let zoom = model.mapZoom
 
     div {
         h2 { $"{s.systemMapHeading} ({state.selectedSystemSymbol})" }
@@ -2576,6 +2595,7 @@ let private viewSystemMap (s: Strings) (model: Model) (state: DashboardState) di
 
             for waypoint in state.waypoints do
                 let sx, sy = scaleMapPoint bounds (float waypoint.x) (float waypoint.y)
+                let dotRadius = mapMarkerSize zoom mapWaypointDotRadius
 
                 elt "g" {
                     attr.style "cursor: pointer"
@@ -2584,7 +2604,7 @@ let private viewSystemMap (s: Strings) (model: Model) (state: DashboardState) di
                     elt "circle" {
                         "cx" => string sx
                         "cy" => string sy
-                        "r" => "6"
+                        "r" => string dotRadius
                         "fill" => waypointColor waypoint.``type``
                     }
 
@@ -2592,8 +2612,8 @@ let private viewSystemMap (s: Strings) (model: Model) (state: DashboardState) di
 
                     elt "text" {
                         "x" => string sx
-                        "y" => string (sy + 16.0)
-                        "font-size" => "8"
+                        "y" => string (sy + mapMarkerSize zoom mapLabelOffsetY)
+                        "font-size" => string (mapMarkerSize zoom mapLabelFontSize)
                         "text-anchor" => "middle"
                         "fill" => "currentColor"
                         waypoint.symbol
@@ -2605,13 +2625,16 @@ let private viewSystemMap (s: Strings) (model: Model) (state: DashboardState) di
                 | None -> ()
                 | Some(x, y) ->
                     let sx, sy = scaleMapPoint bounds x y
+                    let shipHalf = mapMarkerSize zoom mapShipMarkerHalfWidth
+                    let shipHeight = mapMarkerSize zoom mapShipMarkerHeight
 
                     elt "g" {
                         attr.style "cursor: pointer"
                         on.click (fun _ -> dispatch (InspectShip ship.symbol))
 
                         elt "polygon" {
-                            "points" => $"{sx},{sy - 6.0} {sx - 5.0},{sy + 5.0} {sx + 5.0},{sy + 5.0}"
+                            "points" =>
+                                $"{sx},{sy - shipHeight} {sx - shipHalf},{sy + shipHalf} {sx + shipHalf},{sy + shipHalf}"
                             "fill" => "#e04040"
                         }
 
@@ -2619,8 +2642,8 @@ let private viewSystemMap (s: Strings) (model: Model) (state: DashboardState) di
 
                         elt "text" {
                             "x" => string sx
-                            "y" => string (sy - 8.0)
-                            "font-size" => "8"
+                            "y" => string (sy - mapMarkerSize zoom mapShipLabelOffsetY)
+                            "font-size" => string (mapMarkerSize zoom mapLabelFontSize)
                             "text-anchor" => "middle"
                             "fill" => "currentColor"
                             ship.symbol

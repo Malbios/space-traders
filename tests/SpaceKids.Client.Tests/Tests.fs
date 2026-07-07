@@ -57,6 +57,11 @@ let ``scaleMapPoint keeps every point within the padded view box`` () =
     Assert.True(sx >= mapPadding - 0.001)
     Assert.True(sy <= mapViewSize - mapPadding + 0.001)
 
+[<Fact>]
+let ``mapMarkerSize shrinks viewBox units as zoom increases so dots stay screen-constant`` () =
+    Assert.Equal(mapGalaxyDotRadius, mapMarkerSize 1.0 mapGalaxyDotRadius)
+    Assert.Equal(mapGalaxyDotRadius / 4.0, mapMarkerSize 4.0 mapGalaxyDotRadius)
+
 let private dockedShip (waypointSymbol: string) : Ship =
     { symbol = "SHIP-1"
       registration = { role = "COMMAND" }
