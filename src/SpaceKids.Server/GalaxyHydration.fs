@@ -326,7 +326,6 @@ let reloadGalaxy (client: SpaceTradersClient) (dbPath: string) (agentSymbol: str
         do! Persistence.ApiCacheRepository.deleteKey dbPath (systemsKey agentSymbol)
         do! Persistence.ApiCacheRepository.deleteKey dbPath (systemsMetaKey agentSymbol)
         ensureSystemsSync client dbPath agentSymbol token true
-        ()
     }
 
 let reloadSystem
