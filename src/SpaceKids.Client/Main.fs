@@ -9,6 +9,7 @@ open Bolero.Html
 open Bolero.Remoting
 open Bolero.Remoting.Client
 open Microsoft.JSInterop
+open System.Text.Json
 open SpaceKids.SpaceTraders
 
 /// Remote service for the Milestone 0 spike only (§12 Persistence lands the real
@@ -242,6 +243,14 @@ type CustomBlockSummaryDto =
         id: string
         name: string
         version: int
+    }
+
+/// Payload for `spaceKids.syncCustomBlocks` — one entry per saved custom block.
+type CustomBlockSyncEntryDto =
+    {
+        id: string
+        name: string
+        workspaceJson: string
     }
 
 type CustomBlockService =
@@ -621,6 +630,7 @@ type Message =
     | PilotActionDone
     | LoadCustomBlocks
     | CustomBlocksLoaded of CustomBlockSummaryDto list
+    | CustomBlocksToolboxSynced
     | NewCustomBlockNameChanged of string
     | CreateCustomBlock
     | CustomBlockCreated of string
@@ -712,6 +722,28 @@ let private callVoid (js: IJSRuntime) (identifier: string) (args: obj[]) : Async
 
 let private call<'a> (js: IJSRuntime) (identifier: string) (args: obj[]) : Async<'a> =
     js.InvokeAsync<'a>(identifier, args).AsTask() |> Async.AwaitTask
+
+let private syncCustomBlockToolbox (js: IJSRuntime) (customBlockRemote: CustomBlockService) (blocks: CustomBlockSummaryDto list) : Async<unit> =
+    async {
+        let entries = ResizeArray<CustomBlockSyncEntryDto>()
+
+        for b in blocks do
+            let! jsonOpt = customBlockRemote.loadDefinition b.id
+
+            match jsonOpt with
+            | Some workspaceJson ->
+                entries.Add(
+                    {
+                        id = b.id
+                        name = b.name
+                        workspaceJson = workspaceJson
+                    }
+                )
+            | None -> ()
+
+        let json = JsonSerializer.Serialize(entries)
+        do! callVoid js "spaceKids.syncCustomBlocks" [| box json |]
+    }
 
 /// Milestone 12 (bilingual support): every UI string in this file, as a compile-time-
 /// checked record rather than a stringly-typed lookup — a locale missing a
@@ -1888,7 +1920,10 @@ let update
     | LoadCustomBlocks ->
         model, Cmd.OfAsync.either (fun () -> customBlockRemote.list ()) () CustomBlocksLoaded (fun _ -> RemoteCallFailed)
     | CustomBlocksLoaded blocks ->
-        { model with customBlocks = blocks; serverUnreachable = false }, Cmd.none
+        { model with customBlocks = blocks; serverUnreachable = false },
+        Cmd.OfAsync.perform (fun () -> syncCustomBlockToolbox js customBlockRemote blocks) () (fun () -> CustomBlocksToolboxSynced)
+    | CustomBlocksToolboxSynced ->
+        model, Cmd.none
 
     | NewCustomBlockNameChanged value ->
         { model with newCustomBlockName = value }, Cmd.none

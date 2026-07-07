@@ -8,6 +8,7 @@ import {
     registerSignature,
     registerCustomBlockAccessors,
     readSignature,
+    getSignature,
 } from "./blocks";
 import { registerCatalogBlocks, registerStockBlockChecks } from "./blocks-catalog";
 import { buildCatalogToolbox, type CustomBlockToolboxEntry } from "./toolbox-de";
@@ -64,6 +65,65 @@ const workspaces = new Map<string, Blockly.WorkspaceSvg>();
 const customBlocksByContainer = new Map<string, CustomBlockToolboxEntry[]>();
 /** Per-workspace list of dynamically generated structured-output accessor block types currently injected into "Zugriffe" (§9 Outputs, Milestone 9/Part C). */
 const dynamicAccessorTypesByContainer = new Map<string, string[]>();
+/** Saved custom blocks from persistence — re-applied whenever a workspace mounts or the library changes. */
+let globalCustomBlockToolbox: CustomBlockToolboxEntry[] = [];
+let globalDynamicAccessorTypes: string[] = [];
+
+interface CustomBlockSyncEntry {
+    id: string;
+    name: string;
+    workspaceJson: string;
+}
+
+function registerCustomBlockFromWorkspaceJson(customBlockId: string, workspaceJson: string): string[] {
+    const tempWs = new Blockly.Workspace();
+    try {
+        load(tempWs, workspaceJson);
+        const defBlock = tempWs.getBlocksByType("sk_custom_block_def", false)[0];
+        if (!defBlock) {
+            return [];
+        }
+        const signature = readSignature(defBlock, customBlockId);
+        registerSignature(signature);
+        return registerCustomBlockAccessors(signature);
+    } finally {
+        tempWs.dispose();
+    }
+}
+
+function applyGlobalCustomBlocksToContainer(containerId: string): void {
+    if (!workspaces.has(containerId)) {
+        return;
+    }
+    customBlocksByContainer.set(containerId, [...globalCustomBlockToolbox]);
+    dynamicAccessorTypesByContainer.set(containerId, [...globalDynamicAccessorTypes]);
+    refreshToolbox(containerId);
+}
+
+/** Registers every saved custom block's signature and repopulates "Eigene Blöcke" on all open workspaces. */
+function syncCustomBlocks(json: string): void {
+    const blocks = JSON.parse(json) as CustomBlockSyncEntry[];
+    const toolboxEntries: CustomBlockToolboxEntry[] = [];
+    const accessorTypes: string[] = [];
+
+    for (const block of blocks) {
+        const newAccessors = registerCustomBlockFromWorkspaceJson(block.id, block.workspaceJson);
+        const signature = getSignature(block.id);
+        toolboxEntries.push({ id: block.id, name: signature?.name ?? block.name });
+        for (const type of newAccessors) {
+            if (!accessorTypes.includes(type)) {
+                accessorTypes.push(type);
+            }
+        }
+    }
+
+    globalCustomBlockToolbox = toolboxEntries;
+    globalDynamicAccessorTypes = accessorTypes;
+
+    for (const containerId of workspaces.keys()) {
+        applyGlobalCustomBlocksToContainer(containerId);
+    }
+}
 /** Debug-only: records which event classes reached each workspace's change listener, so Milestone 0's "fires on meaningful events only, not every drag frame" check can be verified from the console/tests. Not part of the documented §3a surface. */
 const changeLogByContainer = new Map<string, string[]>();
 
@@ -148,6 +208,7 @@ function initWorkspace(containerId: string, readOnly: boolean): void {
     });
     workspaces.set(containerId, ws);
     onWorkspaceChanged(containerId);
+    applyGlobalCustomBlocksToContainer(containerId);
 }
 
 /**
@@ -346,6 +407,7 @@ interface SpaceKidsHost {
     firstBlockId: typeof firstBlockId;
     getChangeLog: typeof getChangeLog;
     publishCustomBlockSignature: typeof publishCustomBlockSignature;
+    syncCustomBlocks: typeof syncCustomBlocks;
     ensureWorkspaceReady: typeof ensureWorkspaceReady;
     resizeWorkspace: typeof resizeWorkspace;
     setLocale: typeof setLocale;
@@ -372,6 +434,7 @@ window.spaceKids = {
     firstBlockId,
     getChangeLog,
     publishCustomBlockSignature,
+    syncCustomBlocks,
     ensureWorkspaceReady,
     resizeWorkspace,
     setLocale,
