@@ -390,82 +390,93 @@ and private resolveCustomBlock (state: CompileState) (customBlockId: string) : u
 
 and private compileStatement (state: CompileState) (block: RawBlock) : Instruction list =
     let hoisted = ResizeArray<Instruction>()
-    let instr =
-        match block.blockType with
-        | "sk_show_message" -> ShowMessage(block.id, compileInput state hoisted block "TEXT")
-        | "sk_wait" -> Wait(block.id, compileInput state hoisted block "SECONDS")
-        | "variables_set" -> SetVariable(block.id, variableName block "VAR", compileInput state hoisted block "VALUE")
-        | "math_change" -> ChangeVariable(block.id, variableName block "VAR", compileInput state hoisted block "DELTA")
-        | "lists_setIndex" when fieldString block "MODE" = Some "INSERT" ->
-            let message =
-                match state.locale with
-                | De -> "Listen-Einfügen (INSERT) wird noch nicht unterstützt — nur SET."
-                | En -> "List insert (INSERT) is not supported yet — only SET."
 
-            state.errors.Add { blockId = Some block.id; message = message }
-            ShowMessage(block.id, Literal(StringLit message))
-        | "lists_setIndex" ->
-            match listVariableNameFromInput block "LIST" with
-            | Some name ->
-                let where = listIndexWhere block
+    let valueOnlyStatement () =
+        compileExpr state hoisted block |> ignore
+        List.ofSeq hoisted
 
-                let index =
-                    match where with
-                    | FromStart | FromEnd -> Some(compileInput state hoisted block "AT")
-                    | First | Last | Random -> None
-
-                ListSet(block.id, name, where, index, compileInput state hoisted block "TO")
-            | None ->
+    match block.blockType with
+    | t when INFO_BLOCKS.ContainsKey t -> valueOnlyStatement ()
+    | t when ACCESSOR_BLOCKS.ContainsKey t -> valueOnlyStatement ()
+    | t when t.StartsWith("accessor_") -> valueOnlyStatement ()
+    | _ ->
+        let instr =
+            match block.blockType with
+            | "sk_show_message" -> ShowMessage(block.id, compileInput state hoisted block "TEXT")
+            | "sk_wait" -> Wait(block.id, compileInput state hoisted block "SECONDS")
+            | "variables_set" -> SetVariable(block.id, variableName block "VAR", compileInput state hoisted block "VALUE")
+            | "math_change" -> ChangeVariable(block.id, variableName block "VAR", compileInput state hoisted block "DELTA")
+            | "lists_setIndex" when fieldString block "MODE" = Some "INSERT" ->
                 let message =
                     match state.locale with
-                    | De -> "Listen setzen braucht eine Listen-Variable als Eingabe."
-                    | En -> "List set requires a list variable as input."
+                    | De -> "Listen-Einfügen (INSERT) wird noch nicht unterstützt — nur SET."
+                    | En -> "List insert (INSERT) is not supported yet — only SET."
 
                 state.errors.Add { blockId = Some block.id; message = message }
                 ShowMessage(block.id, Literal(StringLit message))
-        | "controls_repeat_ext" ->
-            let count = compileInput state hoisted block "TIMES"
-            Repeat(block.id, count, compileStatementInput state block "DO")
-        | "controls_whileUntil" ->
-            let mode = if fieldString block "MODE" = Some "UNTIL" then Until else While
-            let cond = compileInput state hoisted block "BOOL"
-            WhileUntil(block.id, mode, cond, compileStatementInput state block "DO")
-        | "controls_forEach" ->
-            let var = variableName block "VAR"
-            let list = compileInput state hoisted block "LIST"
-            ForEach(block.id, var, list, compileStatementInput state block "DO")
-        | "withShip" ->
-            let ship = compileInput state hoisted block "SHIP"
-            let hasUnavailableBranch =
-                extraStateBool block "hasUnavailable" false || block.inputs.ContainsKey "ELSE"
+            | "lists_setIndex" ->
+                match listVariableNameFromInput block "LIST" with
+                | Some name ->
+                    let where = listIndexWhere block
 
-            let elseBranch =
-                if hasUnavailableBranch then
-                    Some(compileStatementInput state block "ELSE")
-                else
-                    None
+                    let index =
+                        match where with
+                        | FromStart | FromEnd -> Some(compileInput state hoisted block "AT")
+                        | First | Last | Random -> None
 
-            let body = compileStatementInput state block "DO" @ [ ExitShipScope($"{block.id}:exit") ]
+                    ListSet(block.id, name, where, index, compileInput state hoisted block "TO")
+                | None ->
+                    let message =
+                        match state.locale with
+                        | De -> "Listen setzen braucht eine Listen-Variable als Eingabe."
+                        | En -> "List set requires a list variable as input."
 
-            WithShip(block.id, ship, body, elseBranch)
-        | "parallel" ->
-            let branchCount = max 2 (extraStateInt block "branchCount" 2)
-            let branches = [ for i in 0 .. branchCount - 1 -> compileStatementInput state block $"DO{i}" ]
-            Parallel(block.id, branches)
-        | "controls_if" -> compileIf state hoisted block
-        | "controls_flow_statements" ->
-            if fieldString block "FLOW" = Some "CONTINUE" then Continue block.id else Break block.id
-        | "callCustomBlock" -> compileCustomBlockCall state hoisted block
-        | t when ACTION_BLOCKS.ContainsKey t -> ApiAction(block.id, t, compileArgs state hoisted block ACTION_BLOCKS.[t])
-        | other ->
-            let message =
-                match state.locale with
-                | De -> $"Unbekannter Blocktyp: {other}."
-                | En -> $"Unknown block type: {other}."
+                    state.errors.Add { blockId = Some block.id; message = message }
+                    ShowMessage(block.id, Literal(StringLit message))
+            | "controls_repeat_ext" ->
+                let count = compileInput state hoisted block "TIMES"
+                Repeat(block.id, count, compileStatementInput state block "DO")
+            | "controls_whileUntil" ->
+                let mode = if fieldString block "MODE" = Some "UNTIL" then Until else While
+                let cond = compileInput state hoisted block "BOOL"
+                WhileUntil(block.id, mode, cond, compileStatementInput state block "DO")
+            | "controls_forEach" ->
+                let var = variableName block "VAR"
+                let list = compileInput state hoisted block "LIST"
+                ForEach(block.id, var, list, compileStatementInput state block "DO")
+            | "withShip" ->
+                let ship = compileInput state hoisted block "SHIP"
+                let hasUnavailableBranch =
+                    extraStateBool block "hasUnavailable" false || block.inputs.ContainsKey "ELSE"
 
-            state.errors.Add { blockId = Some block.id; message = message }
-            ApiAction(block.id, other, Map.empty)
-    List.ofSeq hoisted @ [ instr ]
+                let elseBranch =
+                    if hasUnavailableBranch then
+                        Some(compileStatementInput state block "ELSE")
+                    else
+                        None
+
+                let body = compileStatementInput state block "DO" @ [ ExitShipScope($"{block.id}:exit") ]
+
+                WithShip(block.id, ship, body, elseBranch)
+            | "parallel" ->
+                let branchCount = max 2 (extraStateInt block "branchCount" 2)
+                let branches = [ for i in 0 .. branchCount - 1 -> compileStatementInput state block $"DO{i}" ]
+                Parallel(block.id, branches)
+            | "controls_if" -> compileIf state hoisted block
+            | "controls_flow_statements" ->
+                if fieldString block "FLOW" = Some "CONTINUE" then Continue block.id else Break block.id
+            | "callCustomBlock" -> compileCustomBlockCall state hoisted block
+            | t when ACTION_BLOCKS.ContainsKey t -> ApiAction(block.id, t, compileArgs state hoisted block ACTION_BLOCKS.[t])
+            | other ->
+                let message =
+                    match state.locale with
+                    | De -> $"Unbekannter Blocktyp: {other}."
+                    | En -> $"Unknown block type: {other}."
+
+                state.errors.Add { blockId = Some block.id; message = message }
+                ApiAction(block.id, other, Map.empty)
+
+        List.ofSeq hoisted @ [ instr ]
 
 and private compileStatementInput (state: CompileState) (block: RawBlock) (inputName: string) : Instruction list =
     match block.inputs.TryFind inputName with

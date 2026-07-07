@@ -745,6 +745,41 @@ let ``revalidateAgainstCurrentDefinitions catches a signature that changed after
 // --- Part B (Milestone 9, §8): accessor blocks compile to Accessor, Eval resolves them ---
 
 [<Fact>]
+let ``a custom block RETURN chain with waypointSystemField compiles on save`` () =
+    let defShellWorkspace =
+        """
+        { "blocks": { "languageVersion": 0, "blocks": [
+            { "type": "sk_custom_block_def", "id": "def1", "fields": { "BLOCK_NAME": "System vom Schiff" },
+              "inputs": {
+                "RETURN": { "block": { "type": "waypointSystemField", "id": "ws1", "inputs": {
+                    "TARGET": { "block": { "type": "getWaypoint", "id": "gw1", "inputs": {
+                        "WAYPOINT_SYMBOL": { "block": { "type": "shipWaypoint", "id": "sw1", "inputs": {
+                            "TARGET": { "block": { "type": "getShipInfo", "id": "si1" } }
+                        } } }
+                    } } }
+                } } }
+              }
+            }
+        ] } }
+        """
+
+    let definition: CustomBlockDefinition =
+        { id = "system-block"
+          signature = { inputs = []; output = Some "$value"; outputFields = None }
+          workspaceJson = defShellWorkspace }
+
+    let lookup =
+        function
+        | "system-block" -> Some definition
+        | _ -> None
+
+    match Compiler.resolveCustomBlockCall De lookup "system-block" with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok customBlocks ->
+        let compiled = customBlocks.["system-block"]
+        Assert.Equal(Some(Accessor("System", TempRef "$t2")), compiled.returnExpr)
+
+[<Fact>]
 let ``waypointSystemField compiles to Accessor over System`` () =
     let json =
         """

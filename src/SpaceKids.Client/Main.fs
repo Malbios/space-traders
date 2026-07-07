@@ -452,6 +452,23 @@ type Model =
 
 let private terminalPilotStatuses = [ "Completed"; "Failed"; "Cancelled" ]
 
+let private escapeJsonString (value: string) =
+    value.Replace("\\", "\\\\").Replace("\"", "\\\"")
+
+let private isBlankWorkshopJson (json: string) =
+    let trimmed = json.Trim()
+    trimmed = """{"blocks":{"languageVersion":0,"blocks":[]}}""" || trimmed.Contains(""""blocks":[]""")
+
+/// Blockly workshop for a brand-new custom block — one `sk_custom_block_def` shell so
+/// players build logic in "Ergebnis"/"Inhalt" instead of loose canvas blocks that the
+/// compiler rejects on save.
+let private defaultCustomBlockWorkshopJson (blockName: string) =
+    let name = escapeJsonString blockName
+
+    sprintf
+        """{"blocks":{"languageVersion":0,"blocks":[{"type":"sk_custom_block_def","id":"def1","x":50,"y":50,"fields":{"BLOCK_NAME":"%s"},"extraState":{"inputs":[]}}]}}"""
+        name
+
 /// Milestone 13/Part D (plan.md §15's "Pilot Max" idea): no name field exists
 /// anywhere in the real SpaceTraders API data, so a display name has to be
 /// invented rather than read from anything. One shared pool for both locales —
@@ -1904,7 +1921,11 @@ let update
             ()
             CustomBlockDefinitionLoaded
     | CustomBlockDefinitionLoaded jsonOpt ->
-        let json = jsonOpt |> Option.defaultValue """{"blocks":{"languageVersion":0,"blocks":[]}}"""
+        let json =
+            match jsonOpt with
+            | None -> defaultCustomBlockWorkshopJson model.renameNameInput
+            | Some saved when isBlankWorkshopJson saved -> defaultCustomBlockWorkshopJson model.renameNameInput
+            | Some saved -> saved
 
         { model with workshopStatus = s.workshopLoaded },
         Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.loadWorkspace" [| box model.workshopContainerId; box json |]) () (fun () -> Loaded)

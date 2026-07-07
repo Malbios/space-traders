@@ -39,6 +39,20 @@ type CustomBlockRemoteHandler(ctx: IRemoteContext) =
             save =
                 fun (id, workspaceJson) ->
                     async {
+                        let! locale = currentLocale ()
+
+                        let topBlocks = SpaceKids.Core.Dsl.BlocklyJson.parseWorkspace workspaceJson
+
+                        if not (topBlocks |> List.exists (fun b -> b.blockType = "sk_custom_block_def")) then
+                            let message =
+                                match locale with
+                                | SpaceKids.Core.Dsl.De ->
+                                    "Bitte ziehe einen \"Eigener Block\"-Block aus der Toolbox auf die Fläche und baue die Logik in \"Ergebnis\" (Rückgabewert) oder \"Inhalt\" (Anweisungen) ein."
+                                | SpaceKids.Core.Dsl.En ->
+                                    "Drag a \"Custom block\" from the toolbox onto the canvas and build your logic in \"Result\" (return value) or \"Body\" (statements)."
+
+                            return Error message
+
                         // The signature to persist must reflect *this* save's mutator
                         // edits, not whatever version is already on disk — derived
                         // fresh from the raw JSON (`Compiler.deriveCustomBlockSignature`),
@@ -53,8 +67,6 @@ type CustomBlockRemoteHandler(ctx: IRemoteContext) =
                                       workspaceJson = workspaceJson }
                             else
                                 Persistence.CustomBlockRepository.load dbPath lookupId |> Async.RunSynchronously
-
-                        let! locale = currentLocale ()
 
                         match SpaceKids.Core.Dsl.Compiler.resolveCustomBlockCall locale lookup id with
                         | Error errors ->
