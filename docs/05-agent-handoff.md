@@ -2,6 +2,12 @@
 
 ## Working
 
+- **Post-roadmap work exists beyond this doc's milestone numbering** — see the
+  two entries at the top of "Changed this session" below (a 16-finding
+  code-review fix pass + a new `SpaceKids.Client.Tests` project, then a
+  Contracts tab). `plan.md`'s milestones (0–13 below) are all still accurate
+  as history, just no longer the newest thing that happened.
+
 - Full solution scaffold: `SpaceKids.Client` (Bolero WASM), `SpaceKids.Server` (ASP.NET
   Core host), `SpaceKids.Core`, `SpaceKids.SpaceTraders`, `SpaceKids.FakeSpaceTraders`,
   plus `Core.Tests`/`Server.Tests`/`IntegrationTests`. Builds clean with `dotnet build
@@ -159,6 +165,84 @@
   polls via repeated `stepOnce` calls rather than sleeping inline inside one call.
 
 ## Changed this session
+
+**Note:** everything below predates the two most recent work sessions, which
+happened *after* `plan.md`'s roadmap (all milestones) was fully closed out and
+`TODO.md` was cleared. Those two sessions aren't milestone-numbered — they're
+freeform post-roadmap work. Summarized here since this doc wasn't updated at
+the time:
+
+**Session N-1 — 16-finding code review + fix-everything pass.** A 3-agent
+parallel review (Core DSL/scheduler, Server persistence/job-running, Client
+UI) found 16 real bugs/gaps; all fixed, tested, live-verified, committed in 4
+grouped commits. Server: `ShipLockRepository.tryAcquire` had a TOCTOU race
+between `readLock`/`upsert` (two concurrent calls for the same ship could both
+"win") — fixed with a single-connection `BEGIN IMMEDIATE` transaction;
+`refreshLease` used to unconditionally `upsert`, which could resurrect a lock
+after a different job legitimately reclaimed the ship — now a plain
+conditional `UPDATE ... WHERE ship_symbol = $s AND job_id = $j` (0 rows
+affected = silent no-op); `SettingsRepository`'s lazy first-read `INSERT` had
+no `ON CONFLICT` and could throw on a startup race — replaced with a shared
+`ensureSettingsRow` (`INSERT ... ON CONFLICT(id) DO NOTHING`); `CustomBlockRepository.findUsages`
+hardcoded German regardless of locale — now takes a `Locale` param. Core:
+`Validator.literalTypeMismatch` checked for an input-type label (`"Zahl"`)
+the real compiler/client never actually produce (they emit `"Anzahl"`/`"Number"`/
+`"Preisgrenze"`/`"Price limit"`) — the check was dead code, now fixed and
+covered by a real test; `Eval.asFloat`'s `VString` branch threw a raw
+unlocalized `FormatException` instead of this file's own German `failwith`
+style; `Compiler.compileCustomBlockCall` did a redundant second lookup of
+data already cached by `resolveCustomBlock`. Client (`Main.fs`): `WatchStatusLoaded`/
+`WaypointMarketLoaded`/`WaypointShipyardLoaded` had no correlation id, so a
+slow response for a previously-watched job/waypoint could overwrite a faster,
+newer one — all three now carry the requested id/symbol and guard against it
+having changed since dispatch; `ToggleReadOnly`/`ReadOnlyToggled` re-negated
+`model.readOnly` at completion time instead of committing the value actually
+sent to JS (a stale double-toggle bug); `StartProgram` used the
+error-swallowing `Cmd.OfAsync.perform`, so an exception left `startingJob = true`
+forever, permanently disabling the Start button — switched to
+`Cmd.OfAsync.either` with a real failure handler (this is now the house style —
+**never use `Cmd.OfAsync.perform` for a remote call that can fail**, only for
+calls that genuinely can't). Also new: `tests/SpaceKids.Client.Tests/` (first
+test project for the Client), covering `Main.fs`'s previously-untested pure
+helpers (`computeMapBounds`, `scaleMapPoint`, `interpolatedShipPosition`,
+`pilotName`) — these were made `internal` (from `private`) specifically so
+this project can reach them via `[<assembly: InternalsVisibleTo("SpaceKids.Client.Tests")>]`
+in `Startup.fs`, without a full Blazor component-testing framework. Also
+discovered along the way (not part of the review): the system map already has
+real zoom/pan (`mapZoom`/`mapPanX`/`mapPanY`, `MapWheel`/`MapDragStart`/`ResetMapView`
+messages, `on.wheel`/`on.mousedown` in `Main.fs` — Bolero does support these
+DOM events). Went from 152 → 173 tests.
+
+**Session N — Contracts tab.** Contracts were previously an afterthought: a
+single flat unstyled line inside the Galaxie tab's `viewDashboard`, and
+`Contract` (`SpaceKids.SpaceTraders/Types.fs`) didn't model `terms`
+(deliver-goods/payment/deadline) at all — those real-API fields were
+explicitly documented as "ignored." Now: `Contract` gained `terms: ContractTerms`
+(`{ deadline; payment: ContractPayment; deliver: ContractDeliverGood list }`)
+and `deadlineToAccept: string option`, matching the real schema field names
+exactly (STJ's case-insensitive matching just works, same as everywhere else
+in this file). New standalone `AgentRemoting.acceptContract` function (same
+"plain function, not inlined into the handler" pattern as
+`fetchWaypointMarket`/`fetchWaypointShipyard`, for independent testability),
+wired into `AgentService`/`AgentRemoteHandler`. New client `ContractsTab`:
+`viewContracts` shows each not-yet-fulfilled contract as a card (deliver
+goods with units-fulfilled/required, payment, deadline, an Accept button
+disabled while in flight via `acceptingContractId: string option` — the same
+in-flight-guard pattern as `startingJob`), with fulfilled contracts collapsed
+under a "Verlauf"/history toggle (`contractsHistoryExpanded: bool`). The
+active/fulfilled split is a pure `partitionContracts` helper (`internal`, unit
+tested in `SpaceKids.Client.Tests`, same convention as the map-math helpers
+above). `SpaceKids.FakeSpaceTraders` now seeds two contracts —
+`fake-contract-1` (already accepted, exercises the "active, in-progress"
+display) and `fake-contract-2` (not yet accepted, exercises the Accept
+button). **Gotcha found while live-verifying this**: launching
+`SpaceKids.Server` with `--no-launch-profile` (to point it at the fake server
+via env vars) also skips `ASPNETCORE_ENVIRONMENT=Development`, which the
+launch profile normally sets — without it, static web assets 404
+(`staticwebassets.development.json` vs. the production manifest) and the WASM
+app never boots. Always set `ASPNETCORE_ENVIRONMENT=Development` explicitly
+alongside `SPACETRADERS__BaseUrl`/`SPACEKIDS_DB_PATH`/`SPACEKIDS_BACKUPS_DIR`
+when doing this. 181 tests total.
 
 Milestone 13 work (four independent parts, each shipped/verified separately):
 Part A — `Compiler.fs`'s `CompileState` gained a `locale: Locale` field;
@@ -406,6 +490,20 @@ struck-through bullets in "Known issues" above for what replaced each one.)
 
 ## Next tasks
 
+0. **Current/upcoming**: a "Flotilla" feature (multi-ship program management) is
+   being planned as of this doc's last update — see `plan.md`/a dedicated
+   milestone doc if one exists by the time you read this, or ask the user if
+   not. Relevant context if you're picking this up: today, every ship-scoped
+   DSL block (`navigate`/`orbit`/`dock`/`extract`/`refuel`/etc.) has **no**
+   ship-symbol input at all — the compiler never threads a ship symbol
+   through a compiled action (`Compiler.fs`), and the scheduler binds a job to
+   exactly one ship (`JobState.shipSymbol: string option`) at job-creation
+   time, injecting it implicitly at every dispatch site in `Step.fs`. A
+   program today is thus written "ship-agnostically" and only becomes
+   ship-specific when a pilot is picked to run it. Flotilla means changing
+   that 1:1 job-to-ship binding into something that can address multiple
+   ships from one program — this is a real architectural change to
+   `JobState`/`Step.fs`/the compiler/the block catalog, not a small addition.
 1. plan.md's roadmap (§19) has nothing outstanding: Milestones 9 (custom
    reusable blocks, §9), 10 (fleet mode), 11 (saved/named multiple-program
    library), 12 (bilingual support), and 13 (compiler translation, block

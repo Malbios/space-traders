@@ -113,6 +113,9 @@ src/
                              Milestone 6; ship state keyed by symbol (two seeded ships)
                              since Milestone 7, for ship-lock testing
 tests/
+  SpaceKids.Client.Tests/       Post-roadmap addition: xUnit tests for Main.fs's
+                                  `internal` pure helpers (map math, contract
+                                  partitioning, pilot names) via InternalsVisibleTo
   SpaceKids.Core.Tests/
     SchedulerTests.fs            Pure step-core tests (Milestone 6/7) — fake clock,
                                    zero DB/network; pause/resume/cancel, restart
