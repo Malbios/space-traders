@@ -207,7 +207,7 @@ async function main() {
         assert(parallelJson.includes("DO2"), "parallel third branch input lost");
     });
 
-    await check("Flottille blocks are registered in Blockly seam", async () => {
+    await check("withShip and parallel blocks are registered in Blockly seam", async () => {
         const types = await page.evaluate(() =>
             ["withShip", "parallel"].every((t) => typeof window.spaceKids?.initWorkspace === "function"),
         );

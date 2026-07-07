@@ -1,17 +1,16 @@
 import { catalogActionBlockTypes, catalogInfoBlockTypes, catalogAccessorBlockTypes, flotillaBlockTypes } from "./blocks-catalog";
 import { getCurrentLocale } from "./locale-state";
 
-/** Milestone 12 (bilingual support): only the 7 category names vary by locale — the
- * block-type-list structure itself stays single-sourced below, read live so switching
- * locale and rebuilding the toolbox (via `updateToolbox`/a workspace reinit) picks up
- * the new names without duplicating this whole function into a second file. */
+/** Milestone 12 (bilingual support): category names vary by locale — the block-type-list
+ * structure itself stays single-sourced below, read live so switching locale and
+ * rebuilding the toolbox (via `updateToolbox`/a workspace reinit) picks up the new
+ * names without duplicating this whole function into a second file. */
 const CATEGORY_NAMES = {
     de: {
         actions: "Aktionen",
         info: "Informationen",
         accessors: "Zugriffe",
-        flotilla: "Flottille",
-        programming: "Programmierung",
+        logic: "Logik",
         variables: "Variablen",
         customBlock: "Eigener Block",
         customBlocks: "Eigene Blöcke",
@@ -20,8 +19,7 @@ const CATEGORY_NAMES = {
         actions: "Actions",
         info: "Information",
         accessors: "Accessors",
-        flotilla: "Flotilla",
-        programming: "Programming",
+        logic: "Logic",
         variables: "Variables",
         customBlock: "Custom block",
         customBlocks: "Custom blocks",
@@ -74,15 +72,10 @@ export function buildCatalogToolbox(customBlockIds: string[], dynamicAccessorTyp
             },
             {
                 kind: "category",
-                name: names.flotilla,
-                colour: "20",
-                contents: flotillaBlockTypes.map((type) => ({ kind: "block", type })),
-            },
-            {
-                kind: "category",
-                name: names.programming,
+                name: names.logic,
                 colour: "210",
                 contents: [
+                    ...flotillaBlockTypes.map((type) => ({ kind: "block", type })),
                     { kind: "block", type: "controls_if" },
                     { kind: "block", type: "controls_repeat_ext" },
                     { kind: "block", type: "controls_whileUntil" },
