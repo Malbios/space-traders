@@ -134,6 +134,7 @@ docs/
                                toolbox build (M3) and will be consumed again by the
                                DSL compiler (M4)
   05-agent-handoff.md        Current state / next tasks (update every session)
+  flotilla-plan.md            Multi-ship program feature — planning only, not started
   (other docs listed in plan.md §17 are created as their milestones start)
 ```
 
