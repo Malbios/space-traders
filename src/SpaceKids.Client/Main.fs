@@ -36,6 +36,15 @@ type DashboardState =
         markets: Market list
     }
 
+/// Lazy-loaded slice for the Galaxie tab — never fetched during token login.
+type GalaxyCatalog =
+    {
+        systems: StarSystem list
+        selectedSystemSymbol: string
+        waypoints: Waypoint list
+        markets: Market list
+    }
+
 type FactionsSnapshot =
     {
         factions: Faction list
@@ -49,6 +58,8 @@ type AgentService =
         /// Ship/contract/agent only — skips the paginated galaxy catalog (`ListSystems`
         /// and friends) so pilot-completion refreshes don't burn rate limit.
         refreshDashboard: unit -> Async<DashboardState option>
+        /// Paginated galaxy map data — loaded when the Galaxie tab is opened, not at login.
+        loadGalaxyCatalog: unit -> Async<Result<GalaxyCatalog, string>>
         loadFactions: unit -> Async<Result<FactionsSnapshot, string>>
         loadSystemWaypoints: string -> Async<Result<Waypoint list, string>>
         loadPublicAgents: unit -> Async<Result<Agent list, string>>
@@ -274,6 +285,8 @@ type Model =
         dashboard: DashboardState option
         dashboardLoading: bool
         dashboardError: string option
+        galaxyCatalogLoading: bool
+        galaxyCatalogError: string option
         queueStatus: QueueStatusDto option
         selectedShipSymbol: string option
         startingJob: bool
@@ -423,6 +436,8 @@ let initModel =
         dashboard = None
         dashboardLoading = false
         dashboardError = None
+        galaxyCatalogLoading = false
+        galaxyCatalogError = None
         queueStatus = None
         selectedShipSymbol = None
         startingJob = false
@@ -501,6 +516,8 @@ type Message =
     | TokenSubmitted of Result<DashboardState, string>
     | LoadDashboard
     | RefreshDashboard
+    | LoadGalaxyCatalog
+    | GalaxyCatalogLoaded of Result<GalaxyCatalog, string>
     | DashboardLoaded of DashboardState option
     | DashboardLoadFailed of string
     | LoadQueueStatus
@@ -1309,6 +1326,28 @@ let update
         // finishes, contract accept/fulfill. Galaxy fields are merged from cache.
         model,
         Cmd.OfAsync.either (fun () -> agentRemote.refreshDashboard ()) () DashboardLoaded (fun ex -> DashboardLoadFailed ex.Message)
+    | LoadGalaxyCatalog ->
+        { model with galaxyCatalogLoading = true; galaxyCatalogError = None },
+        Cmd.OfAsync.either (fun () -> agentRemote.loadGalaxyCatalog ()) () GalaxyCatalogLoaded (fun ex -> GalaxyCatalogLoaded(Error ex.Message))
+    | GalaxyCatalogLoaded(Ok catalog) ->
+        let mergedDashboard =
+            match model.dashboard with
+            | Some existing ->
+                Some
+                    { existing with
+                        systems = catalog.systems
+                        selectedSystemSymbol = catalog.selectedSystemSymbol
+                        waypoints = catalog.waypoints
+                        markets = catalog.markets }
+            | None -> None
+
+        { model with
+            dashboard = mergedDashboard
+            galaxyCatalogLoading = false
+            galaxyCatalogError = None },
+        Cmd.none
+    | GalaxyCatalogLoaded(Error message) ->
+        { model with galaxyCatalogLoading = false; galaxyCatalogError = Some message }, Cmd.none
     | DashboardLoaded stateOpt ->
         let merged =
             match stateOpt, model.dashboard with
@@ -1791,6 +1830,12 @@ let update
                     None
                 if tab = AgentsTab && model.publicAgents.IsNone && model.dashboard.IsSome then
                     Some(LoadPublicAgents)
+                else
+                    None
+                if tab = GalaxieTab && model.dashboard.IsSome then
+                    match model.dashboard with
+                    | Some state when state.systems.IsEmpty -> Some LoadGalaxyCatalog
+                    | _ -> None
                 else
                     None ]
             |> List.choose id
@@ -2847,12 +2892,13 @@ let view model dispatch =
                         viewSystemMap s model state dispatch
                         button {
                             attr.style "font-size: 0.8em; padding: 0.2em 0.6em; margin-top: 0.3rem"
-                            on.click (fun _ -> dispatch LoadDashboard)
+                            attr.disabled model.galaxyCatalogLoading
+                            on.click (fun _ -> dispatch LoadGalaxyCatalog)
                             s.refresh
                         }
-                        if model.dashboardLoading then
+                        if model.galaxyCatalogLoading then
                             p { s.loadingEllipsis }
-                        match model.dashboardError with
+                        match model.galaxyCatalogError with
                         | Some err -> p { s.errorPrefix err }
                         | None -> ()
                     }
@@ -2907,7 +2953,7 @@ type MyApp() =
                 initModel,
                 Cmd.batch [
                     Cmd.ofMsg Init
-                    Cmd.ofMsg LoadDashboard
+                    Cmd.ofMsg RefreshDashboard
                     Cmd.ofMsg LoadQueueStatus
                     Cmd.ofMsg LoadPilots
                     Cmd.ofMsg LoadJobHistory

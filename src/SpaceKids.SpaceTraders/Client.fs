@@ -77,6 +77,9 @@ type SpaceTradersClient(httpClient: HttpClient) =
 
         let rec loop (page: int) (acc: 'a list) : Async<'a list> =
             async {
+                if page > 1 then
+                    do! Async.Sleep(550)
+
                 let sep = if path.Contains("?") then "&" else "?"
                 use request = new HttpRequestMessage(HttpMethod.Get, $"{path}{sep}page={page}&limit={pageSize}")
                 request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)

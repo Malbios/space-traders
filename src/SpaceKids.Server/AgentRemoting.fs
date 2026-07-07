@@ -280,7 +280,7 @@ type AgentRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                             do! Persistence.ApiCacheRepository.invalidateForAgent dbPath agent.symbol
                             // a fresh, accepted token means any prior server-reset is resolved (§13).
                             RequestQueue.clearServerReset ()
-                            let! state = loadRestOfState client dbPath agent token true
+                            let! state = loadRestOfState client dbPath agent token false
                             return Ok state
                         with
                         | SpaceTradersApiException(statusCode, _) ->
@@ -305,6 +305,38 @@ type AgentRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                         match stored with
                         | None -> return None
                         | Some(_, token) -> return! loadDashboardWithToken client dbPath token false
+                    }
+            loadGalaxyCatalog =
+                fun () ->
+                    async {
+                        let! stored = Persistence.AgentRepository.loadStoredAgent dbPath
+
+                        match stored with
+                        | None -> return Error "Nicht angemeldet."
+                        | Some(_, token) ->
+                            try
+                                let! agent =
+                                    RequestQueue.enqueue dbPath 1 "GET /my/agent" None (fun () -> client.GetAgent(token))
+
+                                let hqSystem = Waypoint.systemSymbolOf agent.headquarters
+                                let! systems = fetchSystemsCached client dbPath agent.symbol token
+                                let! waypoints = fetchWaypointsCached client dbPath agent.symbol token hqSystem
+
+                                let! market =
+                                    RequestQueue.enqueue dbPath 1 "GET /systems/{system}/waypoints/{waypoint}/market" None (fun () ->
+                                        client.GetMarket(token, hqSystem, agent.headquarters))
+
+                                return
+                                    Ok
+                                        { systems = systems
+                                          selectedSystemSymbol = hqSystem
+                                          waypoints = waypoints
+                                          markets = [ market ] }
+                            with
+                            | SpaceTradersApiException(statusCode, _) ->
+                                return Error $"Galaxiedaten konnten nicht geladen werden (Status {statusCode})."
+                            | ex ->
+                                return Error $"Verbindung zu SpaceTraders fehlgeschlagen: {ex.Message}"
                     }
             getWaypointMarket =
                 fun waypointSymbol ->

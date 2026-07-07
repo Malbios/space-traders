@@ -331,3 +331,25 @@ let ``fetchSystemsCached serves from api_cache without a second ListSystems call
         Assert.Equal(first.Length, second.Length)
         Assert.True(afterFirst > before)
         Assert.Equal(afterFirst, afterSecond))
+
+[<Fact>]
+let ``token login path does not call ListSystems`` () =
+    use fixture = new AgentFixture()
+
+    withAgentTest (fun dbPath ->
+        let agent = fixture.Client.GetAgent(App.seededToken) |> Async.RunSynchronously
+
+        let countSystemsRequests () =
+            use conn = Database.openConnection dbPath
+            use cmd = conn.CreateCommand()
+            cmd.CommandText <- "SELECT COUNT(*) FROM request_queue_events WHERE endpoint = 'GET /systems';"
+            Convert.ToInt32(cmd.ExecuteScalar())
+
+        let before = countSystemsRequests ()
+
+        withPumpedQueue 20.0 (fun () ->
+            AgentRemoting.loadRestOfState fixture.Client dbPath agent App.seededToken false
+            |> Async.RunSynchronously
+            |> ignore)
+
+        Assert.Equal(before, countSystemsRequests ()))
