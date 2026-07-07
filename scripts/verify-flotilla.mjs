@@ -1,10 +1,16 @@
 /**
  * Live browser verification for Flotilla (mitSchiff + parallel).
- * Prerequisites: FakeSpaceTraders on :5196, SpaceKids.Server on :5290.
+ *
+ * Prerequisites (see scripts/dev.ps1):
+ *   pwsh scripts/dev.ps1 fake     # :5196
+ *   pwsh scripts/dev.ps1 server   # :5290, SpaceTraders__BaseUrl=http://localhost:5196/
+ *
+ * Run: npm run verify:browser
  */
 import { chromium } from "playwright";
 
 const BASE_URL = process.env.SPACEKIDS_URL ?? "http://localhost:5290";
+const SERVER_HEALTH_URL = `${BASE_URL}/`;
 const TOKEN = "FAKE_TOKEN_1";
 
 const WITH_SHIP_UNAVAILABLE_JSON = JSON.stringify({
@@ -80,6 +86,28 @@ function assert(condition, message) {
     if (!condition) throw new Error(message);
 }
 
+async function waitForServer(url) {
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+        try {
+            const response = await fetch(url);
+            if (response.status < 500) return;
+        } catch {
+            // retry
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    throw new Error(`Server not ready at ${url} — start fake + server via scripts/dev.ps1`);
+}
+
+async function launchBrowser() {
+    try {
+        return await chromium.launch({ headless: true, channel: "chrome" });
+    } catch {
+        return await chromium.launch({ headless: true });
+    }
+}
+
 async function waitForBlazor(page) {
     await page.waitForFunction(() => typeof window.Blazor !== "undefined", null, { timeout: 120_000 });
     await page.waitForFunction(() => window.spaceKids?.initWorkspace, null, { timeout: 30_000 });
@@ -140,7 +168,8 @@ async function roundTripWorkspace(page, containerId, json) {
 }
 
 async function main() {
-    const browser = await chromium.launch({ headless: true, channel: "chrome" });
+    await waitForServer(SERVER_HEALTH_URL);
+    const browser = await launchBrowser();
     const page = await browser.newPage();
     const failures = [];
 

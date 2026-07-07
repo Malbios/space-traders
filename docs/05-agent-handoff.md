@@ -519,8 +519,10 @@ struck-through bullets in "Known issues" above for what replaced each one.)
 ```txt
 dotnet build SpaceKids.slnx       Build everything (bundles the Blockly TS seam too)
 dotnet test SpaceKids.slnx        Run all tests
-dotnet run --project src/SpaceKids.Server --urls http://localhost:5290
-                                   Run the app
+pwsh scripts/dev.ps1 fake         Fake API on http://localhost:5196 (foreground)
+pwsh scripts/dev.ps1 server       App on http://localhost:5290 against the fake
+pwsh scripts/dev.ps1 stop         Free ports 5196 / 5290
+npm install && npm run verify:browser   Playwright check (needs fake + server up)
 ```
 
 No database reset command yet — delete `src/SpaceKids.Server/spacekids.db*` (and

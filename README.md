@@ -10,8 +10,10 @@ See `plan.md` for the full build plan (product goals, architecture, milestones) 
 ## Prerequisites
 
 - .NET 10 SDK
-- Node.js (for the Blockly TS seam bundle — wired into `dotnet build` automatically, no
-  separate step needed)
+- Node.js (Blockly TS seam bundles via `dotnet build`; root `npm install` is only needed
+  for Playwright browser verification)
+- Google Chrome (preferred for `npm run verify:browser`; Playwright bundled Chromium is
+  the fallback — install with `npm run playwright:install`)
 
 ## Commands
 
@@ -19,6 +21,25 @@ See `plan.md` for the full build plan (product goals, architecture, milestones) 
 dotnet build SpaceKids.slnx     Build everything (also bundles the Blockly TS seam)
 dotnet test SpaceKids.slnx      Run all tests
 dotnet run --project src/SpaceKids.Server   Run the app (http://localhost:5000 by default)
+```
+
+### Local dev against the fake API
+
+```pwsh
+pwsh scripts/dev.ps1 fake       # terminal 1 — http://localhost:5196
+pwsh scripts/dev.ps1 server     # terminal 2 — http://localhost:5290
+pwsh scripts/dev.ps1 stop       # free ports 5196 / 5290
+```
+
+Paste token `FAKE_TOKEN_1` in Settings when using the fake. The server must use
+`SpaceTraders__BaseUrl=http://localhost:5196/` (no `/v2/` suffix) — `dev.ps1 server`
+sets this automatically.
+
+### Browser verification (Playwright)
+
+```pwsh
+npm install
+npm run verify:browser          # needs fake + server running (see above)
 ```
 
 ## Repository layout

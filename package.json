@@ -1,0 +1,14 @@
+{
+  "name": "spacekids",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Root Node tooling for SpaceKids browser verification (Playwright). Blockly bundling stays in src/SpaceKids.Client.",
+  "scripts": {
+    "verify:browser": "node scripts/verify-flotilla.mjs",
+    "playwright:install": "playwright install chromium"
+  },
+  "devDependencies": {
+    "playwright": "1.52.0"
+  }
+}
