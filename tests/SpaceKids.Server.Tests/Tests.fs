@@ -581,3 +581,14 @@ let ``getLocale and getPollIntervalSeconds racing on a fresh database never thro
         Assert.Equal(1, SettingsRepository.getPollIntervalSeconds dbPath |> Async.RunSynchronously)
     finally
         deleteDbFiles dbPath
+
+// --- Database.defaultDbPath (must never touch the live dev DB during dotnet test) ----
+
+[<Fact>]
+let ``defaultDbPath never points at the live dev database during dotnet test`` () =
+    let path = Database.defaultDbPath |> Path.GetFullPath
+    let normalized = path.Replace('/', '\\')
+    Assert.False(
+        normalized.EndsWith("SpaceKids.Server\spacekids.db", StringComparison.OrdinalIgnoreCase),
+        $"defaultDbPath must not be the live dev DB, got \"{path}\""
+    )

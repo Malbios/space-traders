@@ -1,0 +1,16 @@
+<Project>
+  <!-- Every test assembly must use its own throwaway SQLite file. This overrides
+       SPACEKIDS_DB_PATH inherited from a dev-server shell (scripts/dev.ps1 sets it
+       to src/SpaceKids.Server/spacekids.db) so dotnet test never writes job history,
+       programs, or agent rows into the real app database. -->
+  <PropertyGroup>
+    <RunEnvironmentVariables>
+      SPACEKIDS_DB_PATH=$(MSBuildProjectDirectory)\.test-spacekids.db;
+      SPACEKIDS_BACKUPS_DIR=$(MSBuildProjectDirectory)\.test-backups
+    </RunEnvironmentVariables>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(MSBuildProjectName)' != 'SpaceKids.TestSupport'">
+    <Compile Include="$(MSBuildThisFileDirectory)TestBootstrap.fs" />
+  </ItemGroup>
+</Project>

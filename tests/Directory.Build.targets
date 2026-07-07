@@ -1,0 +1,5 @@
+<Project>
+  <ItemGroup Condition="'$(MSBuildProjectName)' != 'SpaceKids.TestSupport'">
+    <ProjectReference Include="$(MSBuildThisFileDirectory)SpaceKids.TestSupport\SpaceKids.TestSupport.fsproj" />
+  </ItemGroup>
+</Project>
