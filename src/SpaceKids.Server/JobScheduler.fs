@@ -77,6 +77,15 @@ let tickOnce (client: SpaceTradersClient) (dbPath: string) : Async<unit> =
                     | Some current, Some sym when not (isTerminal current.status) ->
                         do! Persistence.ShipLockRepository.refreshLease dbPath sym job.jobId JobRunner.leaseSeconds
                     | _ -> ()
+
+                    match JobRunner.getStatus job.jobId with
+                    | Some current when not (isTerminal current.status) ->
+                        for sym in current.dynamicShipLocks |> List.distinct do
+                            do! Persistence.ShipLockRepository.refreshLease dbPath sym job.jobId JobRunner.leaseSeconds
+
+                        for sym in current.parallelBranches |> List.collect (fun b -> b.job.dynamicShipLocks) |> List.distinct do
+                            do! Persistence.ShipLockRepository.refreshLease dbPath sym job.jobId JobRunner.leaseSeconds
+                    | _ -> ()
     }
 
 /// §14: an expired lease with no competing acquirer still gets its job paused

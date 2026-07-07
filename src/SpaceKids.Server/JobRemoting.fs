@@ -19,8 +19,25 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
         match status with
         | WaitingForArrival until -> Some(until.ToString("o"))
         | WaitingForCooldown until -> Some(until.ToString("o"))
+        | WaitingForShipLock(shipSymbol, _, _) -> Some shipSymbol
         | Failed message -> Some message
         | _ -> None
+
+    let currentShipSymbol (job: JobState) : string option =
+        match job.currentShipStack with
+        | (sym, _) :: _ -> Some sym
+        | [] -> job.shipSymbol
+
+    let rec branchStatuses depth (job: JobState) : JobBranchStatusDto list =
+        job.parallelBranches
+        |> List.collect (fun branch ->
+            if branch.job.parallelBranches.IsEmpty then
+                [ { shipSymbol = currentShipSymbol branch.job
+                    status = JobRunner.statusName branch.job.status
+                    statusDetail = statusDetail branch.job.status
+                    depth = depth } ]
+            else
+                branchStatuses (depth + 1) branch.job)
 
     let toDto (jobOpt: JobState option) : JobStatusDto option =
         jobOpt
@@ -36,6 +53,7 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
           shipSymbol = job.shipSymbol
           status = JobRunner.statusName job.status
           statusDetail = statusDetail job.status
+          branchStatuses = branchStatuses 0 job
           lastLogLine = job.log |> List.tryHead }
 
     let currentToken () : Async<string option> =

@@ -172,6 +172,87 @@ let ``compiles controls_flow_statements to Break or Continue depending on FLOW``
         )
 
 [<Fact>]
+let ``compiles withShip with unavailable branch and internal scope exit`` () =
+    let json =
+        """
+        { "blocks": { "languageVersion": 0, "blocks": [
+            { "type": "withShip", "id": "ws1", "extraState": { "hasUnavailable": true }, "inputs": {
+                "SHIP": { "block": """ + textBlock "ship1" "FAKE-AGENT-2" + """ },
+                "DO": { "block": { "type": "orbit", "id": "orbit1" } },
+                "ELSE": { "block": { "type": "sk_show_message", "id": "msg1", "inputs": {
+                    "TEXT": { "block": """ + textBlock "msgtext" "missing" + """ }
+                } } }
+            } }
+        ] } }
+        """
+
+    match Compiler.compileWorkspace De noCustomBlocks json with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        Assert.Equal<Instruction list>(
+            [ WithShip(
+                  "ws1",
+                  Literal(StringLit "FAKE-AGENT-2"),
+                  [ ApiAction("orbit1", "orbit", Map.empty); ExitShipScope "ws1:exit" ],
+                  Some [ ShowMessage("msg1", Literal(StringLit "missing")) ]
+              ) ],
+            program.instructions
+        )
+
+[<Fact>]
+let ``compiles withShip without unavailable branch by default`` () =
+    let json =
+        """
+        { "blocks": { "languageVersion": 0, "blocks": [
+            { "type": "withShip", "id": "ws1", "inputs": {
+                "SHIP": { "block": """ + textBlock "ship1" "FAKE-AGENT-2" + """ },
+                "DO": { "block": { "type": "orbit", "id": "orbit1" } }
+            } }
+        ] } }
+        """
+
+    match Compiler.compileWorkspace De noCustomBlocks json with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        Assert.Equal<Instruction list>(
+            [ WithShip(
+                  "ws1",
+                  Literal(StringLit "FAKE-AGENT-2"),
+                  [ ApiAction("orbit1", "orbit", Map.empty); ExitShipScope "ws1:exit" ],
+                  None
+              ) ],
+            program.instructions
+        )
+
+[<Fact>]
+let ``compiles parallel with mutator branch count`` () =
+    let json =
+        """
+        { "blocks": { "languageVersion": 0, "blocks": [
+            { "type": "parallel", "id": "par1", "extraState": { "branchCount": 3 }, "inputs": {
+                "DO0": { "block": { "type": "orbit", "id": "orbit1" } },
+                "DO1": { "block": { "type": "dock", "id": "dock1" } },
+                "DO2": { "block": { "type": "sk_show_message", "id": "msg1", "inputs": {
+                    "TEXT": { "block": """ + textBlock "msgtext" "done" + """ }
+                } } }
+            } }
+        ] } }
+        """
+
+    match Compiler.compileWorkspace De noCustomBlocks json with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        Assert.Equal<Instruction list>(
+            [ Parallel(
+                  "par1",
+                  [ [ ApiAction("orbit1", "orbit", Map.empty) ]
+                    [ ApiAction("dock1", "dock", Map.empty) ]
+                    [ ShowMessage("msg1", Literal(StringLit "done")) ] ]
+              ) ],
+            program.instructions
+        )
+
+[<Fact>]
 let ``validate rejects a Break outside any loop, but allows one inside a controls_forEach`` () =
     let outsideJson =
         """{ "blocks": { "languageVersion": 0, "blocks": [ { "type": "controls_flow_statements", "id": "brk1", "fields": { "FLOW": "BREAK" } } ] } }"""
@@ -260,21 +341,56 @@ let ``programRequiresShip detects a ship-scoped block inside a called custom blo
 [<Fact>]
 let ``ListGet returns the item at a valid index`` () =
     let expr =
-        ListGet(ListLiteral [ Literal(NumberLit 10.0); Literal(NumberLit 20.0); Literal(NumberLit 30.0) ], Literal(NumberLit 1.0))
+        ListGet(ListLiteral [ Literal(NumberLit 10.0); Literal(NumberLit 20.0); Literal(NumberLit 30.0) ], FromStart, Some(Literal(NumberLit 1.0)))
 
     Assert.Equal(VNumber 20.0, Eval.eval Map.empty expr)
 
 [<Fact>]
 let ``ListGet fails clearly on an out-of-range index`` () =
-    let expr = ListGet(ListLiteral [ Literal(NumberLit 10.0) ], Literal(NumberLit 5.0))
+    let expr = ListGet(ListLiteral [ Literal(NumberLit 10.0) ], FromStart, Some(Literal(NumberLit 5.0)))
     let ex = Assert.Throws<System.Exception>(fun () -> Eval.eval Map.empty expr |> ignore)
     Assert.Equal("Listenindex außerhalb des gültigen Bereichs.", ex.Message)
 
 [<Fact>]
 let ``ListGet fails clearly on a negative index`` () =
-    let expr = ListGet(ListLiteral [ Literal(NumberLit 10.0) ], Literal(NumberLit -1.0))
+    let expr = ListGet(ListLiteral [ Literal(NumberLit 10.0) ], FromStart, Some(Literal(NumberLit -1.0)))
     let ex = Assert.Throws<System.Exception>(fun () -> Eval.eval Map.empty expr |> ignore)
     Assert.Equal("Listenindex außerhalb des gültigen Bereichs.", ex.Message)
+
+[<Fact>]
+let ``ListGet supports FROM_END FIRST and LAST where modes`` () =
+    let list = ListLiteral [ Literal(NumberLit 10.0); Literal(NumberLit 20.0); Literal(NumberLit 30.0) ]
+    Assert.Equal(VNumber 30.0, Eval.eval Map.empty (ListGet(list, Last, None)))
+    Assert.Equal(VNumber 10.0, Eval.eval Map.empty (ListGet(list, First, None)))
+    Assert.Equal(VNumber 20.0, Eval.eval Map.empty (ListGet(list, FromEnd, Some(Literal(NumberLit 1.0)))))
+
+[<Fact>]
+let ``compiles lists_setIndex with FROM_END where mode`` () =
+    let json =
+        """
+        { "blocks": { "languageVersion": 0, "blocks": [
+            { "type": "variables_set", "id": "init", "fields": { "VAR": { "id": "items", "name": "items", "type": "List" } },
+              "inputs": { "VALUE": { "block": { "type": "lists_create_with", "id": "mk", "extraState": { "itemCount": 2 },
+                "inputs": { "ADD0": { "block": { "type": "text", "id": "a", "fields": { "TEXT": "a" } } },
+                            "ADD1": { "block": { "type": "text", "id": "b", "fields": { "TEXT": "b" } } } } } } } },
+            { "type": "lists_setIndex", "id": "set1", "fields": { "MODE": "SET", "WHERE": "FROM_END" },
+              "inputs": {
+                "LIST": { "block": { "type": "variables_get", "id": "get", "fields": { "VAR": { "id": "items", "name": "items", "type": "List" } } } },
+                "AT": { "block": { "type": "math_number", "id": "idx", "fields": { "NUM": 0 } } },
+                "TO": { "block": { "type": "text", "id": "val", "fields": { "TEXT": "z" } } }
+              } }
+        ] } }
+        """
+
+    match Compiler.compileWorkspace De noCustomBlocks json with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        Assert.Contains(
+            program.instructions,
+            function
+            | ListSet("set1", "items", FromEnd, Some _, _) -> true
+            | _ -> false
+        )
 
 /// Regression test: `asFloat`'s `VString` branch used to rely on the bare `float`
 /// operator, which throws a raw, unlocalized `System.FormatException` instead of this
@@ -455,6 +571,34 @@ let ``validate rejects a string literal passed where a custom block expects a nu
     | Ok program ->
         let errors = Validator.validate De program
         Assert.Contains(errors, fun e -> e.message.Contains("Anzahl") && e.message.Contains("falschen Typ"))
+
+[<Fact>]
+let ``validate rejects an accessor number passed where a custom block expects a string`` () =
+    let blockDef: CustomBlockDefinition =
+        { id = "needs-ship"
+          signature = { inputs = [ { name = "Schiff"; inputType = "Schiff" } ]; output = None; outputFields = None }
+          workspaceJson = simpleWaitBody }
+
+    let lookup =
+        function
+        | "needs-ship" -> Some blockDef
+        | _ -> None
+
+    let argInputs =
+        """"Schiff": { "block": { "type": "shipFuel", "id": "fuel1", "inputs": {
+            "TARGET": { "block": { "type": "sk_build_record", "id": "rec1", "extraState": { "fields": [] } } }
+        } } }"""
+
+    let json =
+        """{ "blocks": { "languageVersion": 0, "blocks": [ """
+        + customBlockCallJson "call1" "needs-ship" argInputs
+        + """ ] } }"""
+
+    match Compiler.compileWorkspace De lookup json with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        let errors = Validator.validate De program
+        Assert.Contains(errors, fun e -> e.message.Contains("Schiff") && e.message.Contains("falschen Typ"))
 
 [<Fact>]
 let ``revalidateAgainstCurrentDefinitions catches a signature that changed after compile`` () =

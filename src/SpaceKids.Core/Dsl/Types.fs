@@ -10,6 +10,15 @@ type LiteralValue =
     | NumberLit of float
     | BoolLit of bool
 
+/// Blockly `lists_getIndex` / `lists_setIndex` WHERE modes (FROM_START is the
+/// default when the field is absent).
+type ListIndexWhere =
+    | FromStart
+    | FromEnd
+    | First
+    | Last
+    | Random
+
 /// Pure expression tree (§10: "inline arguments must be pure"). Never itself performs
 /// an API call or a custom-block call — those are hoisted into instructions by the
 /// compiler (see Compiler.fs) and referenced back here as a TempRef.
@@ -24,7 +33,7 @@ type Expr =
     | LogicalOp of op: string * left: Expr * right: Expr
     | LogicalNot of operand: Expr
     | ListLiteral of items: Expr list
-    | ListGet of list: Expr * index: Expr
+    | ListGet of list: Expr * where: ListIndexWhere * index: Expr option
     /// A custom block's structured-output "build record" block (§9 Outputs,
     /// Milestone 9/Part C) — a flat `VRecord` literal, symmetric with the fixed §8
     /// records produced by info blocks. Only ever appears plugged into a definition
@@ -47,10 +56,27 @@ type Instruction =
     | Wait of blockId: string * seconds: Expr
     | SetVariable of blockId: string * name: string * value: Expr
     | ChangeVariable of blockId: string * name: string * delta: Expr
+    /// Blockly `lists_setIndex` (SET mode): mutates a list variable in place.
+    | ListSet of
+        blockId: string
+        *
+        name: string
+        *
+        where: ListIndexWhere
+        *
+        index: Expr option
+        *
+        value: Expr
     | If of blockId: string * branches: (Expr * Instruction list) list * elseBranch: Instruction list option
     | Repeat of blockId: string * count: Expr * body: Instruction list
     | WhileUntil of blockId: string * mode: WhileMode * condition: Expr * body: Instruction list
     | ForEach of blockId: string * variable: string * list: Expr * body: Instruction list
+    /// Flotilla F1: runs `body` with a runtime-selected "current ship". If the
+    /// evaluated ship reference cannot be resolved/acquired, `elseBranch` runs when
+    /// present; otherwise the job fails.
+    | WithShip of blockId: string * ship: Expr * body: Instruction list * elseBranch: Instruction list option
+    /// Flotilla F2: runs each branch concurrently and joins once every branch settles.
+    | Parallel of blockId: string * branches: Instruction list list
     /// A custom-block call (§9d) — a real call, not inlined. `resultTarget` is set only
     /// when the referenced block's signature has an output.
     | CallCustomBlock of blockId: string * customBlockId: string * arguments: Map<string, Expr> * resultTarget: string option
@@ -59,6 +85,8 @@ type Instruction =
     /// Skips straight to the nearest enclosing loop's next iteration (or exits it, if
     /// the current iteration was its last).
     | Continue of blockId: string
+    /// Internal scheduler marker appended by the compiler to a `WithShip` body.
+    | ExitShipScope of blockId: string
 
 type CustomBlockSignatureInput = { name: string; inputType: string }
 

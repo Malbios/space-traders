@@ -25,7 +25,8 @@ let rec private exprRefs (expr: Expr) : string list =
     | LogicalNot operand -> exprRefs operand
     | ListLiteral items -> items |> List.collect exprRefs
     | RecordLiteral fields -> fields |> List.collect (snd >> exprRefs)
-    | ListGet(list, index) -> exprRefs list @ exprRefs index
+    | ListGet(list, _, index) ->
+        exprRefs list @ (index |> Option.map exprRefs |> Option.defaultValue [])
 
 /// All variable/parameter names referenced anywhere in an instruction (including
 /// nested bodies), and all customBlockIds called (including nested bodies).
@@ -41,6 +42,8 @@ let rec private walk (instr: Instruction) : (string list * string list) =
     | Wait(_, seconds) -> exprRefs seconds, []
     | SetVariable(_, _, value) -> exprRefs value, []
     | ChangeVariable(_, _, delta) -> exprRefs delta, []
+    | ListSet(_, _, _, index, value) ->
+        (index |> Option.map exprRefs |> Option.defaultValue []) @ exprRefs value, []
     | If(_, branches, elseBranch) ->
         let branchRefs, branchCalls =
             branches
@@ -59,9 +62,18 @@ let rec private walk (instr: Instruction) : (string list * string list) =
     | ForEach(_, _, list, body) ->
         let r, c = bodyRefs body
         exprRefs list @ r, c
+    | WithShip(_, ship, body, elseBranch) ->
+        let bodyRefs', bodyCalls = bodyRefs body
+        let elseRefs, elseCalls = elseBranch |> Option.map bodyRefs |> Option.defaultValue ([], [])
+        exprRefs ship @ bodyRefs' @ elseRefs, bodyCalls @ elseCalls
+    | Parallel(_, branches) ->
+        branches
+        |> List.map bodyRefs
+        |> List.fold (fun (rs, cs) (r, c) -> rs @ r, cs @ c) ([], [])
     | CallCustomBlock(_, customBlockId, args, _) -> exprsOf args, [ customBlockId ]
     | Break _ -> [], []
     | Continue _ -> [], []
+    | ExitShipScope _ -> [], []
 
 /// Names "declared" within an instruction list's own scope (SetVariable targets,
 /// ForEach loop variables) — used for the scope check below. Custom-block parameters
@@ -77,6 +89,9 @@ let rec private declaredNames (instructions: Instruction list) : string list =
             @ (elseBranch |> Option.map declaredNames |> Option.defaultValue [])
         | Repeat(_, _, body) -> declaredNames body
         | WhileUntil(_, _, _, body) -> declaredNames body
+        | WithShip(_, _, body, elseBranch) ->
+            declaredNames body @ (elseBranch |> Option.map declaredNames |> Option.defaultValue [])
+        | Parallel(_, branches) -> branches |> List.collect declaredNames
         | _ -> [])
 
 let private checkScope (locale: Locale) (scopeName: string) (declared: Set<string>) (instructions: Instruction list) : DslError list =
@@ -113,12 +128,17 @@ let rec private checkFlowStatements (locale: Locale) (insideLoop: bool) (instruc
             [ { blockId = Some blockId; message = message } ]
         | Break _
         | Continue _ -> []
+        | ExitShipScope _ -> []
         | If(_, branches, elseBranch) ->
             (branches |> List.collect (snd >> checkFlowStatements locale insideLoop))
             @ (elseBranch |> Option.map (checkFlowStatements locale insideLoop) |> Option.defaultValue [])
         | Repeat(_, _, body) -> checkFlowStatements locale true body
         | WhileUntil(_, _, _, body) -> checkFlowStatements locale true body
         | ForEach(_, _, _, body) -> checkFlowStatements locale true body
+        | WithShip(_, _, body, elseBranch) ->
+            checkFlowStatements locale insideLoop body
+            @ (elseBranch |> Option.map (checkFlowStatements locale insideLoop) |> Option.defaultValue [])
+        | Parallel(_, branches) -> branches |> List.collect (checkFlowStatements locale insideLoop)
         | _ -> [])
 
 /// The canonical list of ship-scoped action/info types (§14 follow-up: making ship
@@ -142,6 +162,8 @@ let rec private instructionNeedsShip (instr: Instruction) : bool =
     | Repeat(_, _, body)
     | WhileUntil(_, _, _, body)
     | ForEach(_, _, _, body) -> body |> List.exists instructionNeedsShip
+    | Parallel(_, branches) -> branches |> List.exists (List.exists instructionNeedsShip)
+    | WithShip _ -> true
     | _ -> false
 
 /// Whether a compiled program touches any ship-scoped block anywhere — in the main
@@ -157,12 +179,59 @@ let programRequiresShip (program: CompiledProgram) : bool =
 /// `"Zahl"` never actually occurs (found in review: it was checked here but never
 /// produced by the compiler/client, so this check was silently dead in practice).
 let private numericInputTypeLabels = set [ "Anzahl"; "Number"; "Preisgrenze"; "Price limit" ]
+let private stringInputTypeLabels = set [ "Schiff"; "Ship"; "Wegpunkt"; "Waypoint"; "Ware"; "Good" ]
+let private listInputTypeLabels = set [ "Liste"; "List" ]
 
-let private literalTypeMismatch (inputType: string) (arg: Expr) : bool =
-    match arg with
-    | Literal(StringLit _)
-    | Literal(BoolLit _) -> numericInputTypeLabels.Contains inputType
-    | _ -> false
+let private numericRecordFields =
+    set [ "Fuel"; "CargoUnits"; "CargoCapacity"; "Units"; "Price"; "BuyPrice"; "SellPrice" ]
+
+let private boolRecordFields = set [ "Accepted"; "Fulfilled"; "HasShipyard"; "HasMarket" ]
+let private listRecordFields = set [ "Goods"; "Types" ]
+
+type private ExprKind =
+    | StringKind
+    | NumberKind
+    | BoolKind
+    | ListKind
+    | RecordKind
+    | UnknownKind
+
+let private expectedKindForInputType (inputType: string) : ExprKind option =
+    if numericInputTypeLabels.Contains inputType then Some NumberKind
+    elif stringInputTypeLabels.Contains inputType then Some StringKind
+    elif listInputTypeLabels.Contains inputType then Some ListKind
+    else None
+
+let rec private exprKind (expr: Expr) : ExprKind =
+    match expr with
+    | Literal(StringLit _) -> StringKind
+    | Literal(NumberLit _) -> NumberKind
+    | Literal(BoolLit _) -> BoolKind
+    | ListLiteral _ -> ListKind
+    | RecordLiteral _ -> RecordKind
+    | Accessor(field, target) ->
+        match field with
+        | f when numericRecordFields.Contains f -> NumberKind
+        | f when boolRecordFields.Contains f -> BoolKind
+        | f when listRecordFields.Contains f -> ListKind
+        | _ ->
+            match exprKind target with
+            | RecordKind -> StringKind
+            | other -> other
+    | Arithmetic _ -> NumberKind
+    | Comparison _ -> BoolKind
+    | LogicalOp _ -> BoolKind
+    | LogicalNot _ -> BoolKind
+    | ListGet _ -> UnknownKind
+    | _ -> UnknownKind
+
+let private argumentTypeMismatch (inputType: string) (arg: Expr) : bool =
+    match expectedKindForInputType inputType with
+    | None -> false
+    | Some expected ->
+        match exprKind arg with
+        | UnknownKind -> false
+        | actual -> actual <> expected
 
 let private checkCustomBlockCalls (locale: Locale) (program: CompiledProgram) (instructions: Instruction list) : DslError list =
     instructions
@@ -204,7 +273,7 @@ let private checkCustomBlockCalls (locale: Locale) (program: CompiledProgram) (i
                         |> List.choose (fun input ->
                             arguments.TryFind input.name
                             |> Option.bind (fun arg ->
-                                if literalTypeMismatch input.inputType arg then
+                                if argumentTypeMismatch input.inputType arg then
                                     let message =
                                         match locale with
                                         | De -> $"Eingabe \"{input.name}\" bei \"{customBlockId}\" hat den falschen Typ."

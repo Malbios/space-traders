@@ -16,13 +16,17 @@ let private blockIdOf (instr: Instruction) : string =
     | Wait(bid, _) -> bid
     | SetVariable(bid, _, _) -> bid
     | ChangeVariable(bid, _, _) -> bid
+    | ListSet(bid, _, _, _, _) -> bid
     | If(bid, _, _) -> bid
     | Repeat(bid, _, _) -> bid
     | WhileUntil(bid, _, _, _) -> bid
     | ForEach(bid, _, _, _) -> bid
+    | WithShip(bid, _, _, _) -> bid
+    | Parallel(bid, _) -> bid
     | CallCustomBlock(bid, _, _, _) -> bid
     | Break bid -> bid
     | Continue bid -> bid
+    | ExitShipScope bid -> bid
 
 let rec private findInstructionByBlockId (instructions: Instruction list) (blockId: string) : Instruction option =
     instructions
@@ -38,6 +42,11 @@ let rec private findInstructionByBlockId (instructions: Instruction list) (block
             | Repeat(_, _, body) -> findInstructionByBlockId body blockId
             | WhileUntil(_, _, _, body) -> findInstructionByBlockId body blockId
             | ForEach(_, _, _, body) -> findInstructionByBlockId body blockId
+            | WithShip(_, _, body, elseBranch) ->
+                match findInstructionByBlockId body blockId with
+                | Some found -> Some found
+                | None -> elseBranch |> Option.bind (fun eb -> findInstructionByBlockId eb blockId)
+            | Parallel(_, branches) -> branches |> List.tryPick (fun body -> findInstructionByBlockId body blockId)
             | _ -> None)
 
 let private resolveBody (program: CompiledProgram) (bodyRef: BodyRef) : Instruction list =
@@ -63,6 +72,18 @@ let private resolveBody (program: CompiledProgram) (bodyRef: BodyRef) : Instruct
         match findInstructionByBlockId program.instructions blockId with
         | Some(ForEach(_, _, _, body)) -> body
         | _ -> failwith $"Für-jedes-Element-Block {blockId} nicht gefunden."
+    | WithShipBody blockId ->
+        match findInstructionByBlockId program.instructions blockId with
+        | Some(WithShip(_, _, body, _)) -> body
+        | _ -> failwith $"Mit-Schiff-Block {blockId} nicht gefunden."
+    | WithShipElseBody blockId ->
+        match findInstructionByBlockId program.instructions blockId with
+        | Some(WithShip(_, _, _, Some elseBranch)) -> elseBranch
+        | _ -> failwith $"Sonst-Zweig von Mit-Schiff-Block {blockId} nicht gefunden."
+    | ParallelBranchBody(blockId, branchIndex) ->
+        match findInstructionByBlockId program.instructions blockId with
+        | Some(Parallel(_, branches)) -> branches.[branchIndex]
+        | _ -> failwith $"Parallel-Zweig {branchIndex} von {blockId} nicht gefunden."
     | CustomBlockBody customBlockId ->
         match program.customBlocks.TryFind customBlockId with
         | Some cb -> cb.instructions
@@ -198,6 +219,48 @@ let private currentLocals (job: JobState) : Map<string, Value> =
     | [] -> Map.empty
     | top :: _ -> top.locals
 
+let private currentShipSymbol (job: JobState) : string option =
+    match job.currentShipStack with
+    | (sym, _) :: _ -> Some sym
+    | [] -> job.shipSymbol
+
+let private isTerminalStatus (status: JobStatus) : bool =
+    match status with
+    | Completed
+    | Failed _
+    | Cancelled -> true
+    | _ -> false
+
+let private mapBranchEffect (branchId: string) (effect: Effect) : Effect option =
+    match effect with
+    | QueueApiCall(jobId, shipSymbol, action, attemptNumber) ->
+        Some(QueueBranchApiCall(jobId, branchId, shipSymbol, action, attemptNumber))
+    | ReconcileShipState(jobId, shipSymbol, attemptNumber) ->
+        Some(ReconcileBranchShipState(jobId, branchId, shipSymbol, attemptNumber))
+    | ReconcileContractState(jobId, contractId, attemptNumber) ->
+        Some(ReconcileBranchContractState(jobId, branchId, contractId, attemptNumber))
+    | ReconcileFleetState(jobId, attemptNumber) ->
+        Some(ReconcileBranchFleetState(jobId, branchId, attemptNumber))
+    | QueueInfoRead(jobId, shipSymbol, infoType, args, attemptNumber, resultTarget) ->
+        Some(QueueBranchInfoRead(jobId, branchId, shipSymbol, infoType, args, attemptNumber, resultTarget))
+    | AcquireShipScope(jobId, blockId, shipSymbol, hasElse) ->
+        Some(AcquireBranchShipScope(jobId, branchId, blockId, shipSymbol, hasElse))
+    | ReleaseShipScope _ -> Some effect
+    | LogMessage _
+    | StartWait _ -> Some effect
+    | JobCompleted _
+    | JobFailed _
+    | JobCancelled _ -> None
+    | QueueBranchApiCall _
+    | ReconcileBranchShipState _
+    | ReconcileBranchContractState _
+    | ReconcileBranchFleetState _
+    | QueueBranchInfoRead _
+    | AcquireBranchShipScope _ -> Some effect
+
+let private mapBranchEffects (branchId: string) (effects: Effect list) : Effect list =
+    effects |> List.choose (mapBranchEffect branchId)
+
 // --- Call stack (§9d/§14, Milestone 9) ----------------------------------------------
 
 let private pushFrame (frame: Frame) (job: JobState) : JobState = { job with stack = frame :: job.stack }
@@ -315,6 +378,13 @@ and private advanceInstruction (clock: Clock) (job: JobState) (instr: Instructio
             locals |> Map.tryFind name |> Option.map Eval.asFloat |> Option.defaultValue 0.0
 
         advance clock (job |> setLocal name (VNumber(current + delta)) |> advanceJobPosition)
+    | ListSet(_, name, where, indexOpt, valueExpr) ->
+        let items = locals |> Map.find name |> Eval.asList
+        let indexValue = indexOpt |> Option.map (Eval.eval locals)
+        let idx = Eval.resolveListIndex items where indexValue
+        let value = Eval.eval locals valueExpr
+        let updated = Eval.setListAt items idx value
+        advance clock (job |> setLocal name (VList updated) |> advanceJobPosition)
     | ShowMessage(_, textExpr) ->
         let text = Eval.eval locals textExpr |> Eval.asString
         advance clock ({ job with log = text :: job.log } |> advanceJobPosition)
@@ -363,8 +433,27 @@ and private advanceInstruction (clock: Clock) (job: JobState) (instr: Instructio
                 |> setLocal variable first
 
             advance clock job'
+    | Parallel(blockId, branches) -> startParallel clock job blockId branches
+    | WithShip(blockId, shipExpr, _, elseBranch) ->
+        let shipSymbol = Eval.eval locals shipExpr |> Eval.asString
+        { job with status = WaitingForShipLock(shipSymbol, blockId, elseBranch.IsSome) },
+        [ AcquireShipScope(job.jobId, blockId, shipSymbol, elseBranch.IsSome) ]
     | Break _ -> advance clock (job |> mapTopFrame (breakLoop job.program))
     | Continue _ -> advance clock (job |> mapTopFrame (continueLoop job.program))
+    | ExitShipScope _ ->
+        match job.currentShipStack with
+        | (shipSymbol, true) :: rest ->
+            let job' =
+                { job with
+                    currentShipStack = rest
+                    dynamicShipLocks = job.dynamicShipLocks |> List.filter ((<>) shipSymbol) }
+                |> advanceJobPosition
+
+            let job'', effects = advance clock job'
+            job'', ReleaseShipScope(job.jobId, shipSymbol) :: effects
+        | (_, false) :: rest ->
+            advance clock ({ job with currentShipStack = rest } |> advanceJobPosition)
+        | [] -> advance clock (job |> advanceJobPosition)
     | InfoRead(blockId, infoType, args, resultTarget) -> emitInfoRead job blockId infoType args resultTarget
     | CallCustomBlock(_, customBlockId, arguments, resultTarget) ->
         match job.program.customBlocks.TryFind customBlockId with
@@ -388,6 +477,228 @@ and private advanceInstruction (clock: Clock) (job: JobState) (instr: Instructio
             advance clock (job |> pushFrame calleeFrame)
     | ApiAction(blockId, actionType, args) -> emitApiAction job blockId actionType args
 
+and private startParallel
+    (clock: Clock)
+    (job: JobState)
+    (blockId: string)
+    (branches: Instruction list list)
+    : JobState * Effect list =
+    let activeBranches =
+        branches
+        |> List.mapi (fun idx _ ->
+            let branchId = $"{blockId}:{idx}"
+            let frame =
+                { scope = branchId
+                  position = [ { bodyRef = ParallelBranchBody(blockId, idx); index = 0; loopState = None } ]
+                  locals = currentLocals job
+                  returnTarget = None }
+
+            { branchId = branchId
+              job =
+                { job with
+                    status = Running
+                    stack = [ frame ]
+                    currentShipStack = job.currentShipStack
+                    dynamicShipLocks = []
+                    parallelBranches = []
+                    pausePending = false
+                    cancelPending = false }
+              failure = None
+              completed = false })
+
+    { (job |> advanceJobPosition) with parallelBranches = activeBranches } |> driveParallelBranches clock
+
+and private settleBranch (branch: ParallelBranch) : ParallelBranch =
+    match branch.job.status with
+    | Completed -> { branch with completed = true }
+    | Failed msg -> { branch with completed = true; failure = Some msg }
+    | Cancelled -> { branch with completed = true; failure = Some "Parallel-Zweig wurde gestoppt." }
+    | _ -> branch
+
+and private finalizeParallelIfSettled (clock: Clock) (job: JobState) (effects: Effect list) : JobState * Effect list =
+    if job.parallelBranches.IsEmpty then
+        job, effects
+    elif job.parallelBranches |> List.forall (fun b -> b.completed) then
+        let failures = job.parallelBranches |> List.choose (fun b -> b.failure)
+        let released =
+            job.parallelBranches
+            |> List.collect (fun b -> b.job.dynamicShipLocks)
+            |> List.distinct
+            |> List.map (fun sym -> ReleaseShipScope(job.jobId, sym))
+
+        if failures.IsEmpty then
+            let job', more = advance clock { job with parallelBranches = [] }
+            job', effects @ released @ more
+        else
+            let msg = "Mindestens ein Parallel-Zweig ist fehlgeschlagen: " + (String.concat "; " failures)
+            { job with status = Failed msg; parallelBranches = [] }, effects @ released @ [ JobFailed(job.jobId, msg) ]
+    else
+        job, effects
+
+and private siblingHoldsShip (branchId: string) (shipSymbol: string) (branches: ParallelBranch list) : bool =
+    branches
+    |> List.exists (fun branch ->
+        branch.branchId <> branchId
+        && not branch.completed
+        && branch.job.currentShipStack |> List.exists (fun (sym, _) -> sym = shipSymbol))
+
+and private driveBranch
+    (clock: Clock)
+    (event: SchedulerEvent)
+    (parentBranches: ParallelBranch list)
+    (branch: ParallelBranch)
+    : ParallelBranch * Effect list =
+    if branch.completed then
+        branch, []
+    else
+        let stepLeaf branchJob =
+            match event with
+            | WakeTick ->
+                match branchJob.status with
+                | Running -> advance clock branchJob
+                | WaitingForArrival until when clock.now() >= until -> advance clock { branchJob with status = Running }
+                | WaitingForCooldown until when clock.now() >= until -> advance clock { branchJob with status = Running }
+                | WaitingForShipLock(shipSymbol, blockId, hasElse) ->
+                    branchJob, [ AcquireShipScope(branchJob.jobId, blockId, shipSymbol, hasElse) ]
+                | _ -> branchJob, []
+            | PauseRequested ->
+                match branchJob.status with
+                | Running
+                | WaitingForArrival _
+                | WaitingForCooldown _
+                | WaitingForShipLock _ -> { branchJob with status = Paused branchJob.status; log = "Programm pausiert." :: branchJob.log }, []
+                | AwaitingApiResponse _
+                | Reconciling _
+                | AwaitingInfoResponse _ ->
+                    { branchJob with
+                        pausePending = true
+                        log = "Pause angefordert – wird nach Bestätigung der aktuellen Aktion wirksam." :: branchJob.log },
+                    []
+                | _ -> branchJob, []
+            | ResumeRequested ->
+                match branchJob.status with
+                | Paused Running -> advance clock { branchJob with status = Running }
+                | Paused prior -> { branchJob with status = prior }, []
+                | _ -> branchJob, []
+            | CancelRequested ->
+                match branchJob.status with
+                | Running
+                | WaitingForArrival _
+                | WaitingForCooldown _
+                | WaitingForShipLock _
+                | Paused _ -> { branchJob with status = Cancelled; log = "Programm gestoppt." :: branchJob.log }, [ JobCancelled branchJob.jobId ]
+                | AwaitingApiResponse _
+                | Reconciling _
+                | AwaitingInfoResponse _ ->
+                    { branchJob with
+                        cancelPending = true
+                        log = "Stopp angefordert – wird nach Bestätigung der aktuellen Aktion wirksam." :: branchJob.log },
+                    []
+                | _ -> branchJob, []
+            | _ -> branchJob, []
+
+        let stepBranch branchJob =
+            let job', effects = stepLeaf branchJob
+
+            match
+                effects
+                |> List.tryPick (function
+                    | AcquireShipScope(_, blockId, shipSymbol, _) when siblingHoldsShip branch.branchId shipSymbol parentBranches ->
+                        Some(blockId, shipSymbol)
+                    | _ -> None)
+            with
+            | Some(blockId, shipSymbol) ->
+                let reason = "wird bereits von einem anderen Parallel-Zweig gesteuert"
+                let job'', more =
+                    match job'.status with
+                    | WaitingForShipLock(waitingFor, waitingBlockId, hasElse) when waitingFor = shipSymbol && waitingBlockId = blockId ->
+                        if hasElse then
+                            let next =
+                                { job' with
+                                    status = Running
+                                    log = $"Schiff {shipSymbol} ist nicht verfügbar: {reason}" :: job'.log }
+                                |> advanceJobPosition
+                                |> pushBodyJob (WithShipElseBody blockId) None
+
+                            advance clock next
+                        else
+                            let msg = $"Schiff {shipSymbol} ist nicht verfügbar: {reason}"
+                            { job' with status = Failed msg }, [ JobFailed(job'.jobId, msg) ]
+                    | _ -> job', []
+
+                { branch with job = job'' } |> settleBranch, mapBranchEffects branch.branchId more
+            | None ->
+                let effects' = effects |> List.choose (mapBranchEffect branch.branchId)
+                { branch with job = job' } |> settleBranch, effects'
+
+        match event with
+        | BranchApiResponseReceived(_, branchId, attempt, result) when branchId = branch.branchId ->
+            let job', effects = handleApiResponse clock branch.job attempt result
+            { branch with job = job' } |> settleBranch, mapBranchEffects branch.branchId effects
+        | BranchApiResponseReceived _ when not branch.job.parallelBranches.IsEmpty ->
+            let job', effects = driveParallelBranchesWithEvent clock branch.job event
+            { branch with job = job' } |> settleBranch, mapBranchEffects branch.branchId effects
+        | BranchShipScopeAcquired(_, branchId, blockId, shipSymbol, snapshot) when branchId = branch.branchId ->
+            let job', effects =
+                match branch.job.status with
+                | WaitingForShipLock(waitingFor, waitingBlockId, _) when waitingFor = shipSymbol && waitingBlockId = blockId ->
+                    let isPrimary = branch.job.shipSymbol = Some shipSymbol
+                    let job' =
+                        { branch.job with
+                            status = Running
+                            currentShipStack = (shipSymbol, not isPrimary) :: branch.job.currentShipStack
+                            dynamicShipLocks = if isPrimary then branch.job.dynamicShipLocks else shipSymbol :: branch.job.dynamicShipLocks
+                            lastKnownShip = Some snapshot
+                            log = $"Steuere jetzt Schiff {shipSymbol}." :: branch.job.log }
+                        |> pushBodyJob (WithShipBody blockId) None
+
+                    advance clock job'
+                | _ -> branch.job, []
+
+            { branch with job = job' } |> settleBranch, mapBranchEffects branch.branchId effects
+        | BranchShipScopeAcquired _ when not branch.job.parallelBranches.IsEmpty ->
+            let job', effects = driveParallelBranchesWithEvent clock branch.job event
+            { branch with job = job' } |> settleBranch, mapBranchEffects branch.branchId effects
+        | BranchShipScopeUnavailable(_, branchId, blockId, shipSymbol, reason) when branchId = branch.branchId ->
+            let job', effects =
+                match branch.job.status with
+                | WaitingForShipLock(waitingFor, waitingBlockId, hasElse) when waitingFor = shipSymbol && waitingBlockId = blockId ->
+                    if hasElse then
+                        let job' =
+                            { branch.job with
+                                status = Running
+                                log = $"Schiff {shipSymbol} ist nicht verfügbar: {reason}" :: branch.job.log }
+                            |> advanceJobPosition
+                            |> pushBodyJob (WithShipElseBody blockId) None
+
+                        advance clock job'
+                    else
+                        let msg = $"Schiff {shipSymbol} ist nicht verfügbar: {reason}"
+                        { branch.job with status = Failed msg }, [ JobFailed(branch.job.jobId, msg) ]
+                | _ -> branch.job, []
+
+            { branch with job = job' } |> settleBranch, mapBranchEffects branch.branchId effects
+        | BranchShipScopeUnavailable _ when not branch.job.parallelBranches.IsEmpty ->
+            let job', effects = driveParallelBranchesWithEvent clock branch.job event
+            { branch with job = job' } |> settleBranch, mapBranchEffects branch.branchId effects
+        | WakeTick -> stepBranch branch.job
+        | PauseRequested
+        | ResumeRequested
+        | CancelRequested -> stepBranch branch.job
+        | _ -> branch, []
+
+and private driveParallelBranchesWithEvent (clock: Clock) (job: JobState) (event: SchedulerEvent) : JobState * Effect list =
+    let branches, effects =
+        (([], []), job.parallelBranches)
+        ||> List.fold (fun (branchesAcc, effectsAcc) branch ->
+            let branch', effects = driveBranch clock event job.parallelBranches branch
+            branchesAcc @ [ branch' ], effectsAcc @ effects)
+
+    finalizeParallelIfSettled clock { job with parallelBranches = branches } effects
+
+and private driveParallelBranches (clock: Clock) (job: JobState) : JobState * Effect list =
+    driveParallelBranchesWithEvent clock job WakeTick
+
 /// Stops the free-transition walk for an info-read block (§8/§14, Milestone 9/Part
 /// B) — a GET is always safe to retry, so unlike `emitApiAction` there is no baseline
 /// to capture, only the evaluated string args to carry through a retry unchanged.
@@ -404,12 +715,14 @@ and private emitInfoRead
     // Ship-agnostic info types (getFleetInfo/getWaypoints/getMarket/getShipyard/
     // getContracts/getCredits) never read `job.shipSymbol` server-side, but
     // getShipInfo/getCargo/getFuel do — same gate shape as `emitApiAction`'s.
-    if Validator.shipScopedInfoTypes.Contains infoType && job.shipSymbol.IsNone then
+    let shipSymbol = currentShipSymbol job
+
+    if Validator.shipScopedInfoTypes.Contains infoType && shipSymbol.IsNone then
         let msg = "Kein Schiff ausgewählt."
         { job with status = Failed msg }, [ JobFailed(job.jobId, msg) ]
     else
         { job with status = AwaitingInfoResponse(0, infoType, stringArgs, resultTarget) },
-        [ QueueInfoRead(job.jobId, job.shipSymbol, infoType, stringArgs, 0, resultTarget) ]
+        [ QueueInfoRead(job.jobId, shipSymbol, infoType, stringArgs, 0, resultTarget) ]
 
 /// Stops the free-transition walk: captures the pre-call baseline from
 /// `job.lastKnownShip` (data already in hand, §13), emits exactly one `QueueApiCall`.
@@ -436,7 +749,7 @@ and private emitApiAction
         // logged as its outcome, corrupting "latest log line" displays (a real
         // bug found via live verification, Milestone 9/Part A).
         { job with status = AwaitingApiResponse(0, action, baseline) },
-        [ LogMessage(job.jobId, logText); QueueApiCall(job.jobId, job.shipSymbol, action, 0) ]
+        [ LogMessage(job.jobId, logText); QueueApiCall(job.jobId, currentShipSymbol job, action, 0) ]
 
     // `acceptContract`/`purchaseShip` never read a ship snapshot (they reconcile via
     // `AcceptContractBaseline`/`FleetBaseline` instead, §13's explicit allowance) — so
@@ -507,7 +820,7 @@ and private handleApiResponse (clock: Clock) (job: JobState) (attemptNumber: int
             match baseline with
             | AcceptContractBaseline contractId -> ReconcileContractState(job.jobId, contractId, attempt)
             | FleetBaseline _ -> ReconcileFleetState(job.jobId, attempt)
-            | _ -> ReconcileShipState(job.jobId, job.shipSymbol, attempt)
+            | _ -> ReconcileShipState(job.jobId, currentShipSymbol job, attempt)
 
         { job with status = Reconciling(attempt, action, baseline) },
         [ reconcileEffect
@@ -726,7 +1039,7 @@ and private handleApiResponse (clock: Clock) (job: JobState) (attemptNumber: int
         else
             { job' with status = AwaitingApiResponse(attempt + 1, action, baseline) },
             [ LogMessage(job.jobId, "Aktion war noch nicht erfolgreich, versuche erneut...")
-              QueueApiCall(job.jobId, job.shipSymbol, action, attempt + 1) ]
+              QueueApiCall(job.jobId, currentShipSymbol job, action, attempt + 1) ]
     | Reconciling(attempt, action, baseline), ReconciliationContract accepted when attempt = attemptNumber ->
         if accepted then
             settleOrDefer
@@ -738,7 +1051,7 @@ and private handleApiResponse (clock: Clock) (job: JobState) (attemptNumber: int
         else
             { job with status = AwaitingApiResponse(attempt + 1, action, baseline) },
             [ LogMessage(job.jobId, "Aktion war noch nicht erfolgreich, versuche erneut...")
-              QueueApiCall(job.jobId, job.shipSymbol, action, attempt + 1) ]
+              QueueApiCall(job.jobId, currentShipSymbol job, action, attempt + 1) ]
     | Reconciling(attempt, action, baseline), ReconciliationFleet shipCount when attempt = attemptNumber ->
         match baseline with
         | FleetBaseline shipCountBefore when shipCount > shipCountBefore ->
@@ -754,7 +1067,7 @@ and private handleApiResponse (clock: Clock) (job: JobState) (attemptNumber: int
                 lastKnownFleetShipCount = Some shipCount
                 status = AwaitingApiResponse(attempt + 1, action, baseline) },
             [ LogMessage(job.jobId, "Aktion war noch nicht erfolgreich, versuche erneut...")
-              QueueApiCall(job.jobId, job.shipSymbol, action, attempt + 1) ]
+              QueueApiCall(job.jobId, currentShipSymbol job, action, attempt + 1) ]
     | Reconciling(attempt, _, baseline), ApiAmbiguous _ when attempt = attemptNumber ->
         // The reconciliation fetch (a plain GET) is itself safe to retry indefinitely —
         // unlike the original action, it has no side effects.
@@ -762,7 +1075,7 @@ and private handleApiResponse (clock: Clock) (job: JobState) (attemptNumber: int
             match baseline with
             | AcceptContractBaseline contractId -> ReconcileContractState(job.jobId, contractId, attempt)
             | FleetBaseline _ -> ReconcileFleetState(job.jobId, attempt)
-            | _ -> ReconcileShipState(job.jobId, job.shipSymbol, attempt)
+            | _ -> ReconcileShipState(job.jobId, currentShipSymbol job, attempt)
 
         job, [ reconcileEffect ]
     | Reconciling(attempt, _, _), ApiFailed msg when attempt = attemptNumber ->
@@ -776,13 +1089,26 @@ and private handleApiResponse (clock: Clock) (job: JobState) (attemptNumber: int
         // A GET is always safe to retry (§8/§14) — no reconciliation hop, ever;
         // just re-issue the same fetch with the next attempt number.
         { job with status = AwaitingInfoResponse(attempt + 1, infoType, args, resultTarget) },
-        [ QueueInfoRead(job.jobId, job.shipSymbol, infoType, args, attempt + 1, resultTarget) ]
+        [ QueueInfoRead(job.jobId, currentShipSymbol job, infoType, args, attempt + 1, resultTarget) ]
     | AwaitingInfoResponse(attempt, _, _, _), ApiFailed msg when attempt = attemptNumber ->
         { job with status = Failed msg }, [ JobFailed(job.jobId, msg) ]
     | _ -> job, [] // stale attempt number or unrelated status/result pairing — defensive no-op
 
 /// `step : Clock -> JobState -> SchedulerEvent -> (JobState * Effect list)` (§14).
 let step (clock: Clock) (job: JobState) (event: SchedulerEvent) : JobState * Effect list =
+    if not job.parallelBranches.IsEmpty then
+        match event with
+        | WakeTick
+        | BranchApiResponseReceived _
+        | BranchShipScopeAcquired _
+        | BranchShipScopeUnavailable _
+        | PauseRequested
+        | ResumeRequested
+        | CancelRequested -> driveParallelBranchesWithEvent clock job event
+        | ApiResponseReceived _
+        | ShipScopeAcquired _
+        | ShipScopeUnavailable _ -> job, []
+    else
     match event with
     | WakeTick ->
         match job.status with
@@ -791,15 +1117,54 @@ let step (clock: Clock) (job: JobState) (event: SchedulerEvent) : JobState * Eff
         | Running -> advance clock job
         | WaitingForArrival until when clock.now() >= until -> advance clock { job with status = Running }
         | WaitingForCooldown until when clock.now() >= until -> advance clock { job with status = Running }
+        | WaitingForShipLock(shipSymbol, blockId, hasElse) ->
+            job, [ AcquireShipScope(job.jobId, blockId, shipSymbol, hasElse) ]
         | _ -> job, []
     | ApiResponseReceived(jobId, attemptNumber, result) when jobId = job.jobId ->
         handleApiResponse clock job attemptNumber result
     | ApiResponseReceived _ -> job, []
+    | BranchApiResponseReceived _ -> job, []
+    | ShipScopeAcquired(jobId, blockId, shipSymbol, snapshot) when jobId = job.jobId ->
+        match job.status with
+        | WaitingForShipLock(waitingFor, waitingBlockId, _) when waitingFor = shipSymbol && waitingBlockId = blockId ->
+            let isPrimary = job.shipSymbol = Some shipSymbol
+            let job' =
+                { job with
+                    status = Running
+                    currentShipStack = (shipSymbol, not isPrimary) :: job.currentShipStack
+                    dynamicShipLocks = if isPrimary then job.dynamicShipLocks else shipSymbol :: job.dynamicShipLocks
+                    lastKnownShip = Some snapshot
+                    log = $"Steuere jetzt Schiff {shipSymbol}." :: job.log }
+                |> pushBodyJob (WithShipBody blockId) None
+
+            advance clock job'
+        | _ -> job, []
+    | ShipScopeAcquired _ -> job, []
+    | BranchShipScopeAcquired _ -> job, []
+    | ShipScopeUnavailable(jobId, blockId, shipSymbol, reason) when jobId = job.jobId ->
+        match job.status with
+        | WaitingForShipLock(waitingFor, waitingBlockId, hasElse) when waitingFor = shipSymbol && waitingBlockId = blockId ->
+            if hasElse then
+                let job' =
+                    { job with
+                        status = Running
+                        log = $"Schiff {shipSymbol} ist nicht verfügbar: {reason}" :: job.log }
+                    |> advanceJobPosition
+                    |> pushBodyJob (WithShipElseBody blockId) None
+
+                advance clock job'
+            else
+                let msg = $"Schiff {shipSymbol} ist nicht verfügbar: {reason}"
+                { job with status = Failed msg }, [ JobFailed(job.jobId, msg) ]
+        | _ -> job, []
+    | ShipScopeUnavailable _ -> job, []
+    | BranchShipScopeUnavailable _ -> job, []
     | PauseRequested ->
         match job.status with
         | Running
         | WaitingForArrival _
-        | WaitingForCooldown _ -> { job with status = Paused job.status; log = "Programm pausiert." :: job.log }, []
+        | WaitingForCooldown _
+        | WaitingForShipLock _ -> { job with status = Paused job.status; log = "Programm pausiert." :: job.log }, []
         | AwaitingApiResponse _
         | Reconciling _
         | AwaitingInfoResponse _ ->
@@ -824,6 +1189,7 @@ let step (clock: Clock) (job: JobState) (event: SchedulerEvent) : JobState * Eff
         | Running
         | WaitingForArrival _
         | WaitingForCooldown _
+        | WaitingForShipLock _
         | Paused _ ->
             { job with status = Cancelled; log = "Programm gestoppt." :: job.log }, [ JobCancelled job.jobId ]
         | AwaitingApiResponse _
@@ -844,7 +1210,9 @@ let step (clock: Clock) (job: JobState) (event: SchedulerEvent) : JobState * Eff
 /// denormalizes into `jobs.current_block_id` for cheap dashboard queries without
 /// deserializing `execution_state_json` per row.
 let currentBlockId (job: JobState) : string option =
-    currentInstruction job |> Option.map blockIdOf
+    match job.parallelBranches |> List.tryFind (fun b -> not b.completed) with
+    | Some branch -> currentInstruction branch.job |> Option.map blockIdOf
+    | None -> currentInstruction job |> Option.map blockIdOf
 
 /// One (scope, blockId option) pair per stack frame, deepest-first (§9d/§14,
 /// Milestone 9/Part E) — always one entry per frame, even one whose position is
@@ -860,5 +1228,11 @@ let currentBlockId (job: JobState) : string option =
 /// it to decide which open Blockly workspace (program vs. a specific workshop) a
 /// given entry's `blockId` belongs to.
 let blockIdPerFrame (job: JobState) : (string * string option) list =
-    job.stack
-    |> List.map (fun frame -> frame.scope, currentInstructionOf job.program frame |> Option.map blockIdOf)
+    if not job.parallelBranches.IsEmpty then
+        job.parallelBranches
+        |> List.collect (fun branch ->
+            branch.job.stack
+            |> List.map (fun frame -> frame.scope, currentInstructionOf branch.job.program frame |> Option.map blockIdOf))
+    else
+        job.stack
+        |> List.map (fun frame -> frame.scope, currentInstructionOf job.program frame |> Option.map blockIdOf)

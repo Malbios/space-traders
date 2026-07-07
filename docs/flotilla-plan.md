@@ -1,8 +1,15 @@
 # Flotilla: multi-ship programs (`mitSchiff` + `parallel`)
 
-Status: **planning only, not started.** Every design decision is settled (see
-"Decisions made" below and "Status" at the end) — this doc is ready to hand
-straight to implementation whenever that starts.
+Status: **F1 and F2 shipped.** `mitSchiff` has the DSL/compiler/runtime path,
+dynamic lock acquisition, waiting status, optional `falls nicht verfügbar` /
+`if unavailable` branch, Blockly block/toolbox entry, and
+scheduler/compiler/integration coverage. `parallel` has a mutator-driven Blockly
+block, compiler/validator support, fork/join branch execution with
+branch-targeted API/info/reconciliation effects, nested branch routing,
+same-job ship-scope contention detection, and branch status lines on pilot
+cards. Live browser verification passed via `scripts/verify-flotilla.mjs`
+(Blockly round-trip for mutator state, Flottille toolbox, two-ship parallel
+program completing end-to-end against `SpaceKids.FakeSpaceTraders`).
 
 "Flotilla" is the informal name for this capability, not a separate saved
 data concept — see the last decision below for why.
@@ -233,5 +240,8 @@ time, confirmed via the dashboard's indented per-branch view.
 
 ## Status
 
-All design decisions are settled — nothing left blocking. Ready to hand off
-to Part A whenever implementation starts.
+F1 and F2 are shipped with automated scheduler/compiler/integration coverage
+and a live browser check (`scripts/verify-flotilla.mjs` — run with
+`SpaceKids.FakeSpaceTraders` on :5196 and `SpaceKids.Server` on :5290, with
+`SpaceTraders__BaseUrl=http://localhost:5196/` and
+`ASPNETCORE_ENVIRONMENT=Development`).

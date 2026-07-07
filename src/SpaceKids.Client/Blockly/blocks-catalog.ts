@@ -271,6 +271,42 @@ const ACCESSOR_BLOCKS: AccessorBlockSpec[] = [
 const ACTION_COLOUR = 160;
 const INFO_COLOUR = 230;
 const ACCESSOR_COLOUR = 65;
+const FLOTILLA_COLOUR = 20;
+
+interface WithShipExtraState {
+    hasUnavailable?: boolean;
+}
+
+interface ParallelExtraState {
+    branchCount?: number;
+}
+
+function rebuildWithShipUnavailableBranch(block: Blockly.Block): void {
+    const hasUnavailable = (block as unknown as { skHasUnavailable?: boolean }).skHasUnavailable ?? false;
+    const hasInput = block.getInput("ELSE") !== null;
+
+    if (hasUnavailable && !hasInput) {
+        block.appendStatementInput("ELSE").appendField(t({ de: "falls nicht verfügbar", en: "if unavailable" }));
+    } else if (!hasUnavailable && hasInput) {
+        block.removeInput("ELSE");
+    }
+}
+
+function rebuildParallelBranches(block: Blockly.Block): void {
+    const branchCount = Math.max(2, (block as unknown as { skBranchCount?: number }).skBranchCount ?? 2);
+
+    for (let idx = 20; idx >= branchCount; idx -= 1) {
+        if (block.getInput(`DO${idx}`) !== null) {
+            block.removeInput(`DO${idx}`);
+        }
+    }
+
+    for (let idx = 0; idx < branchCount; idx += 1) {
+        if (block.getInput(`DO${idx}`) === null) {
+            block.appendStatementInput(`DO${idx}`).appendField(t({ de: `Zweig ${idx + 1}`, en: `branch ${idx + 1}` }));
+        }
+    }
+}
 
 function registerBlock(spec: CatalogBlockSpec, colour: number, asValue: boolean): void {
     Blockly.Blocks[spec.type] = {
@@ -332,6 +368,133 @@ export function registerCatalogBlocks(): void {
     ACTION_BLOCKS.forEach((spec) => registerBlock(spec, ACTION_COLOUR, false));
     INFO_BLOCKS.forEach((spec) => registerBlock(spec, INFO_COLOUR, true));
     ACCESSOR_BLOCKS.forEach((spec) => registerAccessorBlock(spec));
+
+    Blockly.Blocks["withShip"] = {
+        init: function (this: Blockly.Block) {
+            this.appendValueInput("SHIP").setCheck("String").appendField(t({ de: "mit Schiff", en: "with ship" }));
+            this.appendStatementInput("DO").appendField(t({ de: "mache", en: "do" }));
+            this.setPreviousStatement(true, null);
+            this.setNextStatement(true, null);
+            this.setColour(FLOTILLA_COLOUR);
+            this.setTooltip(t({
+                de: "Führt die Blöcke mit diesem Schiff als aktuellem Schiff aus.",
+                en: "Runs the nested blocks with this ship as the current ship.",
+            }));
+            this.setMutator(new Blockly.icons.MutatorIcon(["withShip_unavailable_arg"], this as unknown as Blockly.BlockSvg));
+            (this as unknown as { skHasUnavailable: boolean }).skHasUnavailable = false;
+        },
+        saveExtraState: function (this: Blockly.Block): WithShipExtraState {
+            return { hasUnavailable: (this as unknown as { skHasUnavailable?: boolean }).skHasUnavailable ?? false };
+        },
+        loadExtraState: function (this: Blockly.Block, state: WithShipExtraState) {
+            (this as unknown as { skHasUnavailable: boolean }).skHasUnavailable = state.hasUnavailable ?? false;
+            rebuildWithShipUnavailableBranch(this);
+        },
+        decompose: function (this: Blockly.Block, workspace: Blockly.Workspace): Blockly.Block {
+            const containerBlock = workspace.newBlock("withShip_mutator_container");
+            (containerBlock as Blockly.BlockSvg).initSvg?.();
+
+            if ((this as unknown as { skHasUnavailable?: boolean }).skHasUnavailable) {
+                const unavailableBlock = workspace.newBlock("withShip_unavailable_arg");
+                (unavailableBlock as Blockly.BlockSvg).initSvg?.();
+                containerBlock.getInput("STACK")!.connection!.connect(unavailableBlock.previousConnection!);
+            }
+
+            return containerBlock;
+        },
+        compose: function (this: Blockly.Block, containerBlock: Blockly.Block) {
+            const hasUnavailable = containerBlock.getInputTargetBlock("STACK") !== null;
+            (this as unknown as { skHasUnavailable: boolean }).skHasUnavailable = hasUnavailable;
+            rebuildWithShipUnavailableBranch(this);
+        },
+    };
+
+    Blockly.Blocks["withShip_mutator_container"] = {
+        init: function (this: Blockly.Block) {
+            this.appendDummyInput().appendField(t({ de: "Optionen", en: "Options" }));
+            this.appendStatementInput("STACK");
+            this.setColour(FLOTILLA_COLOUR);
+            this.contextMenu = false;
+        },
+    };
+
+    Blockly.Blocks["withShip_unavailable_arg"] = {
+        init: function (this: Blockly.Block) {
+            this.appendDummyInput().appendField(t({ de: "falls nicht verfügbar", en: "if unavailable" }));
+            this.setPreviousStatement(true);
+            this.setNextStatement(false);
+            this.setColour(FLOTILLA_COLOUR);
+            this.contextMenu = false;
+        },
+    };
+
+    Blockly.Blocks["parallel"] = {
+        init: function (this: Blockly.Block) {
+            this.appendDummyInput().appendField(t({ de: "parallel", en: "parallel" }));
+            (this as unknown as { skBranchCount: number }).skBranchCount = 2;
+            rebuildParallelBranches(this);
+            this.setPreviousStatement(true, null);
+            this.setNextStatement(true, null);
+            this.setColour(FLOTILLA_COLOUR);
+            this.setTooltip(t({
+                de: "Führt mehrere Zweige gleichzeitig aus und wartet, bis alle fertig sind.",
+                en: "Runs multiple branches at the same time and waits until all are finished.",
+            }));
+            this.setMutator(new Blockly.icons.MutatorIcon(["parallel_branch_arg"], this as unknown as Blockly.BlockSvg));
+        },
+        saveExtraState: function (this: Blockly.Block): ParallelExtraState {
+            return { branchCount: (this as unknown as { skBranchCount?: number }).skBranchCount ?? 2 };
+        },
+        loadExtraState: function (this: Blockly.Block, state: ParallelExtraState) {
+            (this as unknown as { skBranchCount: number }).skBranchCount = Math.max(2, state.branchCount ?? 2);
+            rebuildParallelBranches(this);
+        },
+        decompose: function (this: Blockly.Block, workspace: Blockly.Workspace): Blockly.Block {
+            const containerBlock = workspace.newBlock("parallel_mutator_container");
+            (containerBlock as Blockly.BlockSvg).initSvg?.();
+            const count = Math.max(2, (this as unknown as { skBranchCount?: number }).skBranchCount ?? 2);
+            let connection = containerBlock.getInput("STACK")!.connection;
+
+            for (let i = 0; i < count; i += 1) {
+                const branchBlock = workspace.newBlock("parallel_branch_arg");
+                (branchBlock as Blockly.BlockSvg).initSvg?.();
+                connection!.connect(branchBlock.previousConnection!);
+                connection = branchBlock.nextConnection;
+            }
+
+            return containerBlock;
+        },
+        compose: function (this: Blockly.Block, containerBlock: Blockly.Block) {
+            let count = 0;
+            let item = containerBlock.getInputTargetBlock("STACK");
+            while (item) {
+                count += 1;
+                item = item.getNextBlock();
+            }
+
+            (this as unknown as { skBranchCount: number }).skBranchCount = Math.max(2, count);
+            rebuildParallelBranches(this);
+        },
+    };
+
+    Blockly.Blocks["parallel_mutator_container"] = {
+        init: function (this: Blockly.Block) {
+            this.appendDummyInput().appendField(t({ de: "Zweige", en: "Branches" }));
+            this.appendStatementInput("STACK");
+            this.setColour(FLOTILLA_COLOUR);
+            this.contextMenu = false;
+        },
+    };
+
+    Blockly.Blocks["parallel_branch_arg"] = {
+        init: function (this: Blockly.Block) {
+            this.appendDummyInput().appendField(t({ de: "Zweig", en: "branch" }));
+            this.setPreviousStatement(true);
+            this.setNextStatement(true);
+            this.setColour(FLOTILLA_COLOUR);
+            this.contextMenu = false;
+        },
+    };
 }
 
 /**
@@ -374,6 +537,7 @@ export function registerStockBlockChecks(): void {
 export const catalogActionBlockTypes: string[] = ACTION_BLOCKS.map((spec) => spec.type);
 export const catalogInfoBlockTypes: string[] = INFO_BLOCKS.map((spec) => spec.type);
 export const catalogAccessorBlockTypes: string[] = ACCESSOR_BLOCKS.map((spec) => spec.type);
+export const flotillaBlockTypes: string[] = ["withShip", "parallel"];
 /** Block type -> DSL record field name, consumed by `Compiler.fs`'s `ACCESSOR_BLOCKS` table (kept in sync manually — see docs/04-block-catalog.md). */
 export const accessorFieldNames: Record<string, string> = Object.fromEntries(
     ACCESSOR_BLOCKS.map((spec) => [spec.type, spec.fieldName]),

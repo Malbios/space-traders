@@ -37,6 +37,9 @@ let private mkJobWithCustomBlocks
             returnTarget = None } ]
       lastKnownShip = lastKnownShip
       lastKnownFleetShipCount = Some 2
+      currentShipStack = []
+      dynamicShipLocks = []
+      parallelBranches = []
       log = []
       pausePending = false
       cancelPending = false }
@@ -54,6 +57,9 @@ let private mkJob (instructions: Instruction list) (lastKnownShip: ShipSnapshot 
             returnTarget = None } ]
       lastKnownShip = lastKnownShip
       lastKnownFleetShipCount = Some 2
+      currentShipStack = []
+      dynamicShipLocks = []
+      parallelBranches = []
       log = []
       pausePending = false
       cancelPending = false }
@@ -66,6 +72,11 @@ let private defaultShip: ShipSnapshot =
       cargoInventory = Map.empty
       cooldownExpiration = None
       fuelCurrent = 400 }
+
+let private secondShip: ShipSnapshot =
+    { defaultShip with
+        navWaypoint = "X1-TEST-B1"
+        fuelCurrent = 250 }
 
 let private epoch = DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero)
 
@@ -820,6 +831,167 @@ let ``a ship-scoped info read fails clearly with no ship symbol at all`` () =
     | other -> Assert.Fail($"expected Failed, got {other}")
 
     Assert.Contains(JobFailed("job1", "Kein Schiff ausgewählt."), effects1)
+
+// --- Flotilla F1: mitSchiff ---------------------------------------------------------
+
+[<Fact>]
+let ``withShip evaluates dynamic ship expression and requests a scoped lock`` () =
+    let clock = fakeClock (ref epoch)
+
+    let instructions =
+        [ SetVariable("set-ship", "targetShip", Literal(StringLit "SHIP-2"))
+          WithShip("with-ship", VariableRef "targetShip", [ ApiAction("orbit-2", "orbit", Map.empty) ], None) ]
+
+    let job = mkJob instructions (Some defaultShip)
+
+    let job1, effects1 = Step.step clock job WakeTick
+
+    match job1.status with
+    | WaitingForShipLock("SHIP-2", "with-ship", false) -> ()
+    | other -> Assert.Fail($"expected WaitingForShipLock, got {other}")
+
+    Assert.Contains(AcquireShipScope("job1", "with-ship", "SHIP-2", false), effects1)
+
+[<Fact>]
+let ``withShip acquired scope dispatches nested ship action against resolved ship`` () =
+    let clock = fakeClock (ref epoch)
+
+    let instructions =
+        [ WithShip("with-ship", Literal(StringLit "SHIP-2"), [ ApiAction("orbit-2", "orbit", Map.empty) ], None) ]
+
+    let job0 = mkJob instructions (Some defaultShip)
+    let job1, _ = Step.step clock job0 WakeTick
+    let job2, effects2 = Step.step clock job1 (ShipScopeAcquired("job1", "with-ship", "SHIP-2", secondShip))
+
+    match job2.status with
+    | AwaitingApiResponse(0, DoOrbit, DockOrbitBaseline "IN_ORBIT") -> ()
+    | other -> Assert.Fail($"expected AwaitingApiResponse for orbit, got {other}")
+
+    Assert.Contains(QueueApiCall("job1", Some "SHIP-2", DoOrbit, 0), effects2)
+
+[<Fact>]
+let ``withShip unavailable scope runs else branch when present`` () =
+    let clock = fakeClock (ref epoch)
+
+    let instructions =
+        [ WithShip(
+              "with-ship",
+              Literal(StringLit "MISSING"),
+              [ ApiAction("orbit-missing", "orbit", Map.empty) ],
+              Some [ ShowMessage("else-msg", Literal(StringLit "ship missing")) ]
+          ) ]
+
+    let job0 = mkJob instructions (Some defaultShip)
+    let job1, _ = Step.step clock job0 WakeTick
+    let job2, effects2 = Step.step clock job1 (ShipScopeUnavailable("job1", "with-ship", "MISSING", "not found"))
+
+    Assert.Equal(Completed, job2.status)
+    Assert.Equal(Some "ship missing", job2.log |> List.tryHead)
+    Assert.Contains(JobCompleted "job1", effects2)
+
+// --- Flotilla F2: parallel ----------------------------------------------------------
+
+[<Fact>]
+let ``parallel branches dispatch independently before siblings resolve`` () =
+    let clock = fakeClock (ref epoch)
+
+    let instructions =
+        [ Parallel(
+              "parallel-1",
+              [ [ ApiAction("orbit-a", "orbit", Map.empty) ]
+                [ ShowMessage("msg-b", Literal(StringLit "branch b")); ApiAction("dock-b", "dock", Map.empty) ] ]
+          ) ]
+
+    let job0 = mkJob instructions (Some defaultShip)
+    let job1, effects1 = Step.step clock job0 WakeTick
+
+    Assert.Equal(Running, job1.status)
+    Assert.Equal(2, job1.parallelBranches.Length)
+    Assert.Contains(QueueBranchApiCall("job1", "parallel-1:0", Some "SHIP-1", DoOrbit, 0), effects1)
+    Assert.Contains(QueueBranchApiCall("job1", "parallel-1:1", Some "SHIP-1", DoDock, 0), effects1)
+    Assert.Contains("branch b", job1.parallelBranches.[1].job.log)
+
+[<Fact>]
+let ``parallel waits for every branch and aggregates a failing branch after siblings settle`` () =
+    let clock = fakeClock (ref epoch)
+
+    let instructions =
+        [ Parallel(
+              "parallel-1",
+              [ [ ApiAction("orbit-a", "orbit", Map.empty) ]
+                [ ApiAction("dock-b", "dock", Map.empty) ] ]
+          ) ]
+
+    let job0 = mkJob instructions (Some defaultShip)
+    let job1, _ = Step.step clock job0 WakeTick
+    let job2, _ = Step.step clock job1 (BranchApiResponseReceived("job1", "parallel-1:0", 0, ApiFailed "boom"))
+
+    Assert.Equal(Running, job2.status)
+    Assert.True(job2.parallelBranches.[0].completed)
+    Assert.False(job2.parallelBranches.[1].completed)
+
+    let job3, effects3 = Step.step clock job2 (BranchApiResponseReceived("job1", "parallel-1:1", 0, NavResultOk("DOCKED", "X1-TEST-A1")))
+
+    match job3.status with
+    | Failed msg -> Assert.Contains("boom", msg)
+    | other -> Assert.Fail($"expected Failed, got {other}")
+
+    Assert.Contains(effects3, function JobFailed("job1", msg) when msg.Contains("boom") -> true | _ -> false)
+
+[<Fact>]
+let ``parallel routes nested branch events through the outer branch`` () =
+    let clock = fakeClock (ref epoch)
+
+    let instructions =
+        [ Parallel(
+              "outer",
+              [ [ Parallel("inner", [ [ ApiAction("orbit-inner-a", "orbit", Map.empty) ]; [ ShowMessage("inner-b", Literal(StringLit "done")) ] ]) ]
+                [ ShowMessage("outer-b", Literal(StringLit "also done")) ] ]
+          ) ]
+
+    let job0 = mkJob instructions (Some defaultShip)
+    let job1, effects1 = Step.step clock job0 WakeTick
+
+    Assert.Contains(QueueBranchApiCall("job1", "inner:0", Some "SHIP-1", DoOrbit, 0), effects1)
+    Assert.Equal(2, job1.parallelBranches.Length)
+    Assert.Equal(2, job1.parallelBranches.[0].job.parallelBranches.Length)
+
+    let job2, _ = Step.step clock job1 (BranchApiResponseReceived("job1", "inner:0", 0, NavResultOk("IN_ORBIT", "X1-TEST-A1")))
+
+    Assert.Equal(Completed, job2.status)
+    Assert.True(job2.parallelBranches.IsEmpty)
+
+[<Fact>]
+let ``parallel sibling ship scope contention uses unavailable branch instead of waiting`` () =
+    let clock = fakeClock (ref epoch)
+
+    let instructions =
+        [ Parallel(
+              "parallel-1",
+              [ [ WithShip("ship-a", Literal(StringLit "SHIP-2"), [ Wait("hold-a", Literal(NumberLit 10.0)); ExitShipScope("ship-a:exit") ], None) ]
+                [ Wait("delay-b", Literal(NumberLit 0.0))
+                  WithShip(
+                      "ship-b",
+                      Literal(StringLit "SHIP-2"),
+                      [ ApiAction("orbit-b", "orbit", Map.empty); ExitShipScope("ship-b:exit") ],
+                      Some [ ShowMessage("fallback-b", Literal(StringLit "busy")) ]
+                  ) ] ]
+          ) ]
+
+    let job0 = mkJob instructions (Some defaultShip)
+    let job1, effects1 = Step.step clock job0 WakeTick
+
+    Assert.Contains(AcquireBranchShipScope("job1", "parallel-1:0", "ship-a", "SHIP-2", false), effects1)
+
+    let job2, effects2 = Step.step clock job1 (BranchShipScopeAcquired("job1", "parallel-1:0", "ship-a", "SHIP-2", secondShip))
+
+    Assert.Contains(StartWait("job1", epoch.AddSeconds(10.0), ArrivalWait), effects2)
+
+    let job3, effects3 = Step.step clock job2 WakeTick
+
+    Assert.Contains("busy", job3.parallelBranches.[1].job.log)
+    Assert.True(job3.parallelBranches.[1].completed)
+    Assert.DoesNotContain(effects3, function AcquireBranchShipScope(_, "parallel-1:1", "ship-b", "SHIP-2", _) -> true | _ -> false)
 
 [<Fact>]
 let ``purchaseShip happy path advances immediately, updates fleet count`` () =

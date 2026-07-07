@@ -412,6 +412,7 @@ let statusName (status: JobStatus) : string =
     | WaitingForCooldown _ -> "WaitingForCooldown"
     | Reconciling _ -> "Reconciling"
     | AwaitingInfoResponse _ -> "AwaitingInfoResponse"
+    | WaitingForShipLock _ -> "WaitingForShipLock"
     | Paused _ -> "Paused"
     | Cancelled -> "Cancelled"
     | Completed -> "Completed"
@@ -490,8 +491,16 @@ let rec private applyEffects
                 // lock so another program can take the ship over immediately,
                 // rather than waiting for the lease to expire.
                 match jobs.TryGetValue jobId with
-                | true, { shipSymbol = Some sym } -> do! Persistence.ShipLockRepository.release dbPath sym
-                | true, { shipSymbol = None } -> ()
+                | true, job ->
+                    match job.shipSymbol with
+                    | Some sym -> do! Persistence.ShipLockRepository.release dbPath sym
+                    | None -> ()
+
+                    for sym in job.dynamicShipLocks |> List.distinct do
+                        do! Persistence.ShipLockRepository.release dbPath sym
+
+                    for sym in job.parallelBranches |> List.collect (fun b -> b.job.dynamicShipLocks) |> List.distinct do
+                        do! Persistence.ShipLockRepository.release dbPath sym
                 | false, _ -> ()
             | StartWait _ ->
                 // Nothing to do here — `job.status`/`next_wake_at` already record
@@ -507,6 +516,9 @@ let rec private applyEffects
                 // (`acceptContract`/`purchaseShip`) ignore this value entirely.
                 let! result = runAction client dbPath token priority (shipSymbol |> Option.defaultValue "") action
                 do! tick client dbPath token priority jobId (ApiResponseReceived(jobId, attemptNumber, result))
+            | QueueBranchApiCall(jobId, branchId, shipSymbol, action, attemptNumber) ->
+                let! result = runAction client dbPath token priority (shipSymbol |> Option.defaultValue "") action
+                do! tick client dbPath token priority jobId (BranchApiResponseReceived(jobId, branchId, attemptNumber, result))
             | ReconcileShipState(jobId, shipSymbol, attemptNumber) ->
                 let shipSymbol = shipSymbol |> Option.defaultValue ""
 
@@ -523,6 +535,22 @@ let rec private applyEffects
                     }
 
                 do! tick client dbPath token priority jobId (ApiResponseReceived(jobId, attemptNumber, result))
+            | ReconcileBranchShipState(jobId, branchId, shipSymbol, attemptNumber) ->
+                let shipSymbol = shipSymbol |> Option.defaultValue ""
+
+                let! result =
+                    async {
+                        try
+                            let! ship =
+                                RequestQueue.enqueue dbPath priority $"getShip:{shipSymbol}" None (fun () ->
+                                    client.GetShip(token, shipSymbol))
+
+                            return ReconciliationShip(toSnapshot ship)
+                        with ex ->
+                            return classifyException ex
+                    }
+
+                do! tick client dbPath token priority jobId (BranchApiResponseReceived(jobId, branchId, attemptNumber, result))
             | ReconcileContractState(jobId, contractId, attemptNumber) ->
                 let! result =
                     async {
@@ -537,6 +565,20 @@ let rec private applyEffects
                     }
 
                 do! tick client dbPath token priority jobId (ApiResponseReceived(jobId, attemptNumber, result))
+            | ReconcileBranchContractState(jobId, branchId, contractId, attemptNumber) ->
+                let! result =
+                    async {
+                        try
+                            let! r =
+                                RequestQueue.enqueue dbPath priority $"getContract:{contractId}" None (fun () ->
+                                    client.GetContract(token, contractId))
+
+                            return ReconciliationContract r.contract.accepted
+                        with ex ->
+                            return classifyException ex
+                    }
+
+                do! tick client dbPath token priority jobId (BranchApiResponseReceived(jobId, branchId, attemptNumber, result))
             | ReconcileFleetState(jobId, attemptNumber) ->
                 let! result =
                     async {
@@ -550,9 +592,75 @@ let rec private applyEffects
                     }
 
                 do! tick client dbPath token priority jobId (ApiResponseReceived(jobId, attemptNumber, result))
+            | ReconcileBranchFleetState(jobId, branchId, attemptNumber) ->
+                let! result =
+                    async {
+                        try
+                            let! ships =
+                                RequestQueue.enqueue dbPath priority "listShips" None (fun () -> client.ListShips(token))
+
+                            return ReconciliationFleet(List.length ships)
+                        with ex ->
+                            return classifyException ex
+                    }
+
+                do! tick client dbPath token priority jobId (BranchApiResponseReceived(jobId, branchId, attemptNumber, result))
             | QueueInfoRead(jobId, shipSymbol, infoType, args, attemptNumber, _resultTarget) ->
                 let! result = runInfoRead client dbPath token priority (shipSymbol |> Option.defaultValue "") infoType args
                 do! tick client dbPath token priority jobId (ApiResponseReceived(jobId, attemptNumber, result))
+            | QueueBranchInfoRead(jobId, branchId, shipSymbol, infoType, args, attemptNumber, _resultTarget) ->
+                let! result = runInfoRead client dbPath token priority (shipSymbol |> Option.defaultValue "") infoType args
+                do! tick client dbPath token priority jobId (BranchApiResponseReceived(jobId, branchId, attemptNumber, result))
+            | AcquireShipScope(jobId, blockId, shipSymbol, _hasElse) ->
+                let! lockResult = Persistence.ShipLockRepository.tryAcquire dbPath shipSymbol jobId leaseSeconds
+
+                match lockResult with
+                | Error _ -> ()
+                | Ok _orphanedJobIdOpt ->
+                    let! result =
+                        async {
+                            try
+                                let! ship =
+                                    RequestQueue.enqueue dbPath priority $"getShip:{shipSymbol}" None (fun () ->
+                                        client.GetShip(token, shipSymbol))
+
+                                return Choice1Of2(toSnapshot ship)
+                            with ex ->
+                                return Choice2Of2 ex.Message
+                        }
+
+                    match result with
+                    | Choice1Of2 snapshot ->
+                        do! tick client dbPath token priority jobId (ShipScopeAcquired(jobId, blockId, shipSymbol, snapshot))
+                    | Choice2Of2 message ->
+                        do! Persistence.ShipLockRepository.release dbPath shipSymbol
+                        do! tick client dbPath token priority jobId (ShipScopeUnavailable(jobId, blockId, shipSymbol, message))
+            | AcquireBranchShipScope(jobId, branchId, blockId, shipSymbol, _hasElse) ->
+                let! lockResult = Persistence.ShipLockRepository.tryAcquire dbPath shipSymbol jobId leaseSeconds
+
+                match lockResult with
+                | Error _ -> ()
+                | Ok _orphanedJobIdOpt ->
+                    let! result =
+                        async {
+                            try
+                                let! ship =
+                                    RequestQueue.enqueue dbPath priority $"getShip:{shipSymbol}" None (fun () ->
+                                        client.GetShip(token, shipSymbol))
+
+                                return Choice1Of2(toSnapshot ship)
+                            with ex ->
+                                return Choice2Of2 ex.Message
+                        }
+
+                    match result with
+                    | Choice1Of2 snapshot ->
+                        do! tick client dbPath token priority jobId (BranchShipScopeAcquired(jobId, branchId, blockId, shipSymbol, snapshot))
+                    | Choice2Of2 message ->
+                        do! Persistence.ShipLockRepository.release dbPath shipSymbol
+                        do! tick client dbPath token priority jobId (BranchShipScopeUnavailable(jobId, branchId, blockId, shipSymbol, message))
+            | ReleaseShipScope(_jobId, shipSymbol) ->
+                do! Persistence.ShipLockRepository.release dbPath shipSymbol
     }
 
 /// One scheduler tick: pulls the job, calls the pure core, persists the result,
@@ -662,6 +770,7 @@ let recoverJob (client: SpaceTradersClient) (dbPath: string) (token: string) (jo
                         [ QueueInfoRead(jobId, job.shipSymbol, infoType, infoArgs, attempt, resultTarget) ]
             | WaitingForArrival _
             | WaitingForCooldown _
+            | WaitingForShipLock _
             | Paused _
             | Cancelled
             | Completed
@@ -707,6 +816,9 @@ let startJob
               stack = [ initialFrame ]
               lastKnownShip = initialShip |> Option.map toSnapshot
               lastKnownFleetShipCount = Some initialFleetShipCount
+              currentShipStack = []
+              dynamicShipLocks = []
+              parallelBranches = []
               log = []
               pausePending = false
               cancelPending = false }

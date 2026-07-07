@@ -110,6 +110,14 @@ type JobStatusDto =
         blockIdPerFrame: (string * string option) list
     }
 
+type JobBranchStatusDto =
+    {
+        shipSymbol: string option
+        status: string
+        statusDetail: string option
+        depth: int
+    }
+
 /// Milestone 7 (§15): one row of the pilot dashboard.
 type JobSummaryDto =
     {
@@ -122,6 +130,7 @@ type JobSummaryDto =
         shipSymbol: string option
         status: string
         statusDetail: string option
+        branchStatuses: JobBranchStatusDto list
         lastLogLine: string option
     }
 
@@ -825,6 +834,7 @@ let private stringsDe: Strings =
               | "AwaitingApiResponse" -> "Wartet auf Bestätigung"
               | "WaitingForArrival" -> "Unterwegs"
               | "WaitingForCooldown" -> "Wartet auf Abklingzeit"
+              | "WaitingForShipLock" -> "Wartet auf ein anderes Programm"
               | "Reconciling" -> "Prüft die letzte Aktion"
               | "AwaitingInfoResponse" -> "Wartet auf Information"
               | "Paused" -> "Pausiert"
@@ -1011,6 +1021,7 @@ let private stringsEn: Strings =
               | "AwaitingApiResponse" -> "Awaiting confirmation"
               | "WaitingForArrival" -> "En route"
               | "WaitingForCooldown" -> "Waiting for cooldown"
+              | "WaitingForShipLock" -> "Waiting for another program"
               | "Reconciling" -> "Checking last action"
               | "AwaitingInfoResponse" -> "Awaiting information"
               | "Paused" -> "Paused"
@@ -2063,6 +2074,19 @@ let private viewJobRunner model dispatch =
                     match pilot.statusDetail with
                     | Some detail -> p { detail }
                     | None -> ()
+                    if not pilot.branchStatuses.IsEmpty then
+                        ul {
+                            attr.style "margin: 0.25rem 0 0.5rem 1rem; padding-left: 1rem"
+                            for branch in pilot.branchStatuses do
+                                let label = branch.shipSymbol |> Option.defaultValue (pilotName pilot.jobId)
+                                li {
+                                    attr.style $"margin-left: {branch.depth}rem"
+                                    text $"{label}: {s.pilotStatus branch.status}"
+                                    match branch.statusDetail with
+                                    | Some detail -> text $" ({detail})"
+                                    | None -> ()
+                                }
+                        }
                     match pilot.lastLogLine with
                     | Some line -> p { s.lastLogLine line }
                     | None -> ()

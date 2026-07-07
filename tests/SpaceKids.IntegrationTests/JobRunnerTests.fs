@@ -423,6 +423,74 @@ let ``jobs on two different ships proceed concurrently, each keeping its own loc
         | _ -> Assert.Fail("one of the jobs was not found"))
 
 [<Fact>]
+let ``withShip scope can temporarily control a second ship and releases its dynamic lock`` () =
+    use fixture = new JobFixture()
+
+    withJobTest fixture.RawClient (fun dbPath ->
+        let ship1 = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+
+        let instructions =
+            [ WithShip(
+                  "with-ship-2",
+                  Literal(StringLit "FAKE-AGENT-2"),
+                  [ ApiAction("orbit-2", "orbit", Map.empty); ExitShipScope "with-ship-2:exit" ],
+                  None
+              ) ]
+
+        let jobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" (program instructions) ship1
+
+        withPumpedQueue 20.0 (fun () ->
+            JobRunner.runToCompletion fixture.Client dbPath 1 App.seededToken jobId
+            |> Async.RunSynchronously)
+
+        match JobRunner.getStatus jobId with
+        | Some job ->
+            Assert.Equal(Completed, job.status)
+            Assert.Contains(job.log, fun line -> line.Contains("FAKE-AGENT-2"))
+        | None -> Assert.Fail("job not found")
+
+        let ship2 = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-2") |> Async.RunSynchronously
+        Assert.Equal("IN_ORBIT", ship2.nav.status)
+        Assert.False(shipLockExists dbPath "FAKE-AGENT-1")
+        Assert.False(shipLockExists dbPath "FAKE-AGENT-2"))
+
+[<Fact>]
+let ``parallel branches in one job can control primary and scoped ships`` () =
+    use fixture = new JobFixture()
+
+    withJobTest fixture.RawClient (fun dbPath ->
+        let ship1 = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+
+        let instructions =
+            [ Parallel(
+                  "parallel-ships",
+                  [ [ ApiAction("orbit-1", "orbit", Map.empty) ]
+                    [ WithShip(
+                          "with-ship-2",
+                          Literal(StringLit "FAKE-AGENT-2"),
+                          [ ApiAction("orbit-2", "orbit", Map.empty); ExitShipScope "with-ship-2:exit" ],
+                          None
+                      ) ] ]
+              ) ]
+
+        let jobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" (program instructions) ship1
+
+        withPumpedQueue 20.0 (fun () ->
+            JobRunner.runToCompletion fixture.Client dbPath 1 App.seededToken jobId
+            |> Async.RunSynchronously)
+
+        match JobRunner.getStatus jobId with
+        | Some job -> Assert.Equal(Completed, job.status)
+        | None -> Assert.Fail("job not found")
+
+        let ship1After = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+        let ship2After = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-2") |> Async.RunSynchronously
+        Assert.Equal("IN_ORBIT", ship1After.nav.status)
+        Assert.Equal("IN_ORBIT", ship2After.nav.status)
+        Assert.False(shipLockExists dbPath "FAKE-AGENT-1")
+        Assert.False(shipLockExists dbPath "FAKE-AGENT-2"))
+
+[<Fact>]
 let ``a job persisted mid-wait resumes correctly after a simulated restart`` () =
     use fixture = new JobFixture()
 

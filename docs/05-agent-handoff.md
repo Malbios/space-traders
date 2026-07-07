@@ -414,16 +414,16 @@ history.
 - The `callCustomBlock`/`customBlockId` convention Milestone 4 invented for its own
   testing needs turned out to be exactly the real mechanism — Milestone 9/Part C's
   client-side caller block was built to match it, not the other way around.
-- `Validator.fs`'s server-side custom-block argument type-checking is still a
-  shallow literal-only heuristic (`Expr` has no static type system) — it only
-  catches a literal plugged directly into a typed argument. Milestone 13/Part B
-  now also gives each custom-block call's argument sockets a Blockly `.setCheck`
-  derived from the same `typeLabel` mutator data, which prevents most mismatches
-  at edit time, but a variable/temp/accessor reference of the wrong shape (not a
-  literal) can still slip past both checks — a real static type system remains
-  out of scope (see `docs/decisions.md`).
-- `lists_getIndex`/`lists_setIndex` only support the common "get/append at a plain index"
-  shape — other WHERE modes (FROM_END/FIRST/LAST/RANDOM) aren't compiled yet.
+- `Validator.fs`'s custom-block argument type-checking is still heuristic (not a
+  full static type system) but now also catches non-literal `Accessor` shapes
+  with known field kinds (e.g. `shipFuel` into a `Schiff` input). Variables,
+  temps, and params remain unchecked at validation time — Blockly `.setCheck`
+  (Milestone 13/Part B) is still the main guard for those.
+- ~~`lists_getIndex`/`lists_setIndex` only support the common "get/append at a plain index"
+  shape — other WHERE modes (FROM_END/FIRST/LAST/RANDOM) aren't compiled yet~~ —
+  fixed: `ListIndexWhere` + `ListSet` now compile/evaluate FROM_START/FROM_END/
+  FIRST/LAST/RANDOM for get and SET; INSERT mode on `lists_setIndex` still
+  refuses with a clear message.
 
 - Every `JobRunner.fs` queue call now threads a real `priority: int` (Milestone
   10/Part A) instead of a single hardcoded tier — `JobScheduler.tickOnce`'s
@@ -490,20 +490,9 @@ struck-through bullets in "Known issues" above for what replaced each one.)
 
 ## Next tasks
 
-0. **Current/upcoming**: a "Flotilla" feature (multi-ship program management) is
-   being planned as of this doc's last update — see `plan.md`/a dedicated
-   milestone doc if one exists by the time you read this, or ask the user if
-   not. Relevant context if you're picking this up: today, every ship-scoped
-   DSL block (`navigate`/`orbit`/`dock`/`extract`/`refuel`/etc.) has **no**
-   ship-symbol input at all — the compiler never threads a ship symbol
-   through a compiled action (`Compiler.fs`), and the scheduler binds a job to
-   exactly one ship (`JobState.shipSymbol: string option`) at job-creation
-   time, injecting it implicitly at every dispatch site in `Step.fs`. A
-   program today is thus written "ship-agnostically" and only becomes
-   ship-specific when a pilot is picked to run it. Flotilla means changing
-   that 1:1 job-to-ship binding into something that can address multiple
-   ships from one program — this is a real architectural change to
-   `JobState`/`Step.fs`/the compiler/the block catalog, not a small addition.
+0. **Flotilla (F1 `mitSchiff` + F2 `parallel`) is shipped** — see
+   `docs/flotilla-plan.md`. Browser-verified via `scripts/verify-flotilla.mjs`
+   (Blockly mutator round-trip + two-ship parallel program against the fake).
 1. plan.md's roadmap (§19) has nothing outstanding: Milestones 9 (custom
    reusable blocks, §9), 10 (fleet mode), 11 (saved/named multiple-program
    library), 12 (bilingual support), and 13 (compiler translation, block

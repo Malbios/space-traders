@@ -32,6 +32,9 @@ type BodyRef =
     | RepeatBody of blockId: string
     | WhileUntilBody of blockId: string
     | ForEachBody of blockId: string
+    | WithShipBody of blockId: string
+    | WithShipElseBody of blockId: string
+    | ParallelBranchBody of blockId: string * branchIndex: int
     | CustomBlockBody of customBlockId: string
 
 /// A frame's position is a path into nested instruction lists, not a flat index
@@ -119,6 +122,9 @@ type JobStatus =
     /// there is no `Reconciling` hop, ever; an `ApiAmbiguous` response just re-emits
     /// the same `QueueInfoRead` with `attempt + 1`.
     | AwaitingInfoResponse of attempt: int * infoType: string * args: Map<string, string> * resultTarget: string
+    /// Flotilla F1: runtime `mitSchiff` scope is waiting for a ship currently locked
+    /// by another job. The shell retries acquisition on each wake tick.
+    | WaitingForShipLock of shipSymbol: string * blockId: string * elseBranch: bool
     | Paused of resuming: JobStatus
     | Cancelled
     | Completed
@@ -149,6 +155,17 @@ type JobState =
       /// Populated at job start (a `ListShips` call, same effort as the initial ship
       /// snapshot) and refreshed on every successful purchase/fleet reconciliation.
       lastKnownFleetShipCount: int option
+      /// Flotilla F1: current ship scopes, head = active ship. Empty means fall back
+      /// to `shipSymbol`, the primary ship selected at job start. The bool records
+      /// whether this scope acquired a dynamic lock that must be released on exit.
+      currentShipStack: (string * bool) list
+      /// Dynamic locks acquired by `mitSchiff` scopes, head = most recent. These are
+      /// released when the corresponding scope exits or the job goes terminal.
+      dynamicShipLocks: string list
+      /// Flotilla F2: active leaf branches for the currently-running `parallel`
+      /// block. Each branch reuses the ordinary leaf scheduler state; the parent
+      /// joins once every branch has completed or failed.
+      parallelBranches: ParallelBranch list
       /// German activity log, newest-first.
       log: string list
       /// Set by a `PauseRequested`/`CancelRequested` event received while
@@ -157,6 +174,12 @@ type JobState =
       /// in-flight action/reconciliation is never abandoned mid-flight.
       pausePending: bool
       cancelPending: bool }
+
+and ParallelBranch =
+    { branchId: string
+      job: JobState
+      failure: string option
+      completed: bool }
 
 /// What the shell reports back for an in-flight API call or a reconciliation fetch.
 type ApiResult =
@@ -196,6 +219,11 @@ type ApiResult =
 type SchedulerEvent =
     | WakeTick
     | ApiResponseReceived of jobId: JobId * attemptNumber: int * result: ApiResult
+    | BranchApiResponseReceived of jobId: JobId * branchId: string * attemptNumber: int * result: ApiResult
+    | ShipScopeAcquired of jobId: JobId * blockId: string * shipSymbol: string * snapshot: ShipSnapshot
+    | ShipScopeUnavailable of jobId: JobId * blockId: string * shipSymbol: string * reason: string
+    | BranchShipScopeAcquired of jobId: JobId * branchId: string * blockId: string * shipSymbol: string * snapshot: ShipSnapshot
+    | BranchShipScopeUnavailable of jobId: JobId * branchId: string * blockId: string * shipSymbol: string * reason: string
     /// Milestone 7 (§14/§15): player-initiated pilot-card controls. Deferred rather
     /// than applied immediately while an action/reconciliation is in flight — see
     /// `JobState.pausePending`/`cancelPending`.
@@ -213,11 +241,15 @@ type WaitReason =
 /// values.
 type Effect =
     | QueueApiCall of jobId: JobId * shipSymbol: string option * action: QueuedAction * attemptNumber: int
+    | QueueBranchApiCall of jobId: JobId * branchId: string * shipSymbol: string option * action: QueuedAction * attemptNumber: int
     | ReconcileShipState of jobId: JobId * shipSymbol: string option * attemptNumber: int
+    | ReconcileBranchShipState of jobId: JobId * branchId: string * shipSymbol: string option * attemptNumber: int
     /// Milestone 9/Part A — reconciliation via a contract/fleet fetch rather than a
     /// ship fetch, for `acceptContract`/`purchaseShip` (see `ActionBaseline`).
     | ReconcileContractState of jobId: JobId * contractId: string * attemptNumber: int
     | ReconcileFleetState of jobId: JobId * attemptNumber: int
+    | ReconcileBranchContractState of jobId: JobId * branchId: string * contractId: string * attemptNumber: int
+    | ReconcileBranchFleetState of jobId: JobId * branchId: string * attemptNumber: int
     /// Milestone 9/Part B (§8/§14) — an info-read block's fetch. Always safe to
     /// retry (a GET), so unlike `QueueApiCall` there is no baseline to carry.
     | QueueInfoRead of
@@ -227,6 +259,17 @@ type Effect =
         args: Map<string, string> *
         attemptNumber: int *
         resultTarget: string
+    | QueueBranchInfoRead of
+        jobId: JobId *
+        branchId: string *
+        shipSymbol: string option *
+        infoType: string *
+        args: Map<string, string> *
+        attemptNumber: int *
+        resultTarget: string
+    | AcquireShipScope of jobId: JobId * blockId: string * shipSymbol: string * hasElse: bool
+    | AcquireBranchShipScope of jobId: JobId * branchId: string * blockId: string * shipSymbol: string * hasElse: bool
+    | ReleaseShipScope of jobId: JobId * shipSymbol: string
     | StartWait of jobId: JobId * until: DateTimeOffset * reason: WaitReason
     | LogMessage of jobId: JobId * germanText: string
     | JobCompleted of jobId: JobId

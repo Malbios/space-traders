@@ -143,6 +143,19 @@ let private extraStateString (block: RawBlock) (name: string) : string option =
 /// `sk_build_record`'s mutator-declared field names, in declaration order (§9
 /// Outputs, Milestone 9/Part C) — read from `extraState.fields[].name`, matching the
 /// client's `BuildRecordExtraState` shape.
+let private listIndexWhere (block: RawBlock) : ListIndexWhere =
+    match fieldString block "WHERE" with
+    | Some "FROM_END" -> FromEnd
+    | Some "FIRST" -> First
+    | Some "LAST" -> Last
+    | Some "RANDOM" -> Random
+    | _ -> FromStart
+
+let private listVariableNameFromInput (block: RawBlock) (inputName: string) : string option =
+    match block.inputs.TryFind inputName with
+    | Some valueBlock when valueBlock.blockType = "variables_get" -> Some(variableName valueBlock "VAR")
+    | _ -> None
+
 let private recordFieldNames (block: RawBlock) : string list =
     match block.extraState with
     | Some el ->
@@ -177,9 +190,14 @@ let rec private compileExpr (state: CompileState) (hoisted: ResizeArray<Instruct
         let items = [ for i in 0 .. itemCount - 1 -> compileInput state hoisted block $"ADD{i}" ]
         ListLiteral items
     | "lists_getIndex" ->
-        // Only the common "get item at position, from the start" shape is supported;
-        // other WHERE modes (FROM_END/FIRST/LAST/RANDOM) are a documented gap.
-        ListGet(compileInput state hoisted block "VALUE", compileInput state hoisted block "AT")
+        let where = listIndexWhere block
+
+        let index =
+            match where with
+            | FromStart | FromEnd -> Some(compileInput state hoisted block "AT")
+            | First | Last | Random -> None
+
+        ListGet(compileInput state hoisted block "VALUE", where, index)
     | "callCustomBlock" ->
         let instr = compileCustomBlockCall state hoisted block
         hoisted.Add instr
@@ -338,6 +356,33 @@ and private compileStatement (state: CompileState) (block: RawBlock) : Instructi
         | "sk_wait" -> Wait(block.id, compileInput state hoisted block "SECONDS")
         | "variables_set" -> SetVariable(block.id, variableName block "VAR", compileInput state hoisted block "VALUE")
         | "math_change" -> ChangeVariable(block.id, variableName block "VAR", compileInput state hoisted block "DELTA")
+        | "lists_setIndex" when fieldString block "MODE" = Some "INSERT" ->
+            let message =
+                match state.locale with
+                | De -> "Listen-Einfügen (INSERT) wird noch nicht unterstützt — nur SET."
+                | En -> "List insert (INSERT) is not supported yet — only SET."
+
+            state.errors.Add { blockId = Some block.id; message = message }
+            ShowMessage(block.id, Literal(StringLit message))
+        | "lists_setIndex" ->
+            match listVariableNameFromInput block "LIST" with
+            | Some name ->
+                let where = listIndexWhere block
+
+                let index =
+                    match where with
+                    | FromStart | FromEnd -> Some(compileInput state hoisted block "AT")
+                    | First | Last | Random -> None
+
+                ListSet(block.id, name, where, index, compileInput state hoisted block "TO")
+            | None ->
+                let message =
+                    match state.locale with
+                    | De -> "Listen setzen braucht eine Listen-Variable als Eingabe."
+                    | En -> "List set requires a list variable as input."
+
+                state.errors.Add { blockId = Some block.id; message = message }
+                ShowMessage(block.id, Literal(StringLit message))
         | "controls_repeat_ext" ->
             let count = compileInput state hoisted block "TIMES"
             Repeat(block.id, count, compileStatementInput state block "DO")
@@ -349,6 +394,24 @@ and private compileStatement (state: CompileState) (block: RawBlock) : Instructi
             let var = variableName block "VAR"
             let list = compileInput state hoisted block "LIST"
             ForEach(block.id, var, list, compileStatementInput state block "DO")
+        | "withShip" ->
+            let ship = compileInput state hoisted block "SHIP"
+            let hasUnavailableBranch =
+                extraStateBool block "hasUnavailable" false || block.inputs.ContainsKey "ELSE"
+
+            let elseBranch =
+                if hasUnavailableBranch then
+                    Some(compileStatementInput state block "ELSE")
+                else
+                    None
+
+            let body = compileStatementInput state block "DO" @ [ ExitShipScope($"{block.id}:exit") ]
+
+            WithShip(block.id, ship, body, elseBranch)
+        | "parallel" ->
+            let branchCount = max 2 (extraStateInt block "branchCount" 2)
+            let branches = [ for i in 0 .. branchCount - 1 -> compileStatementInput state block $"DO{i}" ]
+            Parallel(block.id, branches)
         | "controls_if" -> compileIf state hoisted block
         | "controls_flow_statements" ->
             if fieldString block "FLOW" = Some "CONTINUE" then Continue block.id else Break block.id

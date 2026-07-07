@@ -1,4 +1,4 @@
-import { catalogActionBlockTypes, catalogInfoBlockTypes, catalogAccessorBlockTypes } from "./blocks-catalog";
+import { catalogActionBlockTypes, catalogInfoBlockTypes, catalogAccessorBlockTypes, flotillaBlockTypes } from "./blocks-catalog";
 import { getCurrentLocale } from "./locale-state";
 
 /** Milestone 12 (bilingual support): only the 7 category names vary by locale — the
@@ -10,6 +10,7 @@ const CATEGORY_NAMES = {
         actions: "Aktionen",
         info: "Informationen",
         accessors: "Zugriffe",
+        flotilla: "Flottille",
         programming: "Programmierung",
         variables: "Variablen",
         customBlock: "Eigener Block",
@@ -19,6 +20,7 @@ const CATEGORY_NAMES = {
         actions: "Actions",
         info: "Information",
         accessors: "Accessors",
+        flotilla: "Flotilla",
         programming: "Programming",
         variables: "Variables",
         customBlock: "Custom block",
@@ -69,6 +71,12 @@ export function buildCatalogToolbox(customBlockIds: string[], dynamicAccessorTyp
                 contents: catalogAccessorBlockTypes
                     .map((type) => ({ kind: "block", type }))
                     .concat(dynamicAccessorTypes.map((type) => ({ kind: "block", type }))),
+            },
+            {
+                kind: "category",
+                name: names.flotilla,
+                colour: "20",
+                contents: flotillaBlockTypes.map((type) => ({ kind: "block", type })),
             },
             {
                 kind: "category",
