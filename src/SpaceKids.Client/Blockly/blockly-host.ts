@@ -75,26 +75,50 @@ function refreshToolbox(containerId: string): void {
     ws.updateToolbox(buildCatalogToolbox(customBlocks, dynamicAccessorTypes) as Blockly.utils.toolbox.ToolboxDefinition);
 }
 
-/** Re-measure a workspace after its container becomes visible (e.g. a hidden sub-tab
- * was switched on). Blockly injects into zero-size hidden divs render as blank white
- * canvases with no toolbox until this runs. */
-function resizeWorkspace(containerId: string): void {
+const deferAfterLayout = (fn: () => void): Promise<void> =>
+    new Promise((resolve) => {
+        setTimeout(() => {
+            fn();
+            resolve();
+        }, 0);
+    });
+
+/** Blazor re-renders can replace the container element and wipe Blockly's injected
+ * SVG while our `workspaces` map still holds a stale handle — detect and re-inject. */
+function remountIfDomLost(containerId: string): void {
+    const el = document.getElementById(containerId);
+    if (!el) {
+        throw new Error(`No element with id "${containerId}" to inject a Blockly workspace into.`);
+    }
+    if (workspaces.has(containerId) && el.querySelector(".blocklySvg") === null) {
+        destroyWorkspace(containerId);
+    }
+}
+
+function resizeWorkspaceNow(containerId: string): void {
     const ws = workspaces.get(containerId);
     if (!ws) {
         return;
     }
-    // Defer one frame so the browser has applied `display`/`layout` changes first.
-    setTimeout(() => {
-        Blockly.svgResize(ws);
-        ws.resizeContents();
-    }, 0);
+    Blockly.svgResize(ws);
+    ws.resizeContents();
+}
+
+/** Re-measure a workspace after its container becomes visible (e.g. a hidden sub-tab
+ * was switched on). Blockly injects into zero-size hidden divs render as blank white
+ * canvases with no toolbox until this runs. */
+function resizeWorkspace(containerId: string): void {
+    void deferAfterLayout(() => resizeWorkspaceNow(containerId));
 }
 
 /** Idempotent init + layout refresh — safe to call whenever a workspace's tab/panel
- * becomes visible. */
-function ensureWorkspaceReady(containerId: string, readOnly: boolean): void {
-    initWorkspace(containerId, readOnly);
-    resizeWorkspace(containerId);
+ * becomes visible. Returns a Promise so F# can await post-render remounting. */
+async function ensureWorkspaceReady(containerId: string, readOnly: boolean): Promise<void> {
+    await deferAfterLayout(() => {
+        remountIfDomLost(containerId);
+        initWorkspace(containerId, readOnly);
+        resizeWorkspaceNow(containerId);
+    });
 }
 
 function initWorkspace(containerId: string, readOnly: boolean): void {
@@ -194,7 +218,11 @@ function setLogLevel(level: string): void {
 function destroyWorkspace(containerId: string): void {
     const ws = workspaces.get(containerId);
     if (ws) {
-        ws.dispose();
+        try {
+            ws.dispose();
+        } catch {
+            // Container DOM may already have been replaced by a Blazor re-render.
+        }
         workspaces.delete(containerId);
         customBlocksByContainer.delete(containerId);
         dynamicAccessorTypesByContainer.delete(containerId);
@@ -202,8 +230,16 @@ function destroyWorkspace(containerId: string): void {
     }
 }
 
-function loadWorkspace(containerId: string, json: string): void {
-    load(requireWorkspace(containerId), json);
+async function loadWorkspace(containerId: string, json: string): Promise<void> {
+    await deferAfterLayout(() => {
+        remountIfDomLost(containerId);
+        if (!workspaces.has(containerId)) {
+            initWorkspace(containerId, false);
+        }
+        const ws = requireWorkspace(containerId);
+        load(ws, json);
+        resizeWorkspaceNow(containerId);
+    });
 }
 
 function serializeWorkspace(containerId: string): string {

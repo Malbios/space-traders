@@ -1887,23 +1887,27 @@ let update
         Cmd.batch [ Cmd.ofMsg LoadCustomBlocks; Cmd.ofMsg (OpenCustomBlock(id, name)) ]
 
     | OpenCustomBlock(id, name) ->
+        // `openCustomBlockId` toggling re-renders this panel and Blazor replaces the
+        // workshop container's DOM, wiping Blockly's injected SVG. Remount only after
+        // that render (Elmish runs commands post-render), then fetch + load the JSON.
         { model with
             openCustomBlockId = Some id
             renameNameInput = name
             workshopStatus = s.workshopLoading },
-        Cmd.OfAsync.perform (fun () -> customBlockRemote.loadDefinition id) () CustomBlockDefinitionLoaded
-    | CustomBlockDefinitionLoaded jsonOpt ->
-        let json = jsonOpt |> Option.defaultValue """{"blocks":{"languageVersion":0,"blocks":[]}}"""
-
-        { model with workshopStatus = s.workshopLoaded },
         Cmd.OfAsync.perform
             (fun () ->
                 async {
                     do! callVoid js "spaceKids.ensureWorkspaceReady" [| box model.workshopContainerId; box false |]
-                    do! callVoid js "spaceKids.loadWorkspace" [| box model.workshopContainerId; box json |]
+                    let! jsonOpt = customBlockRemote.loadDefinition id
+                    return jsonOpt
                 })
             ()
-            (fun () -> Loaded)
+            CustomBlockDefinitionLoaded
+    | CustomBlockDefinitionLoaded jsonOpt ->
+        let json = jsonOpt |> Option.defaultValue """{"blocks":{"languageVersion":0,"blocks":[]}}"""
+
+        { model with workshopStatus = s.workshopLoaded },
+        Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.loadWorkspace" [| box model.workshopContainerId; box json |]) () (fun () -> Loaded)
 
     | RenameNameInputChanged value ->
         { model with renameNameInput = value }, Cmd.none
