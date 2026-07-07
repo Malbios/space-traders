@@ -10,7 +10,7 @@ import {
     readSignature,
 } from "./blocks";
 import { registerCatalogBlocks, registerStockBlockChecks } from "./blocks-catalog";
-import { buildCatalogToolbox } from "./toolbox-de";
+import { buildCatalogToolbox, type CustomBlockToolboxEntry } from "./toolbox-de";
 import { serializeWorkspace as serialize, loadWorkspace as load } from "./workspace-serialization";
 import { Locale, setCurrentLocale } from "./locale-state";
 
@@ -53,8 +53,8 @@ function blocklyThemeFor(theme: string): Blockly.Theme {
 }
 
 const workspaces = new Map<string, Blockly.WorkspaceSvg>();
-/** Per-workspace list of custom-block ids currently injected into that workspace's "Eigene Blöcke" category, one generic `callCustomBlock` toolbox entry each (§9b). */
-const customBlockIdsByContainer = new Map<string, string[]>();
+/** Per-workspace list of custom blocks currently injected into that workspace's "Eigene Blöcke" category (§9b). */
+const customBlocksByContainer = new Map<string, CustomBlockToolboxEntry[]>();
 /** Per-workspace list of dynamically generated structured-output accessor block types currently injected into "Zugriffe" (§9 Outputs, Milestone 9/Part C). */
 const dynamicAccessorTypesByContainer = new Map<string, string[]>();
 /** Debug-only: records which event classes reached each workspace's change listener, so Milestone 0's "fires on meaningful events only, not every drag frame" check can be verified from the console/tests. Not part of the documented §3a surface. */
@@ -70,9 +70,9 @@ function requireWorkspace(containerId: string): Blockly.WorkspaceSvg {
 
 function refreshToolbox(containerId: string): void {
     const ws = requireWorkspace(containerId);
-    const customBlockIds = customBlockIdsByContainer.get(containerId) ?? [];
+    const customBlocks = customBlocksByContainer.get(containerId) ?? [];
     const dynamicAccessorTypes = dynamicAccessorTypesByContainer.get(containerId) ?? [];
-    ws.updateToolbox(buildCatalogToolbox(customBlockIds, dynamicAccessorTypes) as Blockly.utils.toolbox.ToolboxDefinition);
+    ws.updateToolbox(buildCatalogToolbox(customBlocks, dynamicAccessorTypes) as Blockly.utils.toolbox.ToolboxDefinition);
 }
 
 function initWorkspace(containerId: string, readOnly: boolean): void {
@@ -83,7 +83,7 @@ function initWorkspace(containerId: string, readOnly: boolean): void {
     if (!el) {
         throw new Error(`No element with id "${containerId}" to inject a Blockly workspace into.`);
     }
-    customBlockIdsByContainer.set(containerId, []);
+    customBlocksByContainer.set(containerId, []);
     dynamicAccessorTypesByContainer.set(containerId, []);
     changeLogByContainer.set(containerId, []);
     const ws = Blockly.inject(el, {
@@ -112,7 +112,7 @@ function setLocale(locale: Locale): void {
         const ws = workspaces.get(containerId)!;
         const json = serialize(ws);
         const readOnly = ws.options.readOnly;
-        const customBlockIds = customBlockIdsByContainer.get(containerId) ?? [];
+        const customBlocks = customBlocksByContainer.get(containerId) ?? [];
         const dynamicAccessorTypes = dynamicAccessorTypesByContainer.get(containerId) ?? [];
 
         ws.dispose();
@@ -120,19 +120,19 @@ function setLocale(locale: Locale): void {
         const el = document.getElementById(containerId);
         if (!el) {
             workspaces.delete(containerId);
-            customBlockIdsByContainer.delete(containerId);
+            customBlocksByContainer.delete(containerId);
             dynamicAccessorTypesByContainer.delete(containerId);
             changeLogByContainer.delete(containerId);
             continue;
         }
 
         const newWs = Blockly.inject(el, {
-            toolbox: buildCatalogToolbox(customBlockIds, dynamicAccessorTypes) as Blockly.utils.toolbox.ToolboxDefinition,
+            toolbox: buildCatalogToolbox(customBlocks, dynamicAccessorTypes) as Blockly.utils.toolbox.ToolboxDefinition,
             readOnly,
             theme: blocklyThemeFor(getTheme()),
         });
         workspaces.set(containerId, newWs);
-        customBlockIdsByContainer.set(containerId, customBlockIds);
+        customBlocksByContainer.set(containerId, customBlocks);
         dynamicAccessorTypesByContainer.set(containerId, dynamicAccessorTypes);
         changeLogByContainer.set(containerId, []);
         onWorkspaceChanged(containerId);
@@ -174,7 +174,7 @@ function destroyWorkspace(containerId: string): void {
     if (ws) {
         ws.dispose();
         workspaces.delete(containerId);
-        customBlockIdsByContainer.delete(containerId);
+        customBlocksByContainer.delete(containerId);
         dynamicAccessorTypesByContainer.delete(containerId);
         changeLogByContainer.delete(containerId);
     }
@@ -271,10 +271,10 @@ function publishCustomBlockSignature(defContainerId: string, targetContainerId: 
     registerSignature(signature);
     const accessorTypes = registerCustomBlockAccessors(signature);
 
-    const existingIds = customBlockIdsByContainer.get(targetContainerId) ?? [];
-    if (!existingIds.includes(id)) {
-        customBlockIdsByContainer.set(targetContainerId, [...existingIds, id]);
-    }
+    const existing = customBlocksByContainer.get(targetContainerId) ?? [];
+    const entry: CustomBlockToolboxEntry = { id, name: signature.name };
+    const without = existing.filter((block) => block.id !== id);
+    customBlocksByContainer.set(targetContainerId, [...without, entry]);
 
     const existingAccessors = dynamicAccessorTypesByContainer.get(targetContainerId) ?? [];
     const newAccessors = accessorTypes.filter((t) => !existingAccessors.includes(t));

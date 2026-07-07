@@ -1,4 +1,10 @@
-import { catalogActionBlockTypes, catalogInfoBlockTypes, catalogAccessorBlockTypes, flotillaBlockTypes } from "./blocks-catalog";
+import {
+    catalogActionBlockTypes,
+    catalogInfoBlockTypes,
+    catalogAccessorBlockTypes,
+    flotillaBlockTypes,
+    getCatalogBlockLabel,
+} from "./blocks-catalog";
 import { getCurrentLocale } from "./locale-state";
 
 /** Milestone 12 (bilingual support): category names vary by locale — the block-type-list
@@ -26,11 +32,68 @@ const CATEGORY_NAMES = {
     },
 };
 
+const PROGRAMMING_BLOCK_LABELS: Record<string, { de: string; en: string }> = {
+    controls_flow_statements: { de: "Abbrechen/Fortsetzen", en: "Break/continue" },
+    controls_forEach: { de: "für jedes Element", en: "for each" },
+    controls_if: { de: "falls", en: "if" },
+    controls_repeat_ext: { de: "wiederhole", en: "repeat" },
+    controls_whileUntil: { de: "solange/bis", en: "while/until" },
+    lists_create_with: { de: "Liste erstellen", en: "create list" },
+    lists_getIndex: { de: "Listenelement holen", en: "get list item" },
+    lists_setIndex: { de: "Listenelement setzen", en: "set list item" },
+    logic_boolean: { de: "wahr/falsch", en: "true/false" },
+    logic_compare: { de: "vergleichen", en: "compare" },
+    logic_negate: { de: "nicht", en: "not" },
+    logic_operation: { de: "und/oder", en: "and/or" },
+    math_arithmetic: { de: "rechnen", en: "arithmetic" },
+    math_change: { de: "Zahl ändern", en: "change number" },
+    math_number: { de: "Zahl", en: "number" },
+    sk_show_message: { de: "Nachricht anzeigen", en: "show message" },
+    sk_wait: { de: "warten", en: "wait" },
+    text: { de: "Text", en: "text" },
+};
+
+const PROGRAMMING_BLOCK_TYPES: string[] = [
+    "controls_if",
+    "controls_repeat_ext",
+    "controls_whileUntil",
+    "controls_forEach",
+    "controls_flow_statements",
+    "logic_compare",
+    "logic_operation",
+    "logic_negate",
+    "logic_boolean",
+    "math_arithmetic",
+    "math_change",
+    "math_number",
+    "text",
+    "lists_create_with",
+    "lists_setIndex",
+    "lists_getIndex",
+    "sk_show_message",
+    "sk_wait",
+];
+
+function programmingBlockLabel(blockType: string): string {
+    const labels = PROGRAMMING_BLOCK_LABELS[blockType];
+    return labels ? labels[getCurrentLocale()] : blockType;
+}
+
+function sortByLabel(types: string[], labelOf: (type: string) => string): string[] {
+    const locale = getCurrentLocale();
+    return [...types].sort((left, right) => labelOf(left).localeCompare(labelOf(right), locale));
+}
+
+export interface CustomBlockToolboxEntry {
+    id: string;
+    name: string;
+}
+
 /** One "Eigene Blöcke" toolbox entry (§9b) — the generic `callCustomBlock` block type
  * carrying its target's `customBlockId` as `extraState`, so the flyout places a fresh
  * instance already shaped for that specific custom block. */
-function callerToolboxEntry(customBlockId: string): object {
-    return { kind: "block", type: "callCustomBlock", extraState: { customBlockId } };
+function callerToolboxEntry(entry: CustomBlockToolboxEntry): object {
+    return { kind: "block", type: "callCustomBlock", extraState: { customBlockId: entry.id } };
 }
 
 /**
@@ -38,14 +101,26 @@ function callerToolboxEntry(customBlockId: string): object {
  * program workspace and the block-workshop workspace — both should offer the same
  * primitives.
  *
- * `customBlockIds` is the live list of custom blocks (§9b) to inject into "Eigene
+ * `customBlocks` is the live list of custom blocks (§9b) to inject into "Eigene
  * Blöcke", one generic `callCustomBlock` entry per id — regenerated and pushed via
  * `updateToolbox` whenever a signature changes (§3a, §9c). `dynamicAccessorTypes` are
  * the per-custom-block structured-output accessor blocks (§9 Outputs, Milestone
  * 9/Part C), appended alongside the fixed §8 accessors in "Zugriffe".
  */
-export function buildCatalogToolbox(customBlockIds: string[], dynamicAccessorTypes: string[]): object {
+export function buildCatalogToolbox(customBlocks: CustomBlockToolboxEntry[], dynamicAccessorTypes: string[]): object {
     const names = CATEGORY_NAMES[getCurrentLocale()];
+
+    const sortedActions = sortByLabel(catalogActionBlockTypes, getCatalogBlockLabel);
+    const sortedInfo = sortByLabel(catalogInfoBlockTypes, getCatalogBlockLabel);
+    const sortedAccessors = sortByLabel(
+        catalogAccessorBlockTypes.concat(dynamicAccessorTypes),
+        (type) => (catalogAccessorBlockTypes.includes(type) ? getCatalogBlockLabel(type) : type),
+    );
+    const sortedFlotilla = sortByLabel(flotillaBlockTypes, getCatalogBlockLabel);
+    const sortedProgramming = sortByLabel(PROGRAMMING_BLOCK_TYPES, programmingBlockLabel);
+    const sortedCustomBlocks = [...customBlocks].sort((left, right) =>
+        left.name.localeCompare(right.name, getCurrentLocale()),
+    );
 
     return {
         kind: "categoryToolbox",
@@ -54,46 +129,27 @@ export function buildCatalogToolbox(customBlockIds: string[], dynamicAccessorTyp
                 kind: "category",
                 name: names.actions,
                 colour: "160",
-                contents: catalogActionBlockTypes.map((type) => ({ kind: "block", type })),
+                contents: sortedActions.map((type) => ({ kind: "block", type })),
             },
             {
                 kind: "category",
                 name: names.info,
                 colour: "230",
-                contents: catalogInfoBlockTypes.map((type) => ({ kind: "block", type })),
+                contents: sortedInfo.map((type) => ({ kind: "block", type })),
             },
             {
                 kind: "category",
                 name: names.accessors,
                 colour: "65",
-                contents: catalogAccessorBlockTypes
-                    .map((type) => ({ kind: "block", type }))
-                    .concat(dynamicAccessorTypes.map((type) => ({ kind: "block", type }))),
+                contents: sortedAccessors.map((type) => ({ kind: "block", type })),
             },
             {
                 kind: "category",
                 name: names.logic,
                 colour: "210",
                 contents: [
-                    ...flotillaBlockTypes.map((type) => ({ kind: "block", type })),
-                    { kind: "block", type: "controls_if" },
-                    { kind: "block", type: "controls_repeat_ext" },
-                    { kind: "block", type: "controls_whileUntil" },
-                    { kind: "block", type: "controls_forEach" },
-                    { kind: "block", type: "controls_flow_statements" },
-                    { kind: "block", type: "logic_compare" },
-                    { kind: "block", type: "logic_operation" },
-                    { kind: "block", type: "logic_negate" },
-                    { kind: "block", type: "logic_boolean" },
-                    { kind: "block", type: "math_arithmetic" },
-                    { kind: "block", type: "math_change" },
-                    { kind: "block", type: "math_number" },
-                    { kind: "block", type: "text" },
-                    { kind: "block", type: "lists_create_with" },
-                    { kind: "block", type: "lists_setIndex" },
-                    { kind: "block", type: "lists_getIndex" },
-                    { kind: "block", type: "sk_show_message" },
-                    { kind: "block", type: "sk_wait" },
+                    ...sortedFlotilla.map((type) => ({ kind: "block", type })),
+                    ...sortedProgramming.map((type) => ({ kind: "block", type })),
                 ],
             },
             {
@@ -116,7 +172,7 @@ export function buildCatalogToolbox(customBlockIds: string[], dynamicAccessorTyp
                 kind: "category",
                 name: names.customBlocks,
                 colour: "65",
-                contents: customBlockIds.map(callerToolboxEntry),
+                contents: sortedCustomBlocks.map(callerToolboxEntry),
             },
         ],
     };

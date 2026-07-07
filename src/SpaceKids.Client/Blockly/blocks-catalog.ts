@@ -119,6 +119,26 @@ const ACTION_BLOCKS: CatalogBlockSpec[] = [
         outputCheck: null,
     },
     {
+        type: "fulfillContract",
+        label: { de: "Schließe Auftrag ab", en: "Fulfill contract" },
+        tooltip: {
+            de: "Schließt einen angenommenen Auftrag ab.",
+            en: "Fulfills an accepted contract.",
+        },
+        inputs: [{ name: "CONTRACT_ID", label: { de: "Auftrag", en: "Contract" }, check: "String" }],
+        outputCheck: null,
+    },
+    {
+        type: "negotiateContract",
+        label: { de: "Verhandle Auftrag", en: "Negotiate contract" },
+        tooltip: {
+            de: "Verhandelt einen neuen Auftrag mit dem Hauptquartier.",
+            en: "Negotiates a new contract with headquarters.",
+        },
+        inputs: [],
+        outputCheck: null,
+    },
+    {
         type: "purchaseShip",
         label: { de: "Kaufe Schiff", en: "Buy ship" },
         tooltip: { de: "Kauft ein neues Schiff auf einer Werft.", en: "Buys a new ship at a shipyard." },
@@ -133,6 +153,150 @@ const ACTION_BLOCKS: CatalogBlockSpec[] = [
         label: { de: "Tanke auf", en: "Refuel" },
         tooltip: { de: "Tankt das Schiff auf.", en: "Refuels the ship." },
         inputs: [],
+        outputCheck: null,
+    },
+    {
+        type: "createChart",
+        label: { de: "Erstelle Karte", en: "Create chart" },
+        tooltip: { de: "Erstellt eine Karte aus Vermessungsdaten.", en: "Creates a chart from survey data." },
+        inputs: [],
+        outputCheck: null,
+    },
+    {
+        type: "extractWithSurvey",
+        label: { de: "Baue mit Vermessung ab", en: "Extract with survey" },
+        tooltip: { de: "Baut Rohstoffe mit einer Vermessungssignatur ab.", en: "Extracts resources using a survey signature." },
+        inputs: [{ name: "SURVEY_SIGNATURE", label: { de: "Vermessung", en: "Survey" }, check: "String" }],
+        outputCheck: null,
+    },
+    {
+        type: "installModule",
+        label: { de: "Installiere Modul", en: "Install module" },
+        tooltip: { de: "Installiert ein Modul am Schiff.", en: "Installs a module on the ship." },
+        inputs: [{ name: "MODULE_SYMBOL", label: { de: "Modul", en: "Module" }, check: "String" }],
+        outputCheck: null,
+    },
+    {
+        type: "installMount",
+        label: { de: "Installiere Aufsatz", en: "Install mount" },
+        tooltip: { de: "Installiert einen Aufsatz am Schiff.", en: "Installs a mount on the ship." },
+        inputs: [{ name: "MOUNT_SYMBOL", label: { de: "Aufsatz", en: "Mount" }, check: "String" }],
+        outputCheck: null,
+    },
+    {
+        type: "jettison",
+        label: { de: "Wirf Fracht ab", en: "Jettison cargo" },
+        tooltip: { de: "Wirft Fracht aus dem Schiff.", en: "Jettisons cargo from the ship." },
+        inputs: [
+            { name: "TRADE_SYMBOL", label: { de: "Ware", en: "Good" }, check: "String" },
+            { name: "UNITS", label: { de: "Menge", en: "Units" }, check: "Number" },
+        ],
+        outputCheck: null,
+    },
+    {
+        type: "jump",
+        label: { de: "Springe zu Wegpunkt", en: "Jump to waypoint" },
+        tooltip: { de: "Springt über ein Sprungtor zu einem verbundenen Wegpunkt.", en: "Jumps through a gate to a connected waypoint." },
+        inputs: [{ name: "DESTINATION", label: { de: "Wegpunkt", en: "Waypoint" }, check: "String" }],
+        outputCheck: null,
+    },
+    {
+        type: "refine",
+        label: { de: "Veredle Rohstoffe", en: "Refine goods" },
+        tooltip: { de: "Veredelt Rohstoffe im Schiff.", en: "Refines raw goods on the ship." },
+        inputs: [{ name: "PRODUCE", label: { de: "Erzeugnis", en: "Product" }, check: "String" }],
+        outputCheck: null,
+    },
+    {
+        type: "removeModule",
+        label: { de: "Entferne Modul", en: "Remove module" },
+        tooltip: { de: "Entfernt ein Modul vom Schiff.", en: "Removes a module from the ship." },
+        inputs: [{ name: "MODULE_SYMBOL", label: { de: "Modul", en: "Module" }, check: "String" }],
+        outputCheck: null,
+    },
+    {
+        type: "removeMount",
+        label: { de: "Entferne Aufsatz", en: "Remove mount" },
+        tooltip: { de: "Entfernt einen Aufsatz vom Schiff.", en: "Removes a mount from the ship." },
+        inputs: [{ name: "MOUNT_SYMBOL", label: { de: "Aufsatz", en: "Mount" }, check: "String" }],
+        outputCheck: null,
+    },
+    {
+        type: "repair",
+        label: { de: "Repariere Schiff", en: "Repair ship" },
+        tooltip: { de: "Repariert das Schiff auf einer Werft.", en: "Repairs the ship at a shipyard." },
+        inputs: [],
+        outputCheck: null,
+    },
+    {
+        type: "scanShips",
+        label: { de: "Scanne Schiffe", en: "Scan ships" },
+        tooltip: { de: "Scannt Schiffe im Umfeld.", en: "Scans nearby ships." },
+        inputs: [],
+        outputCheck: null,
+    },
+    {
+        type: "scanSystems",
+        label: { de: "Scanne Systeme", en: "Scan systems" },
+        tooltip: { de: "Scannt nahe Sternensysteme.", en: "Scans nearby star systems." },
+        inputs: [],
+        outputCheck: null,
+    },
+    {
+        type: "scanWaypoints",
+        label: { de: "Scanne Wegpunkte", en: "Scan waypoints" },
+        tooltip: { de: "Scannt Wegpunkte im aktuellen System.", en: "Scans waypoints in the current system." },
+        inputs: [],
+        outputCheck: null,
+    },
+    {
+        type: "scrapShip",
+        label: { de: "Verschrotte Schiff", en: "Scrap ship" },
+        tooltip: { de: "Verschrottet das Schiff.", en: "Scraps the ship." },
+        inputs: [],
+        outputCheck: null,
+    },
+    {
+        type: "siphon",
+        label: { de: "Entnehme Gas", en: "Siphon gas" },
+        tooltip: { de: "Entnimmt Gas aus einem Gasriesen.", en: "Siphons gas from a gas giant." },
+        inputs: [],
+        outputCheck: null,
+    },
+    {
+        type: "transferCargo",
+        label: { de: "Übertrage Fracht", en: "Transfer cargo" },
+        tooltip: { de: "Überträgt Fracht auf ein anderes Schiff.", en: "Transfers cargo to another ship." },
+        inputs: [
+            { name: "TRADE_SYMBOL", label: { de: "Ware", en: "Good" }, check: "String" },
+            { name: "UNITS", label: { de: "Menge", en: "Units" }, check: "Number" },
+            { name: "SHIP_SYMBOL", label: { de: "Zielschiff", en: "Target ship" }, check: "String" },
+        ],
+        outputCheck: null,
+    },
+    {
+        type: "warp",
+        label: { de: "Warpe zu Wegpunkt", en: "Warp to waypoint" },
+        tooltip: { de: "Warpt das Schiff zu einem Wegpunkt.", en: "Warps the ship to a waypoint." },
+        inputs: [{ name: "DESTINATION", label: { de: "Wegpunkt", en: "Waypoint" }, check: "String" }],
+        outputCheck: null,
+    },
+    {
+        type: "supplyConstruction",
+        label: { de: "Liefere Baumaterial", en: "Supply construction" },
+        tooltip: { de: "Liefert Baumaterial für einen Bauplatz.", en: "Supplies construction materials at a construction site." },
+        inputs: [
+            { name: "WAYPOINT_SYMBOL", label: { de: "Wegpunkt", en: "Waypoint" }, check: "String" },
+            { name: "TRADE_SYMBOL", label: { de: "Ware", en: "Good" }, check: "String" },
+            { name: "UNITS", label: { de: "Menge", en: "Units" }, check: "Number" },
+        ],
+        outputCheck: null,
+    },
+    {
+        type: "patchShipNav",
+        label: { de: "Setze Flugmodus", en: "Set flight mode" },
+        tooltip: { de: "Ändert den Flugmodus des Schiffs.", en: "Changes the ship's flight mode." },
+        inputs: [{ name: "FLIGHT_MODE", label: { de: "Flugmodus", en: "Flight mode" }, check: "String" }],
         outputCheck: null,
     },
 ];
@@ -200,6 +364,132 @@ const INFO_BLOCKS: CatalogBlockSpec[] = [
         tooltip: { de: "Gibt den aktuellen Kontostand zurück.", en: "Returns the current account balance." },
         inputs: [],
         outputCheck: "Number",
+    },
+    {
+        type: "getRepairCost",
+        label: { de: "Hole Reparaturkosten", en: "Get repair cost" },
+        tooltip: { de: "Gibt die Reparaturkosten des ausgewählten Schiffs zurück.", en: "Returns the repair cost of the selected ship." },
+        inputs: [],
+        outputCheck: "PriceRecord",
+    },
+    {
+        type: "getScrapValue",
+        label: { de: "Hole Verschrottungswert", en: "Get scrap value" },
+        tooltip: { de: "Gibt den Verschrottungswert des ausgewählten Schiffs zurück.", en: "Returns the scrap value of the selected ship." },
+        inputs: [],
+        outputCheck: "PriceRecord",
+    },
+    {
+        type: "getWaypoint",
+        label: { de: "Hole Wegpunkt", en: "Get waypoint" },
+        tooltip: { de: "Gibt die Daten eines Wegpunkts zurück.", en: "Returns the data of a waypoint." },
+        inputs: [{ name: "WAYPOINT_SYMBOL", label: { de: "Wegpunkt", en: "Waypoint" }, check: "String" }],
+        outputCheck: "WaypointRecord",
+    },
+    {
+        type: "getMyAgent",
+        label: { de: "Hole meine Agentendaten", en: "Get my agent" },
+        tooltip: { de: "Gibt die Daten des eigenen Agenten zurück.", en: "Returns the data of your own agent." },
+        inputs: [],
+        outputCheck: "AgentRecord",
+    },
+    {
+        type: "getPublicAgent",
+        label: { de: "Hole öffentliche Agentendaten", en: "Get public agent" },
+        tooltip: { de: "Gibt die öffentlichen Daten eines Agenten zurück.", en: "Returns the public data of an agent." },
+        inputs: [{ name: "AGENT_SYMBOL", label: { de: "Agent", en: "Agent" }, check: "String" }],
+        outputCheck: "AgentRecord",
+    },
+    {
+        type: "getPublicAgents",
+        label: { de: "Hole öffentliche Agenten", en: "Get public agents" },
+        tooltip: { de: "Gibt die Liste aller öffentlichen Agenten zurück.", en: "Returns the list of all public agents." },
+        inputs: [],
+        outputCheck: "List",
+    },
+    {
+        type: "getCooldown",
+        label: { de: "Hole Abklingzeit", en: "Get cooldown" },
+        tooltip: { de: "Gibt die Abklingzeit des ausgewählten Schiffs zurück.", en: "Returns the cooldown of the selected ship." },
+        inputs: [],
+        outputCheck: "CooldownRecord",
+    },
+    {
+        type: "getNav",
+        label: { de: "Hole Navigationsdaten", en: "Get navigation" },
+        tooltip: { de: "Gibt die Navigationsdaten des ausgewählten Schiffs zurück.", en: "Returns the navigation data of the selected ship." },
+        inputs: [],
+        outputCheck: "NavRecord",
+    },
+    {
+        type: "getSupplyChain",
+        label: { de: "Hole Lieferkette", en: "Get supply chain" },
+        tooltip: { de: "Gibt die globale Lieferkette zurück.", en: "Returns the global supply chain." },
+        inputs: [],
+        outputCheck: "List",
+    },
+    {
+        type: "getShipModules",
+        label: { de: "Hole Schiffsmodule", en: "Get ship modules" },
+        tooltip: { de: "Gibt die installierten Module des ausgewählten Schiffs zurück.", en: "Returns the installed modules of the selected ship." },
+        inputs: [],
+        outputCheck: "List",
+    },
+    {
+        type: "getShipMounts",
+        label: { de: "Hole Schiffsaufsätze", en: "Get ship mounts" },
+        tooltip: { de: "Gibt die installierten Aufsätze des ausgewählten Schiffs zurück.", en: "Returns the installed mounts of the selected ship." },
+        inputs: [],
+        outputCheck: "List",
+    },
+    {
+        type: "getConstruction",
+        label: { de: "Hole Bauplatz", en: "Get construction" },
+        tooltip: { de: "Gibt die Daten eines Bauplatzes zurück.", en: "Returns the data of a construction site." },
+        inputs: [{ name: "WAYPOINT_SYMBOL", label: { de: "Wegpunkt", en: "Waypoint" }, check: "String" }],
+        outputCheck: "ConstructionRecord",
+    },
+    {
+        type: "getJumpGate",
+        label: { de: "Hole Sprungtor", en: "Get jump gate" },
+        tooltip: { de: "Gibt die Daten eines Sprungtors zurück.", en: "Returns the data of a jump gate." },
+        inputs: [{ name: "WAYPOINT_SYMBOL", label: { de: "Wegpunkt", en: "Waypoint" }, check: "String" }],
+        outputCheck: "JumpGateRecord",
+    },
+    {
+        type: "getSystems",
+        label: { de: "Hole Sternensysteme", en: "Get systems" },
+        tooltip: { de: "Gibt die Liste aller Sternensysteme zurück.", en: "Returns the list of all star systems." },
+        inputs: [],
+        outputCheck: "List",
+    },
+    {
+        type: "getSystem",
+        label: { de: "Hole Sternensystem", en: "Get system" },
+        tooltip: { de: "Gibt die Daten eines Sternensystems zurück.", en: "Returns the data of a star system." },
+        inputs: [{ name: "SYSTEM_SYMBOL", label: { de: "Sternensystem", en: "System" }, check: "String" }],
+        outputCheck: "SystemRecord",
+    },
+    {
+        type: "getFaction",
+        label: { de: "Hole Fraktion", en: "Get faction" },
+        tooltip: { de: "Gibt die Daten einer Fraktion zurück.", en: "Returns the data of a faction." },
+        inputs: [{ name: "FACTION_SYMBOL", label: { de: "Fraktion", en: "Faction" }, check: "String" }],
+        outputCheck: "FactionRecord",
+    },
+    {
+        type: "getFactions",
+        label: { de: "Hole Fraktionen", en: "Get factions" },
+        tooltip: { de: "Gibt die Liste aller Fraktionen zurück.", en: "Returns the list of all factions." },
+        inputs: [],
+        outputCheck: "List",
+    },
+    {
+        type: "getMyFactions",
+        label: { de: "Hole meine Fraktionen", en: "Get my factions" },
+        tooltip: { de: "Gibt die eigenen Fraktionsbeziehungen zurück.", en: "Returns your faction reputations." },
+        inputs: [],
+        outputCheck: "List",
     },
 ];
 
@@ -363,7 +653,7 @@ export function registerDynamicAccessorBlock(blockType: string, label: string, t
     };
 }
 
-/** Registers all 20 SpaceTraders action/information blocks (§6/§7) plus the §8 accessor blocks (Milestone 9/Part B). Idempotent — safe to call once at seam init, same as the other register* functions in blocks.ts. */
+/** Registers all SpaceTraders action/information blocks (§6/§7) plus the §8 accessor blocks (Milestone 9/Part B). Idempotent — safe to call once at seam init, same as the other register* functions in blocks.ts. */
 export function registerCatalogBlocks(): void {
     ACTION_BLOCKS.forEach((spec) => registerBlock(spec, ACTION_COLOUR, false));
     INFO_BLOCKS.forEach((spec) => registerBlock(spec, INFO_COLOUR, true));
@@ -532,6 +822,24 @@ export function registerStockBlockChecks(): void {
         this.getInput("A")?.connection?.setCheck(primitiveChecks);
         this.getInput("B")?.connection?.setCheck(primitiveChecks);
     };
+}
+
+const FLOTILLA_BLOCK_LABELS: Record<string, LocalizedText> = {
+    withShip: { de: "mit Schiff", en: "with ship" },
+    parallel: { de: "parallel", en: "parallel" },
+};
+
+const catalogLabelByType: Record<string, LocalizedText> = Object.fromEntries([
+    ...ACTION_BLOCKS.map((spec) => [spec.type, spec.label] as const),
+    ...INFO_BLOCKS.map((spec) => [spec.type, spec.label] as const),
+    ...ACCESSOR_BLOCKS.map((spec) => [spec.type, spec.label] as const),
+    ...Object.entries(FLOTILLA_BLOCK_LABELS),
+]);
+
+/** Visible label for a catalog block type in the current locale — used by the toolbox sorter. */
+export function getCatalogBlockLabel(blockType: string): string {
+    const label = catalogLabelByType[blockType];
+    return label ? t(label) : blockType;
 }
 
 export const catalogActionBlockTypes: string[] = ACTION_BLOCKS.map((spec) => spec.type);

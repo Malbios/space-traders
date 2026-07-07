@@ -30,20 +30,32 @@ type DashboardState =
         agent: Agent
         ships: Ship list
         contracts: Contract list
+        systems: StarSystem list
+        selectedSystemSymbol: string
         waypoints: Waypoint list
         markets: Market list
+    }
+
+type FactionsSnapshot =
+    {
+        factions: Faction list
+        reputations: (string * int) list
     }
 
 type AgentService =
     {
         submitToken: string -> Async<Result<DashboardState, string>>
         loadDashboard: unit -> Async<DashboardState option>
+        loadFactions: unit -> Async<Result<FactionsSnapshot, string>>
+        loadSystemWaypoints: string -> Async<Result<Waypoint list, string>>
+        loadPublicAgents: unit -> Async<Result<Agent list, string>>
         /// Entity inspector (visual-map feature): loaded lazily (a button, not
         /// automatic) when the player opens a waypoint that has the matching
         /// trait — `None` if the waypoint turns out not to have one after all.
         getWaypointMarket: string -> Async<Market option>
         getWaypointShipyard: string -> Async<Shipyard option>
         acceptContract: string -> Async<Result<unit, string>>
+        fulfillContract: string -> Async<Result<unit, string>>
     }
 
     interface IRemoteService with
@@ -242,6 +254,8 @@ type Tab =
     | PilotenTab
     | GalaxieTab
     | ContractsTab
+    | FactionsTab
+    | AgentsTab
     | SettingsTab
 
 type Model =
@@ -353,7 +367,22 @@ type Model =
         /// disables its Accept button for the round trip (same in-flight-guard
         /// role as `startingJob`, to avoid a repeat of the stuck-Start-button bug).
         acceptingContractId: string option
+        /// Contracts tab: the contract id currently being fulfilled, if any.
+        fulfillingContractId: string option
         contractActionError: string option
+        factionsSnapshot: FactionsSnapshot option
+        factionsLoading: bool
+        factionsError: string option
+        publicAgents: Agent list option
+        publicAgentsLoading: bool
+        publicAgentsError: string option
+        galaxyMapZoom: float
+        galaxyMapPanX: float
+        galaxyMapPanY: float
+        galaxyDragging: bool
+        systemWaypointsLoading: bool
+        systemWaypointsError: string option
+        pendingGalaxySystem: string option
     }
 
 let private terminalPilotStatuses = [ "Completed"; "Failed"; "Cancelled" ]
@@ -428,7 +457,21 @@ let initModel =
         logLevel = "off"
         contractsHistoryExpanded = false
         acceptingContractId = None
+        fulfillingContractId = None
         contractActionError = None
+        factionsSnapshot = None
+        factionsLoading = false
+        factionsError = None
+        publicAgents = None
+        publicAgentsLoading = false
+        publicAgentsError = None
+        galaxyMapZoom = 1.0
+        galaxyMapPanX = 0.0
+        galaxyMapPanY = 0.0
+        galaxyDragging = false
+        systemWaypointsLoading = false
+        systemWaypointsError = None
+        pendingGalaxySystem = None
     }
 
 type Message =
@@ -542,8 +585,20 @@ type Message =
     /// down SpaceKids server should be visible and not spammed, not silent.
     | RemoteCallFailed
     | AcceptContractClicked of contractId: string
+    | FulfillContractClicked of contractId: string
     | ContractActionCompleted of Result<unit, string>
     | ToggleContractsHistory
+    | LoadFactions
+    | FactionsLoaded of Result<FactionsSnapshot, string>
+    | LoadPublicAgents
+    | PublicAgentsLoaded of Result<Agent list, string>
+    | SelectGalaxySystem of systemSymbol: string
+    | SystemWaypointsLoaded of Result<Waypoint list, string>
+    | GalaxyWheel of deltaY: float
+    | GalaxyDragStart
+    | GalaxyDragMove of dx: float * dy: float
+    | GalaxyDragEnd
+    | ResetGalaxyMapView
 
 let private callVoid (js: IJSRuntime) (identifier: string) (args: obj[]) : Async<unit> =
     js.InvokeVoidAsync(identifier, args).AsTask() |> Async.AwaitTask
@@ -599,6 +654,7 @@ type Strings =
       contractPaymentLine: int * int -> string
       contractDeadlineLine: string -> string
       acceptContractButton: string
+      fulfillContractButton: string
       contractAcceptedLabel: string
       contractPendingLabel: string
       waypointsHeading: string
@@ -635,8 +691,13 @@ type Strings =
       waypointNotFound: string -> string
       selectMapEntityHint: string
 
+      galaxyMapHeading: string
       systemMapHeading: string
       resetMapView: string
+      resetGalaxyMapView: string
+      agentsHeading: string
+      refreshAgents: string
+      agentPublicLine: string * string * int64 * int -> string
 
       queueHeading: string
       refresh: string
@@ -717,7 +778,17 @@ type Strings =
       tabProgrammieren: string
       tabPiloten: string
       tabGalaxie: string
+      tabFactions: string
+      tabAgents: string
       tabSettings: string
+      factionsHeading: string
+      refreshFactions: string
+      factionHeadquartersLine: string -> string
+      factionRecruitingLabel: string
+      factionNotRecruitingLabel: string
+      factionReputationLine: int -> string
+      factionTraitsHeading: string
+      factionTraitLine: string * string -> string
       serverUnreachableMessage: string
       settingsLocaleLabel: string
       settingsPollIntervalLabel: string
@@ -773,6 +844,7 @@ let private stringsDe: Strings =
         fun (onAccepted, onFulfilled) -> $"Bezahlung: {onAccepted} Credits bei Annahme, {onFulfilled} Credits bei Erfüllung"
       contractDeadlineLine = fun deadline -> $"Frist: {deadline}"
       acceptContractButton = "Auftrag annehmen"
+      fulfillContractButton = "Auftrag abschließen"
       contractAcceptedLabel = "Angenommen"
       contractPendingLabel = "Noch nicht angenommen"
       waypointsHeading = "Wegpunkte"
@@ -809,8 +881,13 @@ let private stringsDe: Strings =
       waypointNotFound = fun symbol -> $"Wegpunkt {symbol} nicht gefunden."
       selectMapEntityHint = "Klicke ein Schiff oder einen Wegpunkt auf der Karte an, um Details zu sehen."
 
+      galaxyMapHeading = "Galaxiekarte"
       systemMapHeading = "Systemkarte"
       resetMapView = "Ansicht zurücksetzen"
+      resetGalaxyMapView = "Galaxie zurücksetzen"
+      agentsHeading = "Agenten"
+      refreshAgents = "Agenten aktualisieren"
+      agentPublicLine = fun (symbol, hq, credits, ships) -> $"{symbol} — HQ {hq}, {credits} Credits, {ships} Schiffe"
 
       queueHeading = "Warteschlange"
       refresh = "Daten aktualisieren"
@@ -906,7 +983,17 @@ let private stringsDe: Strings =
       tabProgrammieren = "Programmieren"
       tabPiloten = "Piloten"
       tabGalaxie = "Galaxie"
+      tabFactions = "Fraktionen"
+      tabAgents = "Agenten"
       tabSettings = "Einstellungen"
+      factionsHeading = "Fraktionen"
+      refreshFactions = "Fraktionen aktualisieren"
+      factionHeadquartersLine = fun hq -> $"Hauptquartier: {hq}"
+      factionRecruitingLabel = "Rekrutiert neue Agenten"
+      factionNotRecruitingLabel = "Rekrutiert derzeit nicht"
+      factionReputationLine = fun rep -> $"Ruf: {rep}"
+      factionTraitsHeading = "Eigenschaften"
+      factionTraitLine = fun (name, description) -> $"{name} — {description}"
       serverUnreachableMessage = "Verbindung zum Server unterbrochen — versuche es weiter..."
       settingsLocaleLabel = "Sprache"
       settingsPollIntervalLabel = "Abfrage-Intervall"
@@ -962,6 +1049,7 @@ let private stringsEn: Strings =
         fun (onAccepted, onFulfilled) -> $"Payment: {onAccepted} credits on accept, {onFulfilled} credits on fulfillment"
       contractDeadlineLine = fun deadline -> $"Deadline: {deadline}"
       acceptContractButton = "Accept contract"
+      fulfillContractButton = "Fulfill contract"
       contractAcceptedLabel = "Accepted"
       contractPendingLabel = "Not yet accepted"
       waypointsHeading = "Waypoints"
@@ -998,8 +1086,13 @@ let private stringsEn: Strings =
       waypointNotFound = fun symbol -> $"Waypoint {symbol} not found."
       selectMapEntityHint = "Click a ship or waypoint on the map to see its details."
 
+      galaxyMapHeading = "Galaxy map"
       systemMapHeading = "System map"
       resetMapView = "Reset view"
+      resetGalaxyMapView = "Reset galaxy view"
+      agentsHeading = "Agents"
+      refreshAgents = "Refresh agents"
+      agentPublicLine = fun (symbol, hq, credits, ships) -> $"{symbol} — HQ {hq}, {credits} credits, {ships} ships"
 
       queueHeading = "Queue"
       refresh = "Update data"
@@ -1093,7 +1186,17 @@ let private stringsEn: Strings =
       tabProgrammieren = "Code"
       tabPiloten = "Pilots"
       tabGalaxie = "Galaxy"
+      tabFactions = "Factions"
+      tabAgents = "Agents"
       tabSettings = "Settings"
+      factionsHeading = "Factions"
+      refreshFactions = "Refresh factions"
+      factionHeadquartersLine = fun hq -> $"Headquarters: {hq}"
+      factionRecruitingLabel = "Recruiting new agents"
+      factionNotRecruitingLabel = "Not currently recruiting"
+      factionReputationLine = fun rep -> $"Reputation: {rep}"
+      factionTraitsHeading = "Traits"
+      factionTraitLine = fun (name, description) -> $"{name} — {description}"
       serverUnreachableMessage = "Lost connection to the server — still retrying..."
       settingsLocaleLabel = "Language"
       settingsPollIntervalLabel = "Poll interval"
@@ -1512,6 +1615,21 @@ let update
     | MapDragEnd -> { model with mapDragging = false }, Cmd.none
     | ResetMapView -> { model with mapZoom = 1.0; mapPanX = 0.0; mapPanY = 0.0 }, Cmd.none
 
+    | GalaxyWheel deltaY ->
+        let factor = if deltaY < 0.0 then 1.15 else 1.0 / 1.15
+        { model with galaxyMapZoom = model.galaxyMapZoom * factor |> max 1.0 |> min 8.0 }, Cmd.none
+    | GalaxyDragStart -> { model with galaxyDragging = true }, Cmd.none
+    | GalaxyDragMove(dx, dy) ->
+        if model.galaxyDragging then
+            { model with
+                galaxyMapPanX = model.galaxyMapPanX - dx / model.galaxyMapZoom
+                galaxyMapPanY = model.galaxyMapPanY - dy / model.galaxyMapZoom },
+            Cmd.none
+        else
+            model, Cmd.none
+    | GalaxyDragEnd -> { model with galaxyDragging = false }, Cmd.none
+    | ResetGalaxyMapView -> { model with galaxyMapZoom = 1.0; galaxyMapPanX = 0.0; galaxyMapPanY = 0.0 }, Cmd.none
+
     | LoadPrograms ->
         model, Cmd.OfAsync.either (fun () -> programRemote.list ()) () ProgramsLoaded (fun _ -> RemoteCallFailed)
     | ProgramsLoaded programs ->
@@ -1649,7 +1767,21 @@ let update
         Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.setLogLevel" [| box logLevel |]) () (fun () -> LogLevelSet)
     | LogLevelSet -> model, Cmd.none
 
-    | SwitchTab tab -> { model with activeTab = tab }, Cmd.none
+    | SwitchTab tab ->
+        let lazyLoadCmds =
+            [
+                if tab = FactionsTab && model.factionsSnapshot.IsNone && model.dashboard.IsSome then
+                    Some(LoadFactions)
+                else
+                    None
+                if tab = AgentsTab && model.publicAgents.IsNone && model.dashboard.IsSome then
+                    Some(LoadPublicAgents)
+                else
+                    None ]
+            |> List.choose id
+            |> List.map Cmd.ofMsg
+
+        { model with activeTab = tab }, Cmd.batch lazyLoadCmds
     | RemoteCallFailed ->
         { model with
             serverUnreachable = true
@@ -1663,10 +1795,92 @@ let update
             ()
             ContractActionCompleted
             (fun ex -> ContractActionCompleted(Error ex.Message))
-    | ContractActionCompleted(Ok()) -> { model with acceptingContractId = None }, Cmd.ofMsg LoadDashboard
+    | FulfillContractClicked contractId ->
+        { model with fulfillingContractId = Some contractId; contractActionError = None },
+        Cmd.OfAsync.either
+            (fun () -> agentRemote.fulfillContract contractId)
+            ()
+            ContractActionCompleted
+            (fun ex -> ContractActionCompleted(Error ex.Message))
+    | ContractActionCompleted(Ok()) ->
+        { model with acceptingContractId = None; fulfillingContractId = None }, Cmd.ofMsg LoadDashboard
     | ContractActionCompleted(Error message) ->
-        { model with acceptingContractId = None; contractActionError = Some message }, Cmd.none
+        { model with acceptingContractId = None; fulfillingContractId = None; contractActionError = Some message }, Cmd.none
     | ToggleContractsHistory -> { model with contractsHistoryExpanded = not model.contractsHistoryExpanded }, Cmd.none
+
+    | LoadFactions ->
+        match model.dashboard with
+        | None -> model, Cmd.none
+        | Some _ ->
+            { model with factionsLoading = true; factionsError = None },
+            Cmd.OfAsync.either
+                (fun () -> agentRemote.loadFactions ())
+                ()
+                FactionsLoaded
+                (fun ex -> FactionsLoaded(Error ex.Message))
+    | FactionsLoaded(Ok snapshot) ->
+        { model with factionsSnapshot = Some snapshot; factionsLoading = false; factionsError = None }, Cmd.none
+    | FactionsLoaded(Error message) ->
+        { model with factionsLoading = false; factionsError = Some message }, Cmd.none
+
+    | LoadPublicAgents ->
+        match model.dashboard with
+        | None -> model, Cmd.none
+        | Some _ ->
+            { model with publicAgentsLoading = true; publicAgentsError = None },
+            Cmd.OfAsync.either
+                (fun () -> agentRemote.loadPublicAgents ())
+                ()
+                PublicAgentsLoaded
+                (fun ex -> PublicAgentsLoaded(Error ex.Message))
+    | PublicAgentsLoaded(Ok agents) ->
+        { model with publicAgents = Some agents; publicAgentsLoading = false; publicAgentsError = None }, Cmd.none
+    | PublicAgentsLoaded(Error message) ->
+        { model with publicAgentsLoading = false; publicAgentsError = Some message }, Cmd.none
+
+    | SelectGalaxySystem systemSymbol ->
+        match model.dashboard with
+        | None -> model, Cmd.none
+        | Some _ ->
+            { model with
+                pendingGalaxySystem = Some systemSymbol
+                systemWaypointsLoading = true
+                systemWaypointsError = None
+                inspecting = None
+                waypointMarket = None
+                waypointShipyard = None
+                mapZoom = 1.0
+                mapPanX = 0.0
+                mapPanY = 0.0 },
+            Cmd.OfAsync.either
+                (fun () -> agentRemote.loadSystemWaypoints systemSymbol)
+                ()
+                SystemWaypointsLoaded
+                (fun ex -> SystemWaypointsLoaded(Error ex.Message))
+    | SystemWaypointsLoaded(Ok waypoints) ->
+        match model.dashboard, model.pendingGalaxySystem with
+        | Some state, Some systemSymbol ->
+            { model with
+                dashboard =
+                    Some
+                        { state with
+                            waypoints = waypoints
+                            selectedSystemSymbol = systemSymbol }
+                pendingGalaxySystem = None
+                systemWaypointsLoading = false
+                systemWaypointsError = None },
+            Cmd.none
+        | _ ->
+            { model with systemWaypointsLoading = false }, Cmd.none
+    | SystemWaypointsLoaded(Error message) ->
+        { model with
+            pendingGalaxySystem = None
+            systemWaypointsLoading = false
+            systemWaypointsError = Some message },
+        Cmd.none
+
+let private reputationFor (reputations: (string * int) list) (symbol: string) : int option =
+    reputations |> List.tryFind (fun (s, _) -> s = symbol) |> Option.map snd
 
 let private viewDashboard (s: Strings) (state: DashboardState) dispatch =
     div {
@@ -1860,6 +2074,29 @@ let internal scaleMapPoint (minX, maxX, minY, maxY) (x: float) (y: float) : floa
     let sy = mapViewSize - (mapPadding + (y - minY) * scale)
     (sx, sy)
 
+let internal computeGalaxyBounds (systems: StarSystem list) : float * float * float * float =
+    match systems with
+    | [] -> (0.0, 1.0, 0.0, 1.0)
+    | _ ->
+        let xs = systems |> List.map (fun s -> float s.x)
+        let ys = systems |> List.map (fun s -> float s.y)
+        let minX, maxX = List.min xs, List.max xs
+        let minY, maxY = List.min ys, List.max ys
+        let minX, maxX = if minX = maxX then minX - 1.0, maxX + 1.0 else minX, maxX
+        let minY, maxY = if minY = maxY then minY - 1.0, maxY + 1.0 else minY, maxY
+        (minX, maxX, minY, maxY)
+
+let private systemColor (systemType: string) : string =
+    match systemType with
+    | "NEBULA" -> "#9b59b6"
+    | "RED_STAR" -> "#e74c3c"
+    | "ORANGE_STAR" -> "#e67e22"
+    | "BLUE_STAR" -> "#3498db"
+    | "YOUNG_STAR" -> "#f1c40f"
+    | "WHITE_DWARF" -> "#ecf0f1"
+    | "BLACK_HOLE" -> "#2c3e50"
+    | _ -> "#7f8c8d"
+
 let private waypointColor (waypointType: string) : string =
     match waypointType with
     | "PLANET" -> "#4a90d9"
@@ -1898,8 +2135,63 @@ let internal interpolatedShipPosition (waypoints: Waypoint list) (ship: Ship) : 
         |> List.tryFind (fun w -> w.symbol = ship.nav.waypointSymbol)
         |> Option.map (fun w -> float w.x, float w.y)
 
+let private viewGalaxyMap (s: Strings) (model: Model) (state: DashboardState) dispatch =
+    let bounds = computeGalaxyBounds state.systems
+    let viewSize = mapViewSize / model.galaxyMapZoom
+    let viewX = (mapViewSize - viewSize) / 2.0 + model.galaxyMapPanX
+    let viewY = (mapViewSize - viewSize) / 2.0 + model.galaxyMapPanY
+
+    div {
+        h2 { s.galaxyMapHeading }
+        svg {
+            "viewBox" => $"{viewX} {viewY} {viewSize} {viewSize}"
+            attr.style
+                "width: 100%; max-width: 400px; height: 400px; border: 1px solid #ccc; cursor: grab; touch-action: none"
+            on.wheel (fun e -> dispatch (GalaxyWheel e.DeltaY))
+            on.mousedown (fun _ -> dispatch GalaxyDragStart)
+            on.mousemove (fun e -> dispatch (GalaxyDragMove(e.MovementX, e.MovementY)))
+            on.mouseup (fun _ -> dispatch GalaxyDragEnd)
+            on.mouseout (fun _ -> dispatch GalaxyDragEnd)
+
+            for system in state.systems do
+                let sx, sy = scaleMapPoint bounds (float system.x) (float system.y)
+                let selected = system.symbol = state.selectedSystemSymbol
+
+                elt "g" {
+                    attr.style "cursor: pointer"
+                    on.click (fun _ -> dispatch (SelectGalaxySystem system.symbol))
+
+                    elt "circle" {
+                        "cx" => string sx
+                        "cy" => string sy
+                        "r" => (if selected then "9" else "7")
+                        "fill" => systemColor system.``type``
+                        "stroke" => (if selected then "#000000" else "none")
+                        "stroke-width" => (if selected then "2" else "0")
+                    }
+
+                    elt "title" { $"{system.symbol} ({system.``type``})" }
+
+                    elt "text" {
+                        "x" => string sx
+                        "y" => string (sy + 16.0)
+                        "font-size" => "8"
+                        "text-anchor" => "middle"
+                        "fill" => "currentColor"
+                        system.symbol
+                    }
+                }
+        }
+        button {
+            attr.style "font-size: 0.8em; padding: 0.2em 0.6em; margin-top: 0.3rem"
+            on.click (fun _ -> dispatch ResetGalaxyMapView)
+            s.resetGalaxyMapView
+        }
+    }
+
 let private viewSystemMap (s: Strings) (model: Model) (state: DashboardState) dispatch =
     let bounds = computeMapBounds state.waypoints
+    let shipsHere = state.ships |> List.filter (fun ship -> ship.nav.systemSymbol = state.selectedSystemSymbol)
 
     // `viewSize`/`viewX`/`viewY` define which sub-rectangle of the fixed
     // `mapViewSize x mapViewSize` coordinate space `scaleMapPoint` draws into is
@@ -1910,7 +2202,12 @@ let private viewSystemMap (s: Strings) (model: Model) (state: DashboardState) di
     let viewY = (mapViewSize - viewSize) / 2.0 + model.mapPanY
 
     div {
-        h2 { s.systemMapHeading }
+        h2 { $"{s.systemMapHeading} ({state.selectedSystemSymbol})" }
+        if model.systemWaypointsLoading then
+            p { s.loadingEllipsis }
+        match model.systemWaypointsError with
+        | Some err -> p { attr.style "color: #cc0000"; s.errorPrefix err }
+        | None -> ()
         svg {
             "viewBox" => $"{viewX} {viewY} {viewSize} {viewSize}"
             attr.style
@@ -1947,7 +2244,7 @@ let private viewSystemMap (s: Strings) (model: Model) (state: DashboardState) di
                     }
                 }
 
-            for ship in state.ships do
+            for ship in shipsHere do
                 match interpolatedShipPosition state.waypoints ship with
                 | None -> ()
                 | Some(x, y) ->
@@ -2353,6 +2650,11 @@ let private viewContracts (s: Strings) (model: Model) (state: DashboardState) di
                 p { s.contractDeadlineLine contract.terms.deadline }
                 if contract.accepted then
                     p { s.contractAcceptedLabel }
+                    button {
+                        attr.disabled (model.fulfillingContractId = Some contract.id)
+                        on.click (fun _ -> dispatch (FulfillContractClicked contract.id))
+                        s.fulfillContractButton
+                    }
                 else
                     p { s.contractPendingLabel }
                     button {
@@ -2376,6 +2678,72 @@ let private viewContracts (s: Strings) (model: Model) (state: DashboardState) di
             }
     }
 
+let private viewFactions (s: Strings) (model: Model) dispatch =
+    div {
+        h2 { s.factionsHeading }
+        button {
+            attr.disabled model.factionsLoading
+            on.click (fun _ -> dispatch LoadFactions)
+            s.refreshFactions
+        }
+        if model.factionsLoading then
+            p { s.loadingEllipsis }
+        match model.factionsError with
+        | Some err -> p { attr.style "color: #cc0000"; s.errorPrefix err }
+        | None -> ()
+        match model.factionsSnapshot with
+        | None -> ()
+        | Some snapshot ->
+            for faction in snapshot.factions |> List.sortBy (fun f -> f.symbol) do
+                div {
+                    attr.style "border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem; margin: 0.5rem 0"
+                    p { attr.style "font-weight: bold"; $"{faction.symbol} — {faction.name}" }
+                    p { faction.description }
+                    match faction.headquarters with
+                    | Some hq -> p { s.factionHeadquartersLine hq }
+                    | None -> ()
+                    p {
+                        if faction.isRecruiting then
+                            s.factionRecruitingLabel
+                        else
+                            s.factionNotRecruitingLabel
+                    }
+                    match reputationFor snapshot.reputations faction.symbol with
+                    | Some rep -> p { s.factionReputationLine rep }
+                    | None -> ()
+                    if not faction.traits.IsEmpty then
+                        div {
+                            p { attr.style "font-weight: bold"; s.factionTraitsHeading }
+                            ul {
+                                for trait_ in faction.traits do
+                                    li { s.factionTraitLine (trait_.name, trait_.description) }
+                            }
+                        }
+                }
+    }
+
+let private viewAgents (s: Strings) (model: Model) dispatch =
+    div {
+        h2 { s.agentsHeading }
+        button {
+            attr.disabled model.publicAgentsLoading
+            on.click (fun _ -> dispatch LoadPublicAgents)
+            s.refreshAgents
+        }
+        if model.publicAgentsLoading then
+            p { s.loadingEllipsis }
+        match model.publicAgentsError with
+        | Some err -> p { attr.style "color: #cc0000"; s.errorPrefix err }
+        | None -> ()
+        match model.publicAgents with
+        | None -> ()
+        | Some agents ->
+            ul {
+                for agent in agents |> List.sortBy (fun a -> a.symbol) do
+                    li { s.agentPublicLine (agent.symbol, agent.headquarters, agent.credits, agent.shipCount) }
+            }
+    }
+
 let view model dispatch =
     let s = stringsFor model.locale
 
@@ -2391,6 +2759,8 @@ let view model dispatch =
             tabButton model dispatch PilotenTab s.tabPiloten
             tabButton model dispatch GalaxieTab s.tabGalaxie
             tabButton model dispatch ContractsTab s.tabContracts
+            tabButton model dispatch FactionsTab s.tabFactions
+            tabButton model dispatch AgentsTab s.tabAgents
             tabButton model dispatch SettingsTab s.tabSettings
         }
 
@@ -2452,30 +2822,30 @@ let view model dispatch =
             | None -> p { s.loginInSettingsHint }
             | Some state ->
                 div {
-                    attr.style "display: flex; gap: 1rem; align-items: flex-start; flex-wrap: wrap"
+                    attr.style "display: flex; gap: 1rem; align-items: flex-start; flex-wrap: nowrap; overflow-x: auto"
                     div {
-                        attr.style "flex: 0 0 auto"
-                        viewSystemMap s model state dispatch
-                        div {
-                            attr.style "margin: 0.5rem 0"
-                            button {
-                                attr.style "font-size: 0.8em; padding: 0.2em 0.6em"
-                                on.click (fun _ -> dispatch LoadDashboard)
-                                s.refresh
-                            }
-                            if model.dashboardLoading then
-                                p { s.loadingEllipsis }
-                            match model.dashboardError with
-                            | Some err -> p { s.errorPrefix err }
-                            | None -> ()
-                        }
+                        attr.style "flex: 0 0 auto; min-width: 280px"
+                        viewGalaxyMap s model state dispatch
                     }
                     div {
-                        attr.style "flex: 1 1 300px; min-width: 250px"
+                        attr.style "flex: 0 0 auto; min-width: 280px"
+                        viewSystemMap s model state dispatch
+                        button {
+                            attr.style "font-size: 0.8em; padding: 0.2em 0.6em; margin-top: 0.3rem"
+                            on.click (fun _ -> dispatch LoadDashboard)
+                            s.refresh
+                        }
+                        if model.dashboardLoading then
+                            p { s.loadingEllipsis }
+                        match model.dashboardError with
+                        | Some err -> p { s.errorPrefix err }
+                        | None -> ()
+                    }
+                    div {
+                        attr.style "flex: 0 0 300px; min-width: 250px"
                         viewInspector state model dispatch
                     }
                 }
-                viewDashboard s state dispatch
         }
 
         div {
@@ -2483,6 +2853,20 @@ let view model dispatch =
             match model.dashboard with
             | None -> p { s.loginInSettingsHint }
             | Some state -> viewContracts s model state dispatch
+        }
+
+        div {
+            attr.style (tabStyle model FactionsTab)
+            match model.dashboard with
+            | None -> p { s.loginInSettingsHint }
+            | Some _ -> viewFactions s model dispatch
+        }
+
+        div {
+            attr.style (tabStyle model AgentsTab)
+            match model.dashboard with
+            | None -> p { s.loginInSettingsHint }
+            | Some _ -> viewAgents s model dispatch
         }
 
         div {
