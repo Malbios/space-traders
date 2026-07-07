@@ -11,6 +11,7 @@ open SpaceKids.SpaceTraders
 /// endpoints this project actually consumes to answer coherently.
 let seededToken = "FAKE_TOKEN_1"
 let private systemSymbol = "X1-TEST"
+let private nearbySystemSymbol = "X1-NEARBY"
 let private headquarters = "X1-TEST-A1"
 
 /// Milestone 6: navigate/extract durations are driven by this clock (not
@@ -83,7 +84,10 @@ let private readAgent () : Agent = lock shipLock (fun () -> agent)
 
 let private routeShipSymbol (ctx: HttpContext) : string = ctx.Request.RouteValues.["shipSymbol"] :?> string
 let private routeContractId (ctx: HttpContext) : string = ctx.Request.RouteValues.["contractId"] :?> string
+let private routeSystemSymbol (ctx: HttpContext) : string = ctx.Request.RouteValues.["systemSymbol"] :?> string
 let private routeWaypointSymbol (ctx: HttpContext) : string = ctx.Request.RouteValues.["waypointSymbol"] :?> string
+let private routeAgentSymbol (ctx: HttpContext) : string = ctx.Request.RouteValues.["agentSymbol"] :?> string
+let private routeFactionSymbol (ctx: HttpContext) : string = ctx.Request.RouteValues.["factionSymbol"] :?> string
 
 /// Milestone 9/Part A: `acceptContract`/`deliverContract` mutate this, so the
 /// seeded contracts become a `Map`-keyed-by-id like `ships`, guarded by the same lock.
@@ -122,9 +126,66 @@ let mutable private contracts: Map<string, Contract> =
 let private readContract (contractId: string) : Contract = lock shipLock (fun () -> contracts.[contractId])
 let private readAllContracts () : Contract list = lock shipLock (fun () -> contracts |> Map.toList |> List.map snd)
 
+let private makeCooldown (shipSymbol: string) : Cooldown =
+    let expiration = (clock ()).AddSeconds(fixedCooldownSeconds)
+
+    { shipSymbol = shipSymbol
+      totalSeconds = int (ceil fixedCooldownSeconds)
+      remainingSeconds = int (ceil fixedCooldownSeconds)
+      expiration = Some(expiration.ToString("o")) }
+
+let private withCooldown (ship: Ship) : Ship =
+    { ship with cooldown = makeCooldown ship.symbol }
+
+let private removeCargoUnits (ship: Ship) (tradeSymbol: string) (units: int) : Ship =
+    let newInventory =
+        ship.cargo.inventory
+        |> List.map (fun i ->
+            if i.symbol = tradeSymbol then
+                { i with units = max 0 (i.units - units) }
+            else
+                i)
+        |> List.filter (fun i -> i.units > 0)
+
+    { ship with
+        cargo =
+            { ship.cargo with
+                units = max 0 (ship.cargo.units - units)
+                inventory = newInventory } }
+
+let private contractDeliveriesComplete (contract: Contract) : bool =
+    contract.terms.deliver |> List.forall (fun g -> g.unitsFulfilled >= g.unitsRequired)
+
+let private addCargoUnits (ship: Ship) (tradeSymbol: string) (units: int) : Ship =
+    let newInventory =
+        match ship.cargo.inventory |> List.tryFind (fun i -> i.symbol = tradeSymbol) with
+        | Some _ ->
+            ship.cargo.inventory
+            |> List.map (fun i -> if i.symbol = tradeSymbol then { i with units = i.units + units } else i)
+        | None ->
+            ship.cargo.inventory
+            @ [ { symbol = tradeSymbol; name = tradeSymbol; description = ""; units = units } ]
+
+    { ship with
+        cargo = { ship.cargo with units = ship.cargo.units + units; inventory = newInventory } }
+
+let private transitNav (destination: string) (ship: Ship) : Ship =
+    let departure = clock ()
+    let arrival = departure.AddSeconds(fixedTravelSeconds)
+
+    { ship with
+        nav =
+            { ship.nav with
+                waypointSymbol = destination
+                status = "IN_TRANSIT"
+                route = makeRoute destination ship.nav.waypointSymbol departure arrival } }
+
 /// Milestone 9/Part A: `purchaseShip` adds a new ship to the fleet — numbered past the
 /// two seeded ships, reset alongside them between tests.
 let mutable private nextShipNumber = 3
+
+/// `negotiateContract` adds a new offered contract — numbered past the two seeded ones.
+let mutable private nextContractNumber = 3
 
 /// Mirrors the real API's "priced market/shipyard data only shows up when a ship
 /// of yours is physically there" behavior (§8, `SpaceTraders/Types.fs:144-162`) —
@@ -171,15 +232,134 @@ let private waypoints =
           [ { symbol = "MARKETPLACE"; name = "Marktplatz"; description = "Ein Ort zum Handeln." }
             { symbol = "SHIPYARD"; name = "Werft"; description = "Hier können Schiffe gekauft werden." } ] } ]
 
+let private nearbyWaypoints =
+    [ { symbol = "X1-NEARBY-A1"
+        ``type`` = "PLANET"
+        systemSymbol = nearbySystemSymbol
+        x = 2
+        y = 3
+        traits =
+          [ { symbol = "MARKETPLACE"; name = "Marktplatz"; description = "Ein Ort zum Handeln." } ] }
+      { symbol = "X1-NEARBY-JG1"
+        ``type`` = "JUMP_GATE"
+        systemSymbol = nearbySystemSymbol
+        x = 10
+        y = 5
+        traits = [] }
+      { symbol = "X1-NEARBY-C1"
+        ``type`` = "ORBITAL_STATION"
+        systemSymbol = nearbySystemSymbol
+        x = -3
+        y = 7
+        traits = [] } ]
+
+let private starSystems =
+    [ { symbol = systemSymbol
+        sectorSymbol = "X1"
+        constellation = Some "X"
+        name = Some "Test System"
+        ``type`` = "NEUTRON_STAR"
+        x = 0
+        y = 0 }
+      { symbol = nearbySystemSymbol
+        sectorSymbol = "X1"
+        constellation = Some "X"
+        name = Some "Nearby System"
+        ``type`` = "RED_STAR"
+        x = 12
+        y = 8 } ]
+
+let private publicAgents =
+    [ { symbol = "FAKE-AGENT"
+        headquarters = headquarters
+        credits = 175000L
+        startingFaction = "COSMIC"
+        shipCount = 2 }
+      { symbol = "OTHER-AGENT"
+        headquarters = "X1-NEARBY-A1"
+        credits = 50000L
+        startingFaction = "GALACTIC"
+        shipCount = 1 } ]
+
+let private jumpGates =
+    Map.ofList
+        [ "X1-NEARBY-JG1",
+          { symbol = "X1-NEARBY-JG1"
+            connections = [ systemSymbol ] } ]
+
+let private supplyChainMap =
+    Map.ofList [ "FOOD", [ "FUEL"; "IRON" ] ]
+
+let private shipModulesFixture : InstalledShipModule list =
+    [ { symbol = "MODULE_MINERAL_PROCESSOR_I"; name = "Mineral Processor I" } ]
+
+let private shipMountsFixture : InstalledShipMount list =
+    [ { symbol = "MOUNT_MINING_LASER_I"; name = "Mining Laser I" } ]
+
+let private waypointsForSystem (sys: string) : Waypoint list =
+    match sys with
+    | s when s = systemSymbol -> waypoints
+    | s when s = nearbySystemSymbol -> nearbyWaypoints
+    | _ -> []
+
+let private findWaypoint (sys: string) (waypointSymbol: string) : Waypoint option =
+    waypointsForSystem sys |> List.tryFind (fun w -> w.symbol = waypointSymbol)
+
+let private findStarSystem (sys: string) : StarSystem option =
+    starSystems |> List.tryFind (fun s -> s.symbol = sys)
+
+let private findPublicAgent (agentSymbol: string) : Agent option =
+    publicAgents |> List.tryFind (fun a -> a.symbol = agentSymbol)
+
+/// Construction sites keyed by waypoint symbol — only waypoints seeded here answer
+/// `GET .../construction` / `POST .../construction/supply`.
+let mutable private constructions: Map<string, Construction> =
+    Map.ofList
+        [ "X1-NEARBY-C1",
+          { symbol = "X1-NEARBY-C1"
+            materials = [ { tradeSymbol = "IRON"; required = 100; fulfilled = 0 } ]
+            isComplete = false } ]
+
+let private factions =
+    [ { symbol = "COSMIC"
+        name = "Cosmic Engineers"
+        description = "Advanced scientists and engineers who terraform and colonize new worlds."
+        headquarters = Some headquarters
+        traits =
+          [ { symbol = "INNOVATIVE"; name = "Innovative"; description = "Willing to try new ideas." }
+            { symbol = "BOLD"; name = "Bold"; description = "Unafraid to take risks." } ]
+        isRecruiting = true }
+      { symbol = "GALACTIC"
+        name = "Galactic Alliance"
+        description = "A coalition of planets and factions for mutual protection and support."
+        headquarters = Some "X1-TEST-B2"
+        traits =
+          [ { symbol = "COOPERATIVE"; name = "Cooperative"; description = "Works together toward common goals." }
+            { symbol = "PEACEFUL"; name = "Peaceful"; description = "Dedicated to maintaining peace." } ]
+        isRecruiting = true } ]
+
+let private findFaction (factionSymbol: string) : Faction option =
+    factions |> List.tryFind (fun f -> f.symbol = factionSymbol)
+
+let private myFactions =
+    [ { symbol = "COSMIC"; reputation = 12 }
+      { symbol = "GALACTIC"; reputation = 3 } ]
+
 /// Mirrors the real API: a waypoint without the matching trait 404s rather than
 /// answering with fixture data regardless — needed so the entity inspector's
 /// (visual-map feature) "no market/shipyard here" path is actually exercised
 /// against something, not just always-present fixtures.
 let private hasTrait (waypointSymbol: string) (traitSymbol: string) : bool =
-    waypoints
+    (waypoints @ nearbyWaypoints)
     |> List.tryFind (fun w -> w.symbol = waypointSymbol)
     |> Option.map (fun w -> w.traits |> List.exists (fun t -> t.symbol = traitSymbol))
     |> Option.defaultValue false
+
+let private priceQuote (ship: Ship) (totalPrice: int) : PriceTransaction =
+    { waypointSymbol = ship.nav.waypointSymbol
+      shipSymbol = ship.symbol
+      totalPrice = totalPrice
+      timestamp = Some((clock ()).ToString("o")) }
 
 let private marketFixture (waypointSymbol: string) : Market =
     { symbol = waypointSymbol
@@ -297,6 +477,131 @@ let configureApp (app: WebApplication) =
     |> ignore
 
     app.MapGet(
+        "/factions",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault
+                ctx
+                (fun () ->
+                    task {
+                        let page, limit = readPaging ctx
+                        return okPaged factions page limit
+                    }))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/factions/{factionSymbol}",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault
+                ctx
+                (fun () ->
+                    withAuth
+                        ctx
+                        (fun () ->
+                            task {
+                                let factionSymbol = routeFactionSymbol ctx
+
+                                match findFaction factionSymbol with
+                                | Some faction -> return ok faction
+                                | None -> return Results.NotFound()
+                            })))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/systems",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault
+                ctx
+                (fun () ->
+                    withAuth
+                        ctx
+                        (fun () ->
+                            task {
+                                let page, limit = readPaging ctx
+                                return okPaged starSystems page limit
+                            })))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/systems/{systemSymbol}",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault
+                ctx
+                (fun () ->
+                    withAuth
+                        ctx
+                        (fun () ->
+                            task {
+                                let sys = routeSystemSymbol ctx
+
+                                match findStarSystem sys with
+                                | Some system -> return ok system
+                                | None -> return Results.NotFound()
+                            })))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/agents",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault
+                ctx
+                (fun () ->
+                    withAuth
+                        ctx
+                        (fun () ->
+                            task {
+                                let page, limit = readPaging ctx
+                                return okPaged publicAgents page limit
+                            })))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/agents/{agentSymbol}",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault
+                ctx
+                (fun () ->
+                    withAuth
+                        ctx
+                        (fun () ->
+                            task {
+                                let agentSymbol = routeAgentSymbol ctx
+
+                                match findPublicAgent agentSymbol with
+                                | Some agent -> return ok agent
+                                | None -> return Results.NotFound()
+                            })))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/market/supply-chain",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault ctx (fun () -> withAuth ctx (fun () -> task { return ok { exportToImportMap = supplyChainMap } })))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/my/factions",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault
+                ctx
+                (fun () ->
+                    withAuth
+                        ctx
+                        (fun () ->
+                            task {
+                                let page, limit = readPaging ctx
+                                return okPaged myFactions page limit
+                            })))
+    )
+    |> ignore
+
+    app.MapGet(
         "/my/ships",
         Func<HttpContext, Task<IResult>>(fun ctx ->
             applyFault
@@ -316,6 +621,90 @@ let configureApp (app: WebApplication) =
         "/my/ships/{shipSymbol}",
         Func<HttpContext, Task<IResult>>(fun ctx ->
             applyFault ctx (fun () -> withAuth ctx (fun () -> task { return ok (readShip (routeShipSymbol ctx)) })))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/my/ships/{shipSymbol}/repair",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault ctx (fun () ->
+                withAuth ctx (fun () ->
+                    task {
+                        let ship = readShip (routeShipSymbol ctx)
+                        return ok { transaction = priceQuote ship 5000 }
+                    })))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/my/ships/{shipSymbol}/scrap",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault ctx (fun () ->
+                withAuth ctx (fun () ->
+                    task {
+                        let ship = readShip (routeShipSymbol ctx)
+                        return ok { transaction = priceQuote ship 25000 }
+                    })))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/my/ships/{shipSymbol}/cooldown",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault ctx (fun () ->
+                withAuth ctx (fun () ->
+                    task {
+                        let ship = readShip (routeShipSymbol ctx)
+                        return ok { cooldown = ship.cooldown }
+                    })))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/my/ships/{shipSymbol}/nav",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault ctx (fun () ->
+                withAuth ctx (fun () ->
+                    task {
+                        let ship = readShip (routeShipSymbol ctx)
+                        return ok { nav = ship.nav }
+                    })))
+    )
+    |> ignore
+
+    app.MapPatch(
+        "/my/ships/{shipSymbol}/nav",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault ctx (fun () ->
+                withAuth ctx (fun () ->
+                    task {
+                        let shipSymbol = routeShipSymbol ctx
+                        let! doc = readJsonBody ctx
+                        let flightMode = doc.RootElement.GetProperty("flightMode").GetString()
+
+                        let updated =
+                            lock shipLock (fun () ->
+                                let current = ships.[shipSymbol]
+                                let updated = { current with nav = { current.nav with flightMode = flightMode } }
+                                ships <- ships.Add(shipSymbol, updated)
+                                updated)
+
+                        return ok { nav = updated.nav }
+                    })))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/my/ships/{shipSymbol}/modules",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault ctx (fun () -> withAuth ctx (fun () -> task { return ok { modules = shipModulesFixture } })))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/my/ships/{shipSymbol}/mounts",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault ctx (fun () -> withAuth ctx (fun () -> task { return ok { mounts = shipMountsFixture } })))
     )
     |> ignore
 
@@ -374,8 +763,123 @@ let configureApp (app: WebApplication) =
                         ctx
                         (fun () ->
                             task {
+                                let sys = routeSystemSymbol ctx
                                 let page, limit = readPaging ctx
-                                return okPaged waypoints page limit
+                                return okPaged (waypointsForSystem sys) page limit
+                            })))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/systems/{systemSymbol}/waypoints/{waypointSymbol}",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault
+                ctx
+                (fun () ->
+                    withAuth
+                        ctx
+                        (fun () ->
+                            task {
+                                let sys = routeSystemSymbol ctx
+                                let waypointSymbol = routeWaypointSymbol ctx
+
+                                match findWaypoint sys waypointSymbol with
+                                | Some waypoint -> return ok waypoint
+                                | None -> return Results.NotFound()
+                            })))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/systems/{systemSymbol}/waypoints/{waypointSymbol}/jump-gate",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault
+                ctx
+                (fun () ->
+                    withAuth
+                        ctx
+                        (fun () ->
+                            task {
+                                let sys = routeSystemSymbol ctx
+                                let waypointSymbol = routeWaypointSymbol ctx
+
+                                match findWaypoint sys waypointSymbol with
+                                | Some w when w.``type`` = "JUMP_GATE" ->
+                                    match jumpGates.TryFind waypointSymbol with
+                                    | Some gate -> return ok gate
+                                    | None -> return Results.NotFound()
+                                | _ -> return Results.NotFound()
+                            })))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/systems/{systemSymbol}/waypoints/{waypointSymbol}/construction",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault
+                ctx
+                (fun () ->
+                    withAuth
+                        ctx
+                        (fun () ->
+                            task {
+                                let waypointSymbol = routeWaypointSymbol ctx
+
+                                match constructions.TryFind waypointSymbol with
+                                | Some construction -> return ok construction
+                                | None -> return Results.NotFound()
+                            })))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/systems/{systemSymbol}/waypoints/{waypointSymbol}/construction/supply",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault
+                ctx
+                (fun () ->
+                    withAuth
+                        ctx
+                        (fun () ->
+                            task {
+                                let waypointSymbol = routeWaypointSymbol ctx
+                                let! doc = readJsonBody ctx
+                                let shipSymbol = doc.RootElement.GetProperty("shipSymbol").GetString()
+                                let tradeSymbol = doc.RootElement.GetProperty("tradeSymbol").GetString()
+                                let units = doc.RootElement.GetProperty("units").GetInt32()
+
+                                match constructions.TryFind waypointSymbol with
+                                | None -> return Results.NotFound()
+                                | Some _ ->
+                                    let updatedCargo, updatedConstruction =
+                                        lock
+                                            shipLock
+                                            (fun () ->
+                                                let current = removeCargoUnits ships.[shipSymbol] tradeSymbol units
+                                                ships <- ships.Add(shipSymbol, current)
+
+                                                let construction = constructions.[waypointSymbol]
+
+                                                let updatedMaterials =
+                                                    construction.materials
+                                                    |> List.map (fun m ->
+                                                        if m.tradeSymbol = tradeSymbol then
+                                                            { m with fulfilled = m.fulfilled + units }
+                                                        else
+                                                            m)
+
+                                                let isComplete =
+                                                    updatedMaterials |> List.forall (fun m -> m.fulfilled >= m.required)
+
+                                                let updatedConstruction =
+                                                    { construction with
+                                                        materials = updatedMaterials
+                                                        isComplete = isComplete }
+
+                                                constructions <- constructions.Add(waypointSymbol, updatedConstruction)
+                                                current.cargo, updatedConstruction)
+
+                                    return ok { construction = updatedConstruction; cargo = updatedCargo }
                             })))
     )
     |> ignore
@@ -430,8 +934,12 @@ let configureApp (app: WebApplication) =
 
                                 return
                                     ok
-                                        { nav = responseNav
-                                          fuel = { current = updated.fuel.current; capacity = updated.fuel.capacity; consumed = None } }
+                                        ({ nav = responseNav
+                                           fuel =
+                                             { current = updated.fuel.current
+                                               capacity = updated.fuel.capacity
+                                               consumed = None } }
+                                         : NavigateResult)
                             })))
     )
     |> ignore
@@ -716,6 +1224,252 @@ let configureApp (app: WebApplication) =
     |> ignore
 
     app.MapPost(
+        "/my/ships/{shipSymbol}/jettison",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault ctx (fun () ->
+                withAuth ctx (fun () ->
+                    task {
+                        let shipSymbol = routeShipSymbol ctx
+                        let! doc = readJsonBody ctx
+                        let tradeSymbol = doc.RootElement.GetProperty("symbol").GetString()
+                        let units = doc.RootElement.GetProperty("units").GetInt32()
+
+                        let updated =
+                            lock shipLock (fun () ->
+                                let current = removeCargoUnits ships.[shipSymbol] tradeSymbol units
+                                ships <- ships.Add(shipSymbol, current)
+                                current)
+
+                        return ok { cargo = updated.cargo }
+                    })))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/my/ships/{shipSymbol}/jump",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault ctx (fun () ->
+                withAuth ctx (fun () ->
+                    task {
+                        let shipSymbol = routeShipSymbol ctx
+                        let! doc = readJsonBody ctx
+                        let destination = doc.RootElement.GetProperty("waypointSymbol").GetString()
+
+                        let updated, cooldown =
+                            lock shipLock (fun () ->
+
+                                let current = withCooldown (transitNav destination ships.[shipSymbol])
+                                ships <- ships.Add(shipSymbol, current)
+                                current, current.cooldown)
+
+                        return ok { nav = updated.nav; cooldown = cooldown }
+                    })))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/my/ships/{shipSymbol}/warp",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault ctx (fun () ->
+                withAuth ctx (fun () ->
+                    task {
+                        let shipSymbol = routeShipSymbol ctx
+                        let! doc = readJsonBody ctx
+                        let destination = doc.RootElement.GetProperty("waypointSymbol").GetString()
+
+                        let updated =
+                            lock shipLock (fun () ->
+                                let current = transitNav destination ships.[shipSymbol]
+                                ships <- ships.Add(shipSymbol, current)
+                                current)
+
+                        return ok { nav = updated.nav; fuel = updated.fuel }
+                    })))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/my/ships/{shipSymbol}/transfer",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault ctx (fun () ->
+                withAuth ctx (fun () ->
+                    task {
+                        let shipSymbol = routeShipSymbol ctx
+                        let! doc = readJsonBody ctx
+                        let tradeSymbol = doc.RootElement.GetProperty("tradeSymbol").GetString()
+                        let units = doc.RootElement.GetProperty("units").GetInt32()
+                        let targetSymbol = doc.RootElement.GetProperty("shipSymbol").GetString()
+
+                        let updated =
+                            lock shipLock (fun () ->
+                                let source = removeCargoUnits ships.[shipSymbol] tradeSymbol units
+                                let target = addCargoUnits ships.[targetSymbol] tradeSymbol units
+                                ships <- ships.Add(shipSymbol, source).Add(targetSymbol, target)
+                                source)
+
+                        return ok { cargo = updated.cargo }
+                    })))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/my/ships/{shipSymbol}/siphon",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault ctx (fun () ->
+                withAuth ctx (fun () ->
+                    task {
+                        let shipSymbol = routeShipSymbol ctx
+
+                        let updated =
+                            lock shipLock (fun () ->
+                                let current = withCooldown (addCargoUnits ships.[shipSymbol] "FUEL" 5)
+                                ships <- ships.Add(shipSymbol, current)
+                                current)
+
+                        return ok { cooldown = updated.cooldown; cargo = updated.cargo }
+                    })))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/my/ships/{shipSymbol}/scrap",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault ctx (fun () ->
+                withAuth ctx (fun () ->
+                    task {
+                        let shipSymbol = routeShipSymbol ctx
+
+                        lock
+                            shipLock
+                            (fun () ->
+                                ships <- ships.Remove shipSymbol
+                                agent <- { agent with shipCount = max 0 (agent.shipCount - 1) })
+
+                        return ok { agent = readAgent () }
+                    })))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/my/ships/{shipSymbol}/repair",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault ctx (fun () ->
+                withAuth ctx (fun () ->
+                    task {
+                        let shipSymbol = routeShipSymbol ctx
+                        return ok { ship = readShip shipSymbol }
+                    })))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/my/ships/{shipSymbol}/refine",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault ctx (fun () ->
+                withAuth ctx (fun () ->
+                    task {
+                        let shipSymbol = routeShipSymbol ctx
+                        let! doc = readJsonBody ctx
+                        let produce = doc.RootElement.GetProperty("produce").GetString()
+
+                        let updated =
+                            lock shipLock (fun () ->
+                                let current = withCooldown (addCargoUnits ships.[shipSymbol] produce 2)
+                                ships <- ships.Add(shipSymbol, current)
+                                current)
+
+                        return ok { cooldown = updated.cooldown; cargo = updated.cargo }
+                    })))
+    )
+    |> ignore
+
+    let scanHandler (ctx: HttpContext) =
+        task {
+            let shipSymbol = routeShipSymbol ctx
+
+            let cooldown =
+                lock shipLock (fun () ->
+                    let current = withCooldown ships.[shipSymbol]
+                    ships <- ships.Add(shipSymbol, current)
+                    current.cooldown)
+
+            return ok { cooldown = cooldown }
+        }
+
+    app.MapPost(
+        "/my/ships/{shipSymbol}/scan/ships",
+        Func<HttpContext, Task<IResult>>(fun ctx -> applyFault ctx (fun () -> withAuth ctx (fun () -> scanHandler ctx))))
+    |> ignore
+
+    app.MapPost(
+        "/my/ships/{shipSymbol}/scan/systems",
+        Func<HttpContext, Task<IResult>>(fun ctx -> applyFault ctx (fun () -> withAuth ctx (fun () -> scanHandler ctx))))
+    |> ignore
+
+    app.MapPost(
+        "/my/ships/{shipSymbol}/scan/waypoints",
+        Func<HttpContext, Task<IResult>>(fun ctx -> applyFault ctx (fun () -> withAuth ctx (fun () -> scanHandler ctx))))
+    |> ignore
+
+    app.MapPost(
+        "/my/ships/{shipSymbol}/chart",
+        Func<HttpContext, Task<IResult>>(fun ctx -> applyFault ctx (fun () -> withAuth ctx (fun () -> scanHandler ctx))))
+    |> ignore
+
+    let modificationHandler (ctx: HttpContext) =
+        task {
+            let shipSymbol = routeShipSymbol ctx
+            return ok { ship = readShip shipSymbol }
+        }
+
+    app.MapPost(
+        "/my/ships/{shipSymbol}/modules/install",
+        Func<HttpContext, Task<IResult>>(fun ctx -> applyFault ctx (fun () -> withAuth ctx (fun () -> modificationHandler ctx))))
+    |> ignore
+
+    app.MapPost(
+        "/my/ships/{shipSymbol}/modules/remove",
+        Func<HttpContext, Task<IResult>>(fun ctx -> applyFault ctx (fun () -> withAuth ctx (fun () -> modificationHandler ctx))))
+    |> ignore
+
+    app.MapPost(
+        "/my/ships/{shipSymbol}/mounts/install",
+        Func<HttpContext, Task<IResult>>(fun ctx -> applyFault ctx (fun () -> withAuth ctx (fun () -> modificationHandler ctx))))
+    |> ignore
+
+    app.MapPost(
+        "/my/ships/{shipSymbol}/mounts/remove",
+        Func<HttpContext, Task<IResult>>(fun ctx -> applyFault ctx (fun () -> withAuth ctx (fun () -> modificationHandler ctx))))
+    |> ignore
+
+    app.MapPost(
+        "/my/ships/{shipSymbol}/extract/survey",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault ctx (fun () ->
+                withAuth ctx (fun () ->
+                    task {
+                        let shipSymbol = routeShipSymbol ctx
+                        let yieldSymbol = "IRON"
+                        let yieldUnits = 10
+
+                        let updated =
+                            lock shipLock (fun () ->
+                                let current = withCooldown (addCargoUnits ships.[shipSymbol] yieldSymbol yieldUnits)
+                                ships <- ships.Add(shipSymbol, current)
+                                current)
+
+                        return
+                            ok
+                                { extraction =
+                                    { shipSymbol = updated.symbol
+                                      ``yield`` = { symbol = yieldSymbol; units = yieldUnits } }
+                                  cooldown = updated.cooldown
+                                  cargo = updated.cargo }
+                    })))
+    )
+    |> ignore
+
+    app.MapPost(
         "/my/contracts/{contractId}/deliver",
         Func<HttpContext, Task<IResult>>(fun ctx ->
             applyFault
@@ -754,7 +1508,20 @@ let configureApp (app: WebApplication) =
                                                             inventory = newInventory } }
 
                                             ships <- ships.Add(shipSymbol, updatedShip)
-                                            let updatedContract = { contracts.[contractId] with fulfilled = true }
+                                            let contract = contracts.[contractId]
+
+                                            let updatedDeliver =
+                                                contract.terms.deliver
+                                                |> List.map (fun g ->
+                                                    if g.tradeSymbol = tradeSymbol then
+                                                        { g with unitsFulfilled = g.unitsFulfilled + units }
+                                                    else
+                                                        g)
+
+                                            let updatedContract =
+                                                { contract with
+                                                    terms = { contract.terms with deliver = updatedDeliver } }
+
                                             contracts <- contracts.Add(contractId, updatedContract)
                                             updatedShip.cargo, updatedContract)
 
@@ -784,6 +1551,82 @@ let configureApp (app: WebApplication) =
                                             updated)
 
                                 return ok { contract = updatedContract; agent = readAgent () }
+                            })))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/my/contracts/{contractId}/fulfill",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault
+                ctx
+                (fun () ->
+                    withAuth
+                        ctx
+                        (fun () ->
+                            task {
+                                let contractId = routeContractId ctx
+
+                                let updatedContract =
+                                    lock
+                                        shipLock
+                                        (fun () ->
+                                            let contract = contracts.[contractId]
+
+                                            let deliveriesComplete =
+                                                contract.terms.deliver
+                                                |> List.forall (fun good -> good.unitsFulfilled >= good.unitsRequired)
+
+                                            if not contract.accepted || not deliveriesComplete then
+                                                failwith "Contract is not ready to be fulfilled."
+
+                                            let updated = { contract with fulfilled = true }
+                                            contracts <- contracts.Add(contractId, updated)
+                                            updated)
+
+                                return ok { contract = updatedContract; agent = readAgent () }
+                            })))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/my/ships/{shipSymbol}/negotiate/contract",
+        Func<HttpContext, Task<IResult>>(fun ctx ->
+            applyFault
+                ctx
+                (fun () ->
+                    withAuth
+                        ctx
+                        (fun () ->
+                            task {
+                                let newContract =
+                                    lock
+                                        shipLock
+                                        (fun () ->
+                                            let contractId = $"fake-contract-{nextContractNumber}"
+                                            nextContractNumber <- nextContractNumber + 1
+
+                                            let contract =
+                                                { id = contractId
+                                                  factionSymbol = "COSMIC"
+                                                  ``type`` = "PROCUREMENT"
+                                                  terms =
+                                                    { deadline = "2026-12-31T00:00:00.000Z"
+                                                      payment = { onAccepted = 2500; onFulfilled = 10000 }
+                                                      deliver =
+                                                        [ { tradeSymbol = "IRON"
+                                                            destinationSymbol = headquarters
+                                                            unitsRequired = 3
+                                                            unitsFulfilled = 0 } ] }
+                                                  accepted = false
+                                                  fulfilled = false
+                                                  expiration = None
+                                                  deadlineToAccept = Some "2026-12-31T00:00:00.000Z" }
+
+                                            contracts <- contracts.Add(contractId, contract)
+                                            contract)
+
+                                return ok { contract = newContract }
                             })))
     )
     |> ignore
@@ -897,6 +1740,14 @@ let resetForTests () =
         |> Map.ofList
 
     nextShipNumber <- 3
+    nextContractNumber <- 3
+
+    constructions <-
+        Map.ofList
+            [ "X1-NEARBY-C1",
+              { symbol = "X1-NEARBY-C1"
+                materials = [ { tradeSymbol = "IRON"; required = 100; fulfilled = 0 } ]
+                isComplete = false } ]
 
     contracts <-
         [ "fake-contract-1",

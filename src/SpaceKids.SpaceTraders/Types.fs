@@ -97,6 +97,23 @@ type Agent =
       startingFaction: string
       shipCount: int }
 
+type FactionTrait =
+    { symbol: string
+      name: string
+      description: string }
+
+type Faction =
+    { symbol: string
+      name: string
+      description: string
+      headquarters: string option
+      traits: FactionTrait list
+      isRecruiting: bool }
+
+type FactionReputation =
+    { symbol: string
+      reputation: int }
+
 /// `POST .../purchase` and `POST .../sell` response.
 type TradeResult =
     { agent: Agent
@@ -196,6 +213,34 @@ type DeliverContractResult = { contract: Contract; cargo: ShipCargo }
 /// `POST /my/contracts/{contractId}/accept` response.
 type AcceptContractResult = { contract: Contract; agent: Agent }
 
+/// `POST /my/contracts/{contractId}/fulfill` response.
+type FulfillContractResult = { contract: Contract; agent: Agent }
+
+/// `POST /my/ships/{shipSymbol}/negotiate/contract` response.
+type NegotiateContractResult = { contract: Contract }
+
+type JumpResult = { nav: ShipNav; cooldown: Cooldown }
+
+type WarpResult = { nav: ShipNav; fuel: ShipFuel }
+
+type JettisonResult = { cargo: ShipCargo }
+
+type TransferResult = { cargo: ShipCargo }
+
+type SiphonResult = { cooldown: Cooldown; cargo: ShipCargo }
+
+type RefineResult = { cooldown: Cooldown; cargo: ShipCargo }
+
+type ScanResult = { cooldown: Cooldown }
+
+type ChartResult = { cooldown: Cooldown }
+
+type RepairResult = { ship: Ship }
+
+type ScrapResult = { agent: Agent }
+
+type ShipModificationResult = { ship: Ship }
+
 /// `POST /my/ships/{shipSymbol}/refuel` response.
 type RefuelResult =
     { agent: Agent
@@ -232,6 +277,64 @@ type Shipyard =
     { symbol: string
       shipTypes: ShipyardShipType list
       ships: ShipyardShipEntry list }
+
+type StarSystem =
+    { symbol: string
+      sectorSymbol: string
+      constellation: string option
+      name: string option
+      ``type``: string
+      x: int
+      y: int }
+
+type JumpGate = { symbol: string; connections: string list }
+
+type ConstructionMaterial =
+    { tradeSymbol: string
+      required: int
+      fulfilled: int }
+
+type Construction =
+    { symbol: string
+      materials: ConstructionMaterial list
+      isComplete: bool }
+
+type PriceTransaction =
+    { waypointSymbol: string
+      shipSymbol: string
+      totalPrice: int
+      timestamp: string option }
+
+type GetRepairResult = { transaction: PriceTransaction }
+type GetScrapResult = { transaction: PriceTransaction }
+
+type ShipModuleEntry =
+    { symbol: string
+      name: string
+      description: string }
+
+type InstalledShipModule = { symbol: string; name: string }
+
+type ShipMountEntry =
+    { symbol: string
+      name: string
+      strength: int option }
+
+type InstalledShipMount = { symbol: string; name: string }
+
+type SupplyChainEntry =
+    { exportSymbol: string
+      importSymbol: string }
+
+type SupplyChainData = { exportToImportMap: Map<string, string list> }
+
+type PatchNavResult = { nav: ShipNav }
+type SupplyConstructionResult = { construction: Construction; cargo: ShipCargo }
+
+type GetCooldownResult = { cooldown: Cooldown }
+type GetNavResult = { nav: ShipNav }
+type GetModulesResult = { modules: InstalledShipModule list }
+type GetMountsResult = { mounts: InstalledShipMount list }
 
 type DataEnvelope<'a> = { data: 'a }
 

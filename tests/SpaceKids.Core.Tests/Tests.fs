@@ -295,7 +295,8 @@ let ``programRequiresShip is false for a program using only ship-agnostic blocks
                   "purchaseShip",
                   Map [ "shipType", Literal(StringLit "SHIP_MINING_DRONE"); "waypointSymbol", Literal(StringLit "X1-TEST-A1") ]
               )
-              ApiAction("b4", "acceptContract", Map [ "contractId", Literal(StringLit "contract-1") ]) ]
+              ApiAction("b4", "acceptContract", Map [ "contractId", Literal(StringLit "contract-1") ])
+              ApiAction("b5", "fulfillContract", Map [ "contractId", Literal(StringLit "contract-1") ]) ]
 
     Assert.False(Validator.programRequiresShip program)
 

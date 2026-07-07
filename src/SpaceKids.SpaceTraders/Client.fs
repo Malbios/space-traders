@@ -56,6 +56,17 @@ type SpaceTradersClient(httpClient: HttpClient) =
             return this.HandleResponse<'a>(response, respBody)
         }
 
+    member private this.PatchData<'a>(token: string, path: string, body: Map<string, obj>) : Async<'a> =
+        async {
+            use request = new HttpRequestMessage(HttpMethod.Patch, path)
+            request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+            let json = JsonSerializer.Serialize(body, jsonOptions)
+            request.Content <- new StringContent(json, System.Text.Encoding.UTF8, "application/json")
+            let! response = httpClient.SendAsync(request) |> Async.AwaitTask
+            let! respBody = response.Content.ReadAsStringAsync() |> Async.AwaitTask
+            return this.HandleResponse<'a>(response, respBody)
+        }
+
     /// The real API paginates list endpoints (default 10/page, max 20/page) — a
     /// single unpaginated fetch silently truncates any account with more than one
     /// page of ships/contracts/waypoints (confirmed: a real home system alone can
@@ -145,6 +156,12 @@ type SpaceTradersClient(httpClient: HttpClient) =
     member this.AcceptContract(token: string, contractId: string) : Async<AcceptContractResult> =
         this.PostData(token, $"my/contracts/{contractId}/accept", Map.empty)
 
+    member this.FulfillContract(token: string, contractId: string) : Async<FulfillContractResult> =
+        this.PostData(token, $"my/contracts/{contractId}/fulfill", Map.empty)
+
+    member this.NegotiateContract(token: string, shipSymbol: string) : Async<NegotiateContractResult> =
+        this.PostData(token, $"my/ships/{shipSymbol}/negotiate/contract", Map.empty)
+
     member this.PurchaseShip(token: string, shipType: string, waypointSymbol: string) : Async<PurchaseShipResult> =
         this.PostData(
             token,
@@ -155,8 +172,136 @@ type SpaceTradersClient(httpClient: HttpClient) =
     member this.Refuel(token: string, shipSymbol: string) : Async<RefuelResult> =
         this.PostData(token, $"my/ships/{shipSymbol}/refuel", Map.empty)
 
+    member this.Jettison(token: string, shipSymbol: string, tradeSymbol: string, units: int) : Async<JettisonResult> =
+        this.PostData(token, $"my/ships/{shipSymbol}/jettison", Map.ofList [ "symbol", box tradeSymbol; "units", box units ])
+
+    member this.Jump(token: string, shipSymbol: string, waypointSymbol: string) : Async<JumpResult> =
+        this.PostData(token, $"my/ships/{shipSymbol}/jump", Map.ofList [ "waypointSymbol", box waypointSymbol ])
+
+    member this.Warp(token: string, shipSymbol: string, waypointSymbol: string) : Async<WarpResult> =
+        this.PostData(token, $"my/ships/{shipSymbol}/warp", Map.ofList [ "waypointSymbol", box waypointSymbol ])
+
+    member this.TransferCargo
+        (token: string, shipSymbol: string, tradeSymbol: string, units: int, targetShipSymbol: string)
+        : Async<TransferResult> =
+        this.PostData(
+            token,
+            $"my/ships/{shipSymbol}/transfer",
+            Map.ofList [ "tradeSymbol", box tradeSymbol; "units", box units; "shipSymbol", box targetShipSymbol ]
+        )
+
+    member this.Siphon(token: string, shipSymbol: string) : Async<SiphonResult> =
+        this.PostData(token, $"my/ships/{shipSymbol}/siphon", Map.empty)
+
+    member this.ScrapShip(token: string, shipSymbol: string) : Async<ScrapResult> =
+        this.PostData(token, $"my/ships/{shipSymbol}/scrap", Map.empty)
+
+    member this.Repair(token: string, shipSymbol: string) : Async<RepairResult> =
+        this.PostData(token, $"my/ships/{shipSymbol}/repair", Map.empty)
+
+    member this.Refine(token: string, shipSymbol: string, produce: string) : Async<RefineResult> =
+        this.PostData(token, $"my/ships/{shipSymbol}/refine", Map.ofList [ "produce", box produce ])
+
+    member this.ScanShips(token: string, shipSymbol: string) : Async<ScanResult> =
+        this.PostData(token, $"my/ships/{shipSymbol}/scan/ships", Map.empty)
+
+    member this.ScanSystems(token: string, shipSymbol: string) : Async<ScanResult> =
+        this.PostData(token, $"my/ships/{shipSymbol}/scan/systems", Map.empty)
+
+    member this.ScanWaypoints(token: string, shipSymbol: string) : Async<ScanResult> =
+        this.PostData(token, $"my/ships/{shipSymbol}/scan/waypoints", Map.empty)
+
+    member this.InstallModule(token: string, shipSymbol: string, moduleSymbol: string) : Async<ShipModificationResult> =
+        this.PostData(token, $"my/ships/{shipSymbol}/modules/install", Map.ofList [ "symbol", box moduleSymbol ])
+
+    member this.RemoveModule(token: string, shipSymbol: string, moduleSymbol: string) : Async<ShipModificationResult> =
+        this.PostData(token, $"my/ships/{shipSymbol}/modules/remove", Map.ofList [ "symbol", box moduleSymbol ])
+
+    member this.InstallMount(token: string, shipSymbol: string, mountSymbol: string) : Async<ShipModificationResult> =
+        this.PostData(token, $"my/ships/{shipSymbol}/mounts/install", Map.ofList [ "symbol", box mountSymbol ])
+
+    member this.RemoveMount(token: string, shipSymbol: string, mountSymbol: string) : Async<ShipModificationResult> =
+        this.PostData(token, $"my/ships/{shipSymbol}/mounts/remove", Map.ofList [ "symbol", box mountSymbol ])
+
+    member this.CreateChart(token: string, shipSymbol: string) : Async<ChartResult> =
+        this.PostData(token, $"my/ships/{shipSymbol}/chart", Map.empty)
+
+    member this.ExtractWithSurvey(token: string, shipSymbol: string, surveySignature: string) : Async<ExtractResult> =
+        this.PostData(token, $"my/ships/{shipSymbol}/extract/survey", Map.ofList [ "signature", box surveySignature ])
+
     member this.GetContract(token: string, contractId: string) : Async<GetContractResult> =
         this.GetData(token, $"my/contracts/{contractId}")
 
     member this.GetShipyard(token: string, systemSymbol: string, waypointSymbol: string) : Async<Shipyard> =
         this.GetData(token, $"systems/{systemSymbol}/waypoints/{waypointSymbol}/shipyard")
+
+    member this.ListFactions(token: string) : Async<Faction list> =
+        this.GetAllPages(token, "factions")
+
+    member this.ListMyFactions(token: string) : Async<FactionReputation list> =
+        this.GetAllPages(token, "my/factions")
+
+    member this.ListSystems(token: string) : Async<StarSystem list> =
+        this.GetAllPages(token, "systems")
+
+    member this.GetSystem(token: string, systemSymbol: string) : Async<StarSystem> =
+        this.GetData(token, $"systems/{systemSymbol}")
+
+    member this.GetWaypoint(token: string, systemSymbol: string, waypointSymbol: string) : Async<Waypoint> =
+        this.GetData(token, $"systems/{systemSymbol}/waypoints/{waypointSymbol}")
+
+    member this.GetJumpGate(token: string, systemSymbol: string, waypointSymbol: string) : Async<JumpGate> =
+        this.GetData(token, $"systems/{systemSymbol}/waypoints/{waypointSymbol}/jump-gate")
+
+    member this.GetConstruction(token: string, systemSymbol: string, waypointSymbol: string) : Async<Construction> =
+        this.GetData(token, $"systems/{systemSymbol}/waypoints/{waypointSymbol}/construction")
+
+    member this.SupplyConstruction
+        (token: string, systemSymbol: string, waypointSymbol: string, shipSymbol: string, tradeSymbol: string, units: int)
+        : Async<SupplyConstructionResult> =
+        this.PostData(
+            token,
+            $"systems/{systemSymbol}/waypoints/{waypointSymbol}/construction/supply",
+            Map.ofList [ "shipSymbol", box shipSymbol; "tradeSymbol", box tradeSymbol; "units", box units ]
+        )
+
+    member this.ListAgents(token: string) : Async<Agent list> =
+        this.GetAllPages(token, "agents")
+
+    member this.GetPublicAgent(token: string, agentSymbol: string) : Async<Agent> =
+        this.GetData(token, $"agents/{agentSymbol}")
+
+    member this.GetFaction(token: string, factionSymbol: string) : Async<Faction> =
+        this.GetData(token, $"factions/{factionSymbol}")
+
+    member this.GetSupplyChain(token: string) : Async<SupplyChainEntry list> =
+        async {
+            let! data = this.GetData<SupplyChainData>(token, "market/supply-chain")
+
+            return
+                data.exportToImportMap
+                |> Map.toList
+                |> List.collect (fun (exportSymbol, imports) ->
+                    imports |> List.map (fun importSymbol -> { exportSymbol = exportSymbol; importSymbol = importSymbol }))
+        }
+
+    member this.GetRepairCost(token: string, shipSymbol: string) : Async<GetRepairResult> =
+        this.GetData(token, $"my/ships/{shipSymbol}/repair")
+
+    member this.GetScrapValue(token: string, shipSymbol: string) : Async<GetScrapResult> =
+        this.GetData(token, $"my/ships/{shipSymbol}/scrap")
+
+    member this.GetShipCooldown(token: string, shipSymbol: string) : Async<GetCooldownResult> =
+        this.GetData(token, $"my/ships/{shipSymbol}/cooldown")
+
+    member this.GetShipNav(token: string, shipSymbol: string) : Async<GetNavResult> =
+        this.GetData(token, $"my/ships/{shipSymbol}/nav")
+
+    member this.PatchShipNav(token: string, shipSymbol: string, flightMode: string) : Async<PatchNavResult> =
+        this.PatchData(token, $"my/ships/{shipSymbol}/nav", Map.ofList [ "flightMode", box flightMode ])
+
+    member this.GetShipModules(token: string, shipSymbol: string) : Async<GetModulesResult> =
+        this.GetData(token, $"my/ships/{shipSymbol}/modules")
+
+    member this.GetShipMounts(token: string, shipSymbol: string) : Async<GetMountsResult> =
+        this.GetData(token, $"my/ships/{shipSymbol}/mounts")

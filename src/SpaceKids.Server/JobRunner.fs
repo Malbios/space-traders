@@ -108,6 +108,109 @@ let private waypointRecord (w: Waypoint) : Value =
               "HasMarket", VBool(hasTrait "MARKETPLACE") ]
     )
 
+let private agentRecord (a: Agent) : Value =
+    VRecord(
+        Map.ofList
+            [ "Symbol", VString a.symbol
+              "Headquarters", VString a.headquarters
+              "Credits", VNumber(float a.credits)
+              "StartingFaction", VString a.startingFaction
+              "ShipCount", VNumber(float a.shipCount) ]
+    )
+
+let private systemRecord (s: StarSystem) : Value =
+    VRecord(
+        Map.ofList
+            [ "Symbol", VString s.symbol
+              "Sector", VString s.sectorSymbol
+              "Type", VString s.``type``
+              "X", VNumber(float s.x)
+              "Y", VNumber(float s.y)
+              "Name", VString(s.name |> Option.defaultValue "")
+              "Constellation", VString(s.constellation |> Option.defaultValue "") ]
+    )
+
+let private factionRecord (f: Faction) : Value =
+    VRecord(
+        Map.ofList
+            [ "Symbol", VString f.symbol
+              "Name", VString f.name
+              "Description", VString f.description
+              "Headquarters", VString(f.headquarters |> Option.defaultValue "")
+              "IsRecruiting", VBool f.isRecruiting ]
+    )
+
+let private factionReputationRecord (f: FactionReputation) : Value =
+    VRecord(Map.ofList [ "Symbol", VString f.symbol; "Reputation", VNumber(float f.reputation) ])
+
+let private jumpGateRecord (g: JumpGate) : Value =
+    VRecord(
+        Map.ofList
+            [ "Symbol", VString g.symbol
+              "Connections", VList(g.connections |> List.map VString) ]
+    )
+
+let private constructionMaterialRecord (m: ConstructionMaterial) : Value =
+    VRecord(
+        Map.ofList
+            [ "TradeSymbol", VString m.tradeSymbol
+              "Required", VNumber(float m.required)
+              "Fulfilled", VNumber(float m.fulfilled) ]
+    )
+
+let private constructionRecord (c: Construction) : Value =
+    VRecord(
+        Map.ofList
+            [ "Symbol", VString c.symbol
+              "IsComplete", VBool c.isComplete
+              "Materials", VList(c.materials |> List.map constructionMaterialRecord) ]
+    )
+
+let private navRecord (n: ShipNav) : Value =
+    VRecord(
+        Map.ofList
+            [ "Waypoint", VString n.waypointSymbol
+              "System", VString n.systemSymbol
+              "Status", VString n.status
+              "FlightMode", VString n.flightMode ]
+    )
+
+let private cooldownRecord (c: Cooldown) : Value =
+    VRecord(
+        Map.ofList
+            [ "Ship", VString c.shipSymbol
+              "TotalSeconds", VNumber(float c.totalSeconds)
+              "RemainingSeconds", VNumber(float c.remainingSeconds)
+              "Expiration", VString(c.expiration |> Option.defaultValue "") ]
+    )
+
+let private priceRecord (t: PriceTransaction) : Value =
+    VRecord(
+        Map.ofList
+            [ "Waypoint", VString t.waypointSymbol
+              "Ship", VString t.shipSymbol
+              "TotalPrice", VNumber(float t.totalPrice) ]
+    )
+
+let private moduleList (modules: InstalledShipModule list) : Value =
+    VList(
+        modules
+        |> List.map (fun m -> VRecord(Map.ofList [ "Symbol", VString m.symbol; "Name", VString m.name ]))
+    )
+
+let private mountList (mounts: InstalledShipMount list) : Value =
+    VList(
+        mounts
+        |> List.map (fun m -> VRecord(Map.ofList [ "Symbol", VString m.symbol; "Name", VString m.name ]))
+    )
+
+let private supplyChainList (entries: SupplyChainEntry list) : Value =
+    VList(
+        entries
+        |> List.map (fun e ->
+            VRecord(Map.ofList [ "Export", VString e.exportSymbol; "Import", VString e.importSymbol ]))
+    )
+
 /// `RequestQueue.enqueue`'s `AmbiguousFailure` can arrive wrapped in an
 /// `AggregateException` depending on the Async<->Task interop path it crosses (the
 /// same nesting the Milestone 5 tests already had to account for) — unwrap before
@@ -220,6 +323,20 @@ let private runAction
                     let! r = client.AcceptContract(token, contractId)
                     return AcceptContractOk r.contract.accepted
                 })
+        | DoFulfillContract contractId ->
+            $"fulfillContract:{contractId}",
+            (fun () ->
+                async {
+                    let! r = client.FulfillContract(token, contractId)
+                    return FulfillContractOk r.contract.fulfilled
+                })
+        | DoNegotiateContract ->
+            $"negotiateContract:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.NegotiateContract(token, shipSymbol)
+                    return NegotiateContractOk r.contract.id
+                })
         | DoPurchaseShip(shipType, waypointSymbol) ->
             $"purchaseShip:{shipSymbol}",
             (fun () ->
@@ -233,6 +350,192 @@ let private runAction
                 async {
                     let! r = client.Refuel(token, shipSymbol)
                     return RefuelOk r.fuel.current
+                })
+        | DoJettison(tradeSymbol, units) ->
+            $"jettison:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.Jettison(token, shipSymbol, tradeSymbol, units)
+
+                    return
+                        TradeOk(
+                            r.cargo.units,
+                            inventoryMap r.cargo,
+                            "JETTISON",
+                            tradeSymbol,
+                            units,
+                            0
+                        )
+                })
+        | DoJump waypointSymbol ->
+            $"jump:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.Jump(token, shipSymbol, waypointSymbol)
+                    return NavigateOk(r.nav.status, r.nav.waypointSymbol, r.nav.route.arrival)
+                })
+        | DoWarp waypointSymbol ->
+            $"warp:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.Warp(token, shipSymbol, waypointSymbol)
+                    return NavigateOk(r.nav.status, r.nav.waypointSymbol, r.nav.route.arrival)
+                })
+        | DoTransferCargo(tradeSymbol, units, targetShipSymbol) ->
+            $"transfer:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.TransferCargo(token, shipSymbol, tradeSymbol, units, targetShipSymbol)
+
+                    return
+                        TradeOk(
+                            r.cargo.units,
+                            inventoryMap r.cargo,
+                            "TRANSFER",
+                            tradeSymbol,
+                            units,
+                            0
+                        )
+                })
+        | DoSiphon ->
+            $"siphon:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.Siphon(token, shipSymbol)
+
+                    return
+                        ExtractOk(
+                            r.cooldown.expiration |> Option.defaultValue (DateTime.UtcNow.ToString("o")),
+                            r.cargo.units,
+                            inventoryMap r.cargo,
+                            "FUEL",
+                            1
+                        )
+                })
+        | DoScrapShip ->
+            $"scrap:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.ScrapShip(token, shipSymbol)
+                    return ScrapOk r.agent.shipCount
+                })
+        | DoRepair ->
+            $"repair:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.Repair(token, shipSymbol)
+                    return RefuelOk r.ship.fuel.current
+                })
+        | DoRefine produce ->
+            $"refine:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.Refine(token, shipSymbol, produce)
+
+                    return
+                        ExtractOk(
+                            r.cooldown.expiration |> Option.defaultValue (DateTime.UtcNow.ToString("o")),
+                            r.cargo.units,
+                            inventoryMap r.cargo,
+                            produce,
+                            1
+                        )
+                })
+        | DoScanShips ->
+            $"scanShips:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.ScanShips(token, shipSymbol)
+                    return SurveyOk(r.cooldown.expiration |> Option.defaultValue (DateTime.UtcNow.ToString("o")))
+                })
+        | DoScanSystems ->
+            $"scanSystems:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.ScanSystems(token, shipSymbol)
+                    return SurveyOk(r.cooldown.expiration |> Option.defaultValue (DateTime.UtcNow.ToString("o")))
+                })
+        | DoScanWaypoints ->
+            $"scanWaypoints:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.ScanWaypoints(token, shipSymbol)
+                    return SurveyOk(r.cooldown.expiration |> Option.defaultValue (DateTime.UtcNow.ToString("o")))
+                })
+        | DoInstallModule moduleSymbol ->
+            $"installModule:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! _ = client.InstallModule(token, shipSymbol, moduleSymbol)
+                    return ActionOk
+                })
+        | DoRemoveModule moduleSymbol ->
+            $"removeModule:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! _ = client.RemoveModule(token, shipSymbol, moduleSymbol)
+                    return ActionOk
+                })
+        | DoInstallMount mountSymbol ->
+            $"installMount:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! _ = client.InstallMount(token, shipSymbol, mountSymbol)
+                    return ActionOk
+                })
+        | DoRemoveMount mountSymbol ->
+            $"removeMount:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! _ = client.RemoveMount(token, shipSymbol, mountSymbol)
+                    return ActionOk
+                })
+        | DoCreateChart ->
+            $"createChart:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.CreateChart(token, shipSymbol)
+                    return SurveyOk(r.cooldown.expiration |> Option.defaultValue (DateTime.UtcNow.ToString("o")))
+                })
+        | DoExtractWithSurvey surveySignature ->
+            $"extractWithSurvey:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.ExtractWithSurvey(token, shipSymbol, surveySignature)
+
+                    return
+                        ExtractOk(
+                            r.cooldown.expiration |> Option.defaultValue (DateTime.UtcNow.ToString("o")),
+                            r.cargo.units,
+                            inventoryMap r.cargo,
+                            r.extraction.``yield``.symbol,
+                            r.extraction.``yield``.units
+                        )
+                })
+        | DoSupplyConstruction(waypointSymbol, tradeSymbol, units) ->
+            let systemSymbol = Waypoint.systemSymbolOf waypointSymbol
+
+            $"supplyConstruction:{waypointSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.SupplyConstruction(token, systemSymbol, waypointSymbol, shipSymbol, tradeSymbol, units)
+
+                    return
+                        TradeOk(
+                            r.cargo.units,
+                            inventoryMap r.cargo,
+                            "SUPPLY",
+                            tradeSymbol,
+                            units,
+                            0
+                        )
+                })
+        | DoPatchShipNav flightMode ->
+            $"patchShipNav:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.PatchShipNav(token, shipSymbol, flightMode)
+                    return NavResultOk(r.nav.status, r.nav.waypointSymbol)
                 })
 
     let requestJson = try Some(JsonSerializer.Serialize(action, jsonOptions)) with _ -> None
@@ -378,6 +681,147 @@ let private runInfoRead
                 async {
                     let! agent = client.GetAgent(token)
                     return InfoOk(VNumber(float agent.credits))
+                })
+        | "getRepairCost" ->
+            $"getRepairCost:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.GetRepairCost(token, shipSymbol)
+                    return InfoOk(priceRecord r.transaction)
+                })
+        | "getScrapValue" ->
+            $"getScrapValue:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.GetScrapValue(token, shipSymbol)
+                    return InfoOk(priceRecord r.transaction)
+                })
+        | "getWaypoint" ->
+            let waypointSymbol = requireArg "waypointSymbol"
+            let systemSymbol = Waypoint.systemSymbolOf waypointSymbol
+
+            $"getWaypoint:{waypointSymbol}",
+            (fun () ->
+                async {
+                    let! w = client.GetWaypoint(token, systemSymbol, waypointSymbol)
+                    return InfoOk(waypointRecord w)
+                })
+        | "getMyAgent" ->
+            "getMyAgent",
+            (fun () ->
+                async {
+                    let! agent = client.GetAgent(token)
+                    return InfoOk(agentRecord agent)
+                })
+        | "getPublicAgent" ->
+            let agentSymbol = requireArg "agentSymbol"
+
+            $"getPublicAgent:{agentSymbol}",
+            (fun () ->
+                async {
+                    let! agent = client.GetPublicAgent(token, agentSymbol)
+                    return InfoOk(agentRecord agent)
+                })
+        | "getPublicAgents" ->
+            "getPublicAgents",
+            (fun () ->
+                async {
+                    let! agents = client.ListAgents(token)
+                    return InfoOk(VList(agents |> List.map agentRecord))
+                })
+        | "getCooldown" ->
+            $"getCooldown:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.GetShipCooldown(token, shipSymbol)
+                    return InfoOk(cooldownRecord r.cooldown)
+                })
+        | "getNav" ->
+            $"getNav:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.GetShipNav(token, shipSymbol)
+                    return InfoOk(navRecord r.nav)
+                })
+        | "getSupplyChain" ->
+            "getSupplyChain",
+            (fun () ->
+                async {
+                    let! entries = client.GetSupplyChain(token)
+                    return InfoOk(supplyChainList entries)
+                })
+        | "getShipModules" ->
+            $"getShipModules:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.GetShipModules(token, shipSymbol)
+                    return InfoOk(moduleList r.modules)
+                })
+        | "getShipMounts" ->
+            $"getShipMounts:{shipSymbol}",
+            (fun () ->
+                async {
+                    let! r = client.GetShipMounts(token, shipSymbol)
+                    return InfoOk(mountList r.mounts)
+                })
+        | "getConstruction" ->
+            let waypointSymbol = requireArg "waypointSymbol"
+            let systemSymbol = Waypoint.systemSymbolOf waypointSymbol
+
+            $"getConstruction:{waypointSymbol}",
+            (fun () ->
+                async {
+                    let! c = client.GetConstruction(token, systemSymbol, waypointSymbol)
+                    return InfoOk(constructionRecord c)
+                })
+        | "getJumpGate" ->
+            let waypointSymbol = requireArg "waypointSymbol"
+            let systemSymbol = Waypoint.systemSymbolOf waypointSymbol
+
+            $"getJumpGate:{waypointSymbol}",
+            (fun () ->
+                async {
+                    let! g = client.GetJumpGate(token, systemSymbol, waypointSymbol)
+                    return InfoOk(jumpGateRecord g)
+                })
+        | "getSystems" ->
+            "getSystems",
+            (fun () ->
+                async {
+                    let! systems = client.ListSystems(token)
+                    return InfoOk(VList(systems |> List.map systemRecord))
+                })
+        | "getSystem" ->
+            let systemSymbol = requireArg "systemSymbol"
+
+            $"getSystem:{systemSymbol}",
+            (fun () ->
+                async {
+                    let! s = client.GetSystem(token, systemSymbol)
+                    return InfoOk(systemRecord s)
+                })
+        | "getFaction" ->
+            let factionSymbol = requireArg "factionSymbol"
+
+            $"getFaction:{factionSymbol}",
+            (fun () ->
+                async {
+                    let! f = client.GetFaction(token, factionSymbol)
+                    return InfoOk(factionRecord f)
+                })
+        | "getFactions" ->
+            "getFactions",
+            (fun () ->
+                async {
+                    let! factions = client.ListFactions(token)
+                    return InfoOk(VList(factions |> List.map factionRecord))
+                })
+        | "getMyFactions" ->
+            "getMyFactions",
+            (fun () ->
+                async {
+                    let! factions = client.ListMyFactions(token)
+                    return InfoOk(VList(factions |> List.map factionReputationRecord))
                 })
         | other ->
             let locale =
@@ -551,7 +995,7 @@ let rec private applyEffects
                     }
 
                 do! tick client dbPath token priority jobId (BranchApiResponseReceived(jobId, branchId, attemptNumber, result))
-            | ReconcileContractState(jobId, contractId, attemptNumber) ->
+            | ReconcileContractState(jobId, contractId, attemptNumber, field) ->
                 let! result =
                     async {
                         try
@@ -559,13 +1003,16 @@ let rec private applyEffects
                                 RequestQueue.enqueue dbPath priority $"getContract:{contractId}" None (fun () ->
                                     client.GetContract(token, contractId))
 
-                            return ReconciliationContract r.contract.accepted
+                            return
+                                match field with
+                                | CheckAccepted -> ReconciliationContract r.contract.accepted
+                                | CheckFulfilled -> ReconciliationContractFulfilled r.contract.fulfilled
                         with ex ->
                             return classifyException ex
                     }
 
                 do! tick client dbPath token priority jobId (ApiResponseReceived(jobId, attemptNumber, result))
-            | ReconcileBranchContractState(jobId, branchId, contractId, attemptNumber) ->
+            | ReconcileBranchContractState(jobId, branchId, contractId, attemptNumber, field) ->
                 let! result =
                     async {
                         try
@@ -573,7 +1020,10 @@ let rec private applyEffects
                                 RequestQueue.enqueue dbPath priority $"getContract:{contractId}" None (fun () ->
                                     client.GetContract(token, contractId))
 
-                            return ReconciliationContract r.contract.accepted
+                            return
+                                match field with
+                                | CheckAccepted -> ReconciliationContract r.contract.accepted
+                                | CheckFulfilled -> ReconciliationContractFulfilled r.contract.fulfilled
                         with ex ->
                             return classifyException ex
                     }
@@ -592,6 +1042,19 @@ let rec private applyEffects
                     }
 
                 do! tick client dbPath token priority jobId (ApiResponseReceived(jobId, attemptNumber, result))
+            | ReconcileContractsState(jobId, attemptNumber) ->
+                let! result =
+                    async {
+                        try
+                            let! contracts =
+                                RequestQueue.enqueue dbPath priority "listContracts" None (fun () -> client.ListContracts(token))
+
+                            return ReconciliationContracts(List.length contracts)
+                        with ex ->
+                            return classifyException ex
+                    }
+
+                do! tick client dbPath token priority jobId (ApiResponseReceived(jobId, attemptNumber, result))
             | ReconcileBranchFleetState(jobId, branchId, attemptNumber) ->
                 let! result =
                     async {
@@ -600,6 +1063,19 @@ let rec private applyEffects
                                 RequestQueue.enqueue dbPath priority "listShips" None (fun () -> client.ListShips(token))
 
                             return ReconciliationFleet(List.length ships)
+                        with ex ->
+                            return classifyException ex
+                    }
+
+                do! tick client dbPath token priority jobId (BranchApiResponseReceived(jobId, branchId, attemptNumber, result))
+            | ReconcileBranchContractsState(jobId, branchId, attemptNumber) ->
+                let! result =
+                    async {
+                        try
+                            let! contracts =
+                                RequestQueue.enqueue dbPath priority "listContracts" None (fun () -> client.ListContracts(token))
+
+                            return ReconciliationContracts(List.length contracts)
                         with ex ->
                             return classifyException ex
                     }
@@ -753,8 +1229,10 @@ let recoverJob (client: SpaceTradersClient) (dbPath: string) (token: string) (jo
             | Reconciling(attempt, _, baseline) ->
                 let reconcileEffect =
                     match baseline with
-                    | AcceptContractBaseline contractId -> ReconcileContractState(jobId, contractId, attempt)
+                    | AcceptContractBaseline contractId -> ReconcileContractState(jobId, contractId, attempt, CheckAccepted)
+                    | FulfillContractBaseline contractId -> ReconcileContractState(jobId, contractId, attempt, CheckFulfilled)
                     | FleetBaseline _ -> ReconcileFleetState(jobId, attempt)
+                    | ContractsCountBaseline _ -> ReconcileContractsState(jobId, attempt)
                     | _ -> ReconcileShipState(jobId, job.shipSymbol, attempt)
 
                 do! applyEffects client dbPath token backgroundPriority [ reconcileEffect ]
@@ -803,6 +1281,7 @@ let startJob
     (shipSymbol: string option)
     (initialShip: Ship option)
     (initialFleetShipCount: int)
+    (initialContractCount: int)
     : Async<Result<JobId, string>> =
     async {
         let jobId = System.Guid.NewGuid().ToString()
@@ -816,6 +1295,7 @@ let startJob
               stack = [ initialFrame ]
               lastKnownShip = initialShip |> Option.map toSnapshot
               lastKnownFleetShipCount = Some initialFleetShipCount
+              lastKnownContractCount = Some initialContractCount
               currentShipStack = []
               dynamicShipLocks = []
               parallelBranches = []

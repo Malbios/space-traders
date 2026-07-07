@@ -4,7 +4,7 @@ open System.Text.Json
 open SpaceKids.Core.Dsl
 open SpaceKids.Core.Dsl.BlocklyJson
 
-/// Blockly-input-name -> DSL-arg-name pairs for the 11 action blocks (docs/04-block-catalog.md).
+/// Blockly-input-name -> DSL-arg-name pairs for the catalog action blocks (docs/04-block-catalog.md).
 let private ACTION_BLOCKS: Map<string, (string * string) list> =
     Map.ofList [
         "navigate", [ "DESTINATION", "destination" ]
@@ -16,8 +16,29 @@ let private ACTION_BLOCKS: Map<string, (string * string) list> =
         "sellGood", [ "TRADE_SYMBOL", "tradeSymbol"; "UNITS", "units" ]
         "deliverContract", [ "CONTRACT_ID", "contractId"; "TRADE_SYMBOL", "tradeSymbol"; "UNITS", "units" ]
         "acceptContract", [ "CONTRACT_ID", "contractId" ]
+        "fulfillContract", [ "CONTRACT_ID", "contractId" ]
+        "negotiateContract", []
         "purchaseShip", [ "SHIP_TYPE", "shipType"; "WAYPOINT", "waypointSymbol" ]
         "refuel", []
+        "createChart", []
+        "extractWithSurvey", [ "SURVEY_SIGNATURE", "surveySignature" ]
+        "installModule", [ "MODULE_SYMBOL", "moduleSymbol" ]
+        "installMount", [ "MOUNT_SYMBOL", "mountSymbol" ]
+        "jettison", [ "TRADE_SYMBOL", "tradeSymbol"; "UNITS", "units" ]
+        "jump", [ "DESTINATION", "waypointSymbol" ]
+        "refine", [ "PRODUCE", "produce" ]
+        "removeModule", [ "MODULE_SYMBOL", "moduleSymbol" ]
+        "removeMount", [ "MOUNT_SYMBOL", "mountSymbol" ]
+        "repair", []
+        "scanShips", []
+        "scanSystems", []
+        "scanWaypoints", []
+        "scrapShip", []
+        "siphon", []
+        "transferCargo", [ "TRADE_SYMBOL", "tradeSymbol"; "UNITS", "units"; "SHIP_SYMBOL", "targetShipSymbol" ]
+        "warp", [ "DESTINATION", "waypointSymbol" ]
+        "supplyConstruction", [ "WAYPOINT_SYMBOL", "waypointSymbol"; "TRADE_SYMBOL", "tradeSymbol"; "UNITS", "units" ]
+        "patchShipNav", [ "FLIGHT_MODE", "flightMode" ]
     ]
 
 /// Same, for the 9 information blocks — these compile as effectful value blocks (§10),
@@ -33,6 +54,24 @@ let private INFO_BLOCKS: Map<string, (string * string) list> =
         "getCargo", []
         "getFuel", []
         "getCredits", []
+        "getRepairCost", []
+        "getScrapValue", []
+        "getWaypoint", [ "WAYPOINT_SYMBOL", "waypointSymbol" ]
+        "getMyAgent", []
+        "getPublicAgent", [ "AGENT_SYMBOL", "agentSymbol" ]
+        "getPublicAgents", []
+        "getCooldown", []
+        "getNav", []
+        "getSupplyChain", []
+        "getShipModules", []
+        "getShipMounts", []
+        "getConstruction", [ "WAYPOINT_SYMBOL", "waypointSymbol" ]
+        "getJumpGate", [ "WAYPOINT_SYMBOL", "waypointSymbol" ]
+        "getSystems", []
+        "getSystem", [ "SYSTEM_SYMBOL", "systemSymbol" ]
+        "getFaction", [ "FACTION_SYMBOL", "factionSymbol" ]
+        "getFactions", []
+        "getMyFactions", []
     ]
 
 /// Blockly-block-type -> §8 record field name, for the accessor blocks (Milestone

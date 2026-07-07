@@ -37,6 +37,7 @@ let private mkJobWithCustomBlocks
             returnTarget = None } ]
       lastKnownShip = lastKnownShip
       lastKnownFleetShipCount = Some 2
+      lastKnownContractCount = Some 2
       currentShipStack = []
       dynamicShipLocks = []
       parallelBranches = []
@@ -57,6 +58,7 @@ let private mkJob (instructions: Instruction list) (lastKnownShip: ShipSnapshot 
             returnTarget = None } ]
       lastKnownShip = lastKnownShip
       lastKnownFleetShipCount = Some 2
+      lastKnownContractCount = Some 2
       currentShipStack = []
       dynamicShipLocks = []
       parallelBranches = []
@@ -755,7 +757,7 @@ let ``acceptContract reconciliation via contract fetch, not ship state`` () =
     let job2, effects2 = Step.step clock job1 (ApiResponseReceived("job1", 0, ApiAmbiguous "timeout"))
 
     Assert.Equal(Reconciling(0, DoAcceptContract "contract-1", AcceptContractBaseline "contract-1"), job2.status)
-    Assert.Contains(ReconcileContractState("job1", "contract-1", 0), effects2)
+    Assert.Contains(ReconcileContractState("job1", "contract-1", 0, CheckAccepted), effects2)
 
     // not yet accepted -> retries the original action
     let job3, effects3 = Step.step clock job2 (ApiResponseReceived("job1", 0, ReconciliationContract false))
@@ -767,10 +769,45 @@ let ``acceptContract reconciliation via contract fetch, not ship state`` () =
     let job3b, _ = Step.step clock job2b (ApiResponseReceived("job1", 0, ReconciliationContract true))
     Assert.Equal(Completed, job3b.status)
 
-/// §14 follow-up regression test: `acceptContract`/`purchaseShip` never read a ship
-/// snapshot, so a ship-agnostic job (`lastKnownShip = None`, e.g. one started with no
-/// ship at all) must still be able to run them — before the `emitApiAction` fix, *any*
-/// `ApiAction` (including these two) was incorrectly gated behind `Some ship`.
+[<Fact>]
+let ``fulfillContract happy path advances immediately, no ship change`` () =
+    let clock = fakeClock (ref epoch)
+
+    let job0 =
+        mkJob [ ApiAction("b1", "fulfillContract", Map [ "contractId", Literal(StringLit "contract-1") ]) ] (Some defaultShip)
+
+    let job1, _ = Step.step clock job0 WakeTick
+    Assert.Equal(AwaitingApiResponse(0, DoFulfillContract "contract-1", FulfillContractBaseline "contract-1"), job1.status)
+
+    let job2, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, FulfillContractOk true))
+    Assert.Equal(Completed, job2.status)
+
+[<Fact>]
+let ``fulfillContract reconciliation via contract fetch, not ship state`` () =
+    let clock = fakeClock (ref epoch)
+
+    let job0 =
+        mkJob [ ApiAction("b1", "fulfillContract", Map [ "contractId", Literal(StringLit "contract-1") ]) ] (Some defaultShip)
+
+    let job1, _ = Step.step clock job0 WakeTick
+    let job2, effects2 = Step.step clock job1 (ApiResponseReceived("job1", 0, ApiAmbiguous "timeout"))
+
+    Assert.Equal(Reconciling(0, DoFulfillContract "contract-1", FulfillContractBaseline "contract-1"), job2.status)
+    Assert.Contains(ReconcileContractState("job1", "contract-1", 0, CheckFulfilled), effects2)
+
+    let job3, effects3 = Step.step clock job2 (ApiResponseReceived("job1", 0, ReconciliationContractFulfilled false))
+    Assert.Equal(AwaitingApiResponse(1, DoFulfillContract "contract-1", FulfillContractBaseline "contract-1"), job3.status)
+    Assert.Contains(QueueApiCall("job1", Some "SHIP-1", DoFulfillContract "contract-1", 1), effects3)
+
+    let job2b, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, ApiAmbiguous "timeout"))
+    let job3b, _ = Step.step clock job2b (ApiResponseReceived("job1", 0, ReconciliationContractFulfilled true))
+    Assert.Equal(Completed, job3b.status)
+
+/// §14 follow-up regression test: `acceptContract`/`fulfillContract`/`purchaseShip`
+/// never read a ship snapshot, so a ship-agnostic job (`lastKnownShip = None`, e.g.
+/// one started with no ship at all) must still be able to run them — before the
+/// `emitApiAction` fix, *any* `ApiAction` (including these) was incorrectly gated
+/// behind `Some ship`.
 [<Fact>]
 let ``acceptContract and purchaseShip succeed even with no ship at all`` () =
     let clock = fakeClock (ref epoch)
@@ -1042,6 +1079,36 @@ let ``purchaseShip reconciliation via fleet fetch, not ship state`` () =
     let job3b, _ = Step.step clock job2b (ApiResponseReceived("job1", 0, ReconciliationFleet 3))
     Assert.Equal(Completed, job3b.status)
     Assert.Equal(Some 3, job3b.lastKnownFleetShipCount)
+
+[<Fact>]
+let ``negotiateContract happy path advances immediately, updates contract count`` () =
+    let clock = fakeClock (ref epoch)
+    let job0 = mkJob [ ApiAction("b1", "negotiateContract", Map.empty) ] (Some defaultShip)
+    let job1, _ = Step.step clock job0 WakeTick
+    Assert.Equal(AwaitingApiResponse(0, DoNegotiateContract, ContractsCountBaseline 2), job1.status)
+
+    let job2, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, NegotiateContractOk "fake-contract-3"))
+    Assert.Equal(Completed, job2.status)
+    Assert.Equal(Some 3, job2.lastKnownContractCount)
+
+[<Fact>]
+let ``negotiateContract reconciliation via contract-list fetch, not ship state`` () =
+    let clock = fakeClock (ref epoch)
+    let job0 = mkJob [ ApiAction("b1", "negotiateContract", Map.empty) ] (Some defaultShip)
+    let job1, _ = Step.step clock job0 WakeTick
+    let job2, effects2 = Step.step clock job1 (ApiResponseReceived("job1", 0, ApiAmbiguous "timeout"))
+
+    Assert.Equal(Reconciling(0, DoNegotiateContract, ContractsCountBaseline 2), job2.status)
+    Assert.Contains(ReconcileContractsState("job1", 0), effects2)
+
+    let job3, effects3 = Step.step clock job2 (ApiResponseReceived("job1", 0, ReconciliationContracts 2))
+    Assert.Equal(AwaitingApiResponse(1, DoNegotiateContract, ContractsCountBaseline 2), job3.status)
+    Assert.Contains(QueueApiCall("job1", Some "SHIP-1", DoNegotiateContract, 1), effects3)
+
+    let job2b, _ = Step.step clock job1 (ApiResponseReceived("job1", 0, ApiAmbiguous "timeout"))
+    let job3b, _ = Step.step clock job2b (ApiResponseReceived("job1", 0, ReconciliationContracts 3))
+    Assert.Equal(Completed, job3b.status)
+    Assert.Equal(Some 3, job3b.lastKnownContractCount)
 
 [<Fact>]
 let ``refuel happy path advances immediately, updates ship fuel`` () =

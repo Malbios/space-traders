@@ -237,10 +237,12 @@ let private mapBranchEffect (branchId: string) (effect: Effect) : Effect option 
         Some(QueueBranchApiCall(jobId, branchId, shipSymbol, action, attemptNumber))
     | ReconcileShipState(jobId, shipSymbol, attemptNumber) ->
         Some(ReconcileBranchShipState(jobId, branchId, shipSymbol, attemptNumber))
-    | ReconcileContractState(jobId, contractId, attemptNumber) ->
-        Some(ReconcileBranchContractState(jobId, branchId, contractId, attemptNumber))
+    | ReconcileContractState(jobId, contractId, attemptNumber, field) ->
+        Some(ReconcileBranchContractState(jobId, branchId, contractId, attemptNumber, field))
     | ReconcileFleetState(jobId, attemptNumber) ->
         Some(ReconcileBranchFleetState(jobId, branchId, attemptNumber))
+    | ReconcileContractsState(jobId, attemptNumber) ->
+        Some(ReconcileBranchContractsState(jobId, branchId, attemptNumber))
     | QueueInfoRead(jobId, shipSymbol, infoType, args, attemptNumber, resultTarget) ->
         Some(QueueBranchInfoRead(jobId, branchId, shipSymbol, infoType, args, attemptNumber, resultTarget))
     | AcquireShipScope(jobId, blockId, shipSymbol, hasElse) ->
@@ -255,6 +257,7 @@ let private mapBranchEffect (branchId: string) (effect: Effect) : Effect option 
     | ReconcileBranchShipState _
     | ReconcileBranchContractState _
     | ReconcileBranchFleetState _
+    | ReconcileBranchContractsState _
     | QueueBranchInfoRead _
     | AcquireBranchShipScope _ -> Some effect
 
@@ -297,11 +300,13 @@ let private reconcile (baseline: ActionBaseline) (current: ShipSnapshot) : bool 
         | None, Some _ -> true
         | _, None -> false
     | FuelBaseline unitsBefore -> current.fuelCurrent <> unitsBefore
-    // `AcceptContractBaseline`/`FleetBaseline` never reach this function — they
-    // reconcile via `ReconciliationContract`/`ReconciliationFleet`, handled directly
-    // in `handleApiResponse` (no `ShipSnapshot` signal exists for either).
+    // `AcceptContractBaseline`/`FleetBaseline`/`ContractsCountBaseline` never reach
+    // this function — they reconcile via contract/fleet fetches, handled directly in
+    // `handleApiResponse` (no `ShipSnapshot` signal exists for any of them).
     | AcceptContractBaseline _
-    | FleetBaseline _ -> failwith "AcceptContractBaseline/FleetBaseline reconcile via contract/fleet fetch, not ship state."
+    | FulfillContractBaseline _
+    | FleetBaseline _
+    | ContractsCountBaseline _ -> failwith "AcceptContractBaseline/FulfillContractBaseline/FleetBaseline/ContractsCountBaseline reconcile via contract/fleet fetch, not ship state."
 
 // --- Pause/resume/cancel (§14/§15, Milestone 7) -------------------------------------
 
@@ -751,15 +756,18 @@ and private emitApiAction
         { job with status = AwaitingApiResponse(0, action, baseline) },
         [ LogMessage(job.jobId, logText); QueueApiCall(job.jobId, currentShipSymbol job, action, 0) ]
 
-    // `acceptContract`/`purchaseShip` never read a ship snapshot (they reconcile via
-    // `AcceptContractBaseline`/`FleetBaseline` instead, §13's explicit allowance) — so
-    // unlike every other action type, they must not be gated behind `lastKnownShip`.
-    // A ship-agnostic job (§14 follow-up) can reach either of these with
-    // `lastKnownShip = None`, and that's fine.
+    // `acceptContract`/`fulfillContract`/`purchaseShip` never read a ship snapshot (they
+    // reconcile via `AcceptContractBaseline`/`FulfillContractBaseline`/`FleetBaseline`
+    // instead, §13's explicit allowance) — so unlike every other action type, they must
+    // not be gated behind `lastKnownShip`. A ship-agnostic job (§14 follow-up) can reach
+    // any of these with `lastKnownShip = None`, and that's fine.
     match actionType with
     | "acceptContract" ->
         let contractId = requireArg "contractId" |> Eval.asString
         awaiting (AcceptContractBaseline contractId) (DoAcceptContract contractId) $"Nehme Auftrag {contractId} an..."
+    | "fulfillContract" ->
+        let contractId = requireArg "contractId" |> Eval.asString
+        awaiting (FulfillContractBaseline contractId) (DoFulfillContract contractId) $"Schließe Auftrag {contractId} ab..."
     | "purchaseShip" ->
         let shipType = requireArg "shipType" |> Eval.asString
         let waypointSymbol = requireArg "waypointSymbol" |> Eval.asString
@@ -802,6 +810,76 @@ and private emitApiAction
                     (DoDeliverContract(contractId, tradeSymbol, units))
                     $"Liefere {units}x {tradeSymbol} für Auftrag {contractId}..."
             | "refuel" -> awaiting (FuelBaseline ship.fuelCurrent) DoRefuel "Tanke auf..."
+            | "negotiateContract" ->
+                let contractCountBefore = job.lastKnownContractCount |> Option.defaultValue 0
+
+                awaiting
+                    (ContractsCountBaseline contractCountBefore)
+                    DoNegotiateContract
+                    "Verhandle neuen Auftrag..."
+            | "jettison" ->
+                let tradeSymbol = requireArg "tradeSymbol" |> Eval.asString
+                let units = requireArg "units" |> Eval.asInt
+                awaiting (CargoBaseline ship.cargoUnits) (DoJettison(tradeSymbol, units)) $"Wirf {units}x {tradeSymbol} ab..."
+            | "jump" ->
+                let waypointSymbol = requireArg "waypointSymbol" |> Eval.asString
+                awaiting (NavigateBaseline waypointSymbol) (DoJump waypointSymbol) $"Springe zu {waypointSymbol}..."
+            | "warp" ->
+                let waypointSymbol = requireArg "waypointSymbol" |> Eval.asString
+                awaiting (NavigateBaseline waypointSymbol) (DoWarp waypointSymbol) $"Warpe zu {waypointSymbol}..."
+            | "transferCargo" ->
+                let tradeSymbol = requireArg "tradeSymbol" |> Eval.asString
+                let units = requireArg "units" |> Eval.asInt
+                let targetShipSymbol = requireArg "targetShipSymbol" |> Eval.asString
+
+                awaiting
+                    (CargoBaseline ship.cargoUnits)
+                    (DoTransferCargo(tradeSymbol, units, targetShipSymbol))
+                    $"Übertrage {units}x {tradeSymbol} auf {targetShipSymbol}..."
+            | "siphon" ->
+                awaiting (ExtractBaseline(ship.cooldownExpiration, ship.cargoUnits)) DoSiphon "Entnehme Gas..."
+            | "scrapShip" ->
+                let shipCountBefore = job.lastKnownFleetShipCount |> Option.defaultValue 0
+                awaiting (FleetBaseline shipCountBefore) DoScrapShip "Verschrotte Schiff..."
+            | "repair" -> awaiting (FuelBaseline ship.fuelCurrent) DoRepair "Repariere Schiff..."
+            | "refine" ->
+                let produce = requireArg "produce" |> Eval.asString
+                awaiting (CargoBaseline ship.cargoUnits) (DoRefine produce) $"Veredle zu {produce}..."
+            | "scanShips" -> awaiting (SurveyBaseline ship.cooldownExpiration) DoScanShips "Scanne Schiffe..."
+            | "scanSystems" -> awaiting (SurveyBaseline ship.cooldownExpiration) DoScanSystems "Scanne Systeme..."
+            | "scanWaypoints" -> awaiting (SurveyBaseline ship.cooldownExpiration) DoScanWaypoints "Scanne Wegpunkte..."
+            | "installModule" ->
+                let moduleSymbol = requireArg "moduleSymbol" |> Eval.asString
+                awaiting (DockOrbitBaseline ship.navStatus) (DoInstallModule moduleSymbol) $"Installiere Modul {moduleSymbol}..."
+            | "removeModule" ->
+                let moduleSymbol = requireArg "moduleSymbol" |> Eval.asString
+                awaiting (DockOrbitBaseline ship.navStatus) (DoRemoveModule moduleSymbol) $"Entferne Modul {moduleSymbol}..."
+            | "installMount" ->
+                let mountSymbol = requireArg "mountSymbol" |> Eval.asString
+                awaiting (DockOrbitBaseline ship.navStatus) (DoInstallMount mountSymbol) $"Installiere Aufsatz {mountSymbol}..."
+            | "removeMount" ->
+                let mountSymbol = requireArg "mountSymbol" |> Eval.asString
+                awaiting (DockOrbitBaseline ship.navStatus) (DoRemoveMount mountSymbol) $"Entferne Aufsatz {mountSymbol}..."
+            | "createChart" -> awaiting (SurveyBaseline ship.cooldownExpiration) DoCreateChart "Erstelle Karte..."
+            | "extractWithSurvey" ->
+                let surveySignature = requireArg "surveySignature" |> Eval.asString
+
+                awaiting
+                    (ExtractBaseline(ship.cooldownExpiration, ship.cargoUnits))
+                    (DoExtractWithSurvey surveySignature)
+                    "Baue mit Vermessung ab..."
+            | "supplyConstruction" ->
+                let waypointSymbol = requireArg "waypointSymbol" |> Eval.asString
+                let tradeSymbol = requireArg "tradeSymbol" |> Eval.asString
+                let units = requireArg "units" |> Eval.asInt
+
+                awaiting
+                    (CargoBaseline ship.cargoUnits)
+                    (DoSupplyConstruction(waypointSymbol, tradeSymbol, units))
+                    $"Liefere {units}x {tradeSymbol} für Bau..."
+            | "patchShipNav" ->
+                let flightMode = requireArg "flightMode" |> Eval.asString
+                awaiting (DockOrbitBaseline ship.navStatus) (DoPatchShipNav flightMode) $"Setze Flugmodus auf {flightMode}..."
             | other ->
                 let msg = $"Unbekannte Aktion: {other}"
                 { job with status = Failed msg }, [ JobFailed(job.jobId, msg) ]
@@ -818,8 +896,10 @@ and private handleApiResponse (clock: Clock) (job: JobState) (attemptNumber: int
     | AwaitingApiResponse(attempt, action, baseline), ApiAmbiguous _ when attempt = attemptNumber ->
         let reconcileEffect =
             match baseline with
-            | AcceptContractBaseline contractId -> ReconcileContractState(job.jobId, contractId, attempt)
+            | AcceptContractBaseline contractId -> ReconcileContractState(job.jobId, contractId, attempt, CheckAccepted)
+            | FulfillContractBaseline contractId -> ReconcileContractState(job.jobId, contractId, attempt, CheckFulfilled)
             | FleetBaseline _ -> ReconcileFleetState(job.jobId, attempt)
+            | ContractsCountBaseline _ -> ReconcileContractsState(job.jobId, attempt)
             | _ -> ReconcileShipState(job.jobId, currentShipSymbol job, attempt)
 
         { job with status = Reconciling(attempt, action, baseline) },
@@ -934,6 +1014,27 @@ and private handleApiResponse (clock: Clock) (job: JobState) (attemptNumber: int
                 "Auftrag konnte nicht angenommen werden."
 
         settleOrDefer { job with status = Running; log = logText :: job.log } [] (fun j -> advance clock (advanceJobPosition j))
+    | AwaitingApiResponse(attempt, _, _), FulfillContractOk fulfilled when attempt = attemptNumber ->
+        let logText =
+            if fulfilled then
+                "Auftrag abgeschlossen."
+            else
+                "Auftrag konnte nicht abgeschlossen werden."
+
+        settleOrDefer { job with status = Running; log = logText :: job.log } [] (fun j -> advance clock (advanceJobPosition j))
+    | AwaitingApiResponse(attempt, _, baseline), NegotiateContractOk contractId when attempt = attemptNumber ->
+        let contractCountAfter =
+            match baseline with
+            | ContractsCountBaseline countBefore -> countBefore + 1
+            | _ -> (job.lastKnownContractCount |> Option.defaultValue 0) + 1
+
+        settleOrDefer
+            { job with
+                lastKnownContractCount = Some contractCountAfter
+                status = Running
+                log = $"Neuer Auftrag verhandelt: {contractId}." :: job.log }
+            []
+            (fun j -> advance clock (advanceJobPosition j))
     | AwaitingApiResponse(attempt, _, _), PurchaseShipOk(newShipSymbol, fleetShipCount) when attempt = attemptNumber ->
         settleOrDefer
             { job with
@@ -952,6 +1053,17 @@ and private handleApiResponse (clock: Clock) (job: JobState) (attemptNumber: int
                 lastKnownShip = Some ship'
                 status = Running
                 log = "Aufgetankt." :: job.log }
+            []
+            (fun j -> advance clock (advanceJobPosition j))
+    | AwaitingApiResponse(attempt, _, _), ActionOk when attempt = attemptNumber ->
+        settleOrDefer { job with status = Running; log = "Erledigt." :: job.log } [] (fun j -> advance clock (advanceJobPosition j))
+    | AwaitingApiResponse(attempt, _, _), ScrapOk fleetShipCount when attempt = attemptNumber ->
+        settleOrDefer
+            { job with
+                lastKnownFleetShipCount = Some fleetShipCount
+                lastKnownShip = None
+                status = Running
+                log = "Schiff verschrottet." :: job.log }
             []
             (fun j -> advance clock (advanceJobPosition j))
     | Reconciling(attempt, action, baseline), ReconciliationShip current when attempt = attemptNumber ->
@@ -1035,7 +1147,9 @@ and private handleApiResponse (clock: Clock) (job: JobState) (attemptNumber: int
                     []
                     (fun j -> advance clock (advanceJobPosition j))
             | AcceptContractBaseline _
-            | FleetBaseline _ -> failwith "AcceptContractBaseline/FleetBaseline never pair with ReconciliationShip."
+            | FulfillContractBaseline _
+            | FleetBaseline _
+            | ContractsCountBaseline _ -> failwith "AcceptContractBaseline/FulfillContractBaseline/FleetBaseline/ContractsCountBaseline never pair with ReconciliationShip."
         else
             { job' with status = AwaitingApiResponse(attempt + 1, action, baseline) },
             [ LogMessage(job.jobId, "Aktion war noch nicht erfolgreich, versuche erneut...")
@@ -1052,9 +1166,21 @@ and private handleApiResponse (clock: Clock) (job: JobState) (attemptNumber: int
             { job with status = AwaitingApiResponse(attempt + 1, action, baseline) },
             [ LogMessage(job.jobId, "Aktion war noch nicht erfolgreich, versuche erneut...")
               QueueApiCall(job.jobId, currentShipSymbol job, action, attempt + 1) ]
+    | Reconciling(attempt, action, baseline), ReconciliationContractFulfilled fulfilled when attempt = attemptNumber ->
+        if fulfilled then
+            settleOrDefer
+                { job with
+                    status = Running
+                    log = "Bestätigt: Auftrag wurde bereits abgeschlossen." :: job.log }
+                []
+                (fun j -> advance clock (advanceJobPosition j))
+        else
+            { job with status = AwaitingApiResponse(attempt + 1, action, baseline) },
+            [ LogMessage(job.jobId, "Aktion war noch nicht erfolgreich, versuche erneut...")
+              QueueApiCall(job.jobId, currentShipSymbol job, action, attempt + 1) ]
     | Reconciling(attempt, action, baseline), ReconciliationFleet shipCount when attempt = attemptNumber ->
-        match baseline with
-        | FleetBaseline shipCountBefore when shipCount > shipCountBefore ->
+        match baseline, action with
+        | FleetBaseline shipCountBefore, DoPurchaseShip _ when shipCount > shipCountBefore ->
             settleOrDefer
                 { job with
                     lastKnownFleetShipCount = Some shipCount
@@ -1062,9 +1188,38 @@ and private handleApiResponse (clock: Clock) (job: JobState) (attemptNumber: int
                     log = "Bestätigt: Schiff wurde bereits gekauft." :: job.log }
                 []
                 (fun j -> advance clock (advanceJobPosition j))
-        | _ ->
+        | FleetBaseline shipCountBefore, DoScrapShip when shipCount < shipCountBefore ->
+            settleOrDefer
+                { job with
+                    lastKnownFleetShipCount = Some shipCount
+                    lastKnownShip = None
+                    status = Running
+                    log = "Bestätigt: Schiff wurde bereits verschrottet." :: job.log }
+                []
+                (fun j -> advance clock (advanceJobPosition j))
+        | FleetBaseline _, _ ->
             { job with
                 lastKnownFleetShipCount = Some shipCount
+                status = AwaitingApiResponse(attempt + 1, action, baseline) },
+            [ LogMessage(job.jobId, "Aktion war noch nicht erfolgreich, versuche erneut...")
+              QueueApiCall(job.jobId, currentShipSymbol job, action, attempt + 1) ]
+        | _ ->
+            { job with status = AwaitingApiResponse(attempt + 1, action, baseline) },
+            [ LogMessage(job.jobId, "Aktion war noch nicht erfolgreich, versuche erneut...")
+              QueueApiCall(job.jobId, currentShipSymbol job, action, attempt + 1) ]
+    | Reconciling(attempt, action, baseline), ReconciliationContracts contractCount when attempt = attemptNumber ->
+        match baseline with
+        | ContractsCountBaseline countBefore when contractCount > countBefore ->
+            settleOrDefer
+                { job with
+                    lastKnownContractCount = Some contractCount
+                    status = Running
+                    log = "Bestätigt: Auftrag wurde bereits verhandelt." :: job.log }
+                []
+                (fun j -> advance clock (advanceJobPosition j))
+        | _ ->
+            { job with
+                lastKnownContractCount = Some contractCount
                 status = AwaitingApiResponse(attempt + 1, action, baseline) },
             [ LogMessage(job.jobId, "Aktion war noch nicht erfolgreich, versuche erneut...")
               QueueApiCall(job.jobId, currentShipSymbol job, action, attempt + 1) ]
@@ -1073,8 +1228,10 @@ and private handleApiResponse (clock: Clock) (job: JobState) (attemptNumber: int
         // unlike the original action, it has no side effects.
         let reconcileEffect =
             match baseline with
-            | AcceptContractBaseline contractId -> ReconcileContractState(job.jobId, contractId, attempt)
+            | AcceptContractBaseline contractId -> ReconcileContractState(job.jobId, contractId, attempt, CheckAccepted)
+            | FulfillContractBaseline contractId -> ReconcileContractState(job.jobId, contractId, attempt, CheckFulfilled)
             | FleetBaseline _ -> ReconcileFleetState(job.jobId, attempt)
+            | ContractsCountBaseline _ -> ReconcileContractsState(job.jobId, attempt)
             | _ -> ReconcileShipState(job.jobId, currentShipSymbol job, attempt)
 
         job, [ reconcileEffect ]

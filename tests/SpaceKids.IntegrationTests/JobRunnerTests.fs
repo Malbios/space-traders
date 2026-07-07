@@ -162,6 +162,7 @@ let private startJobSync
             (Some shipSymbol)
             (Some initialShip)
             2
+            2
         |> Async.RunSynchronously
     with
     | Ok jobId -> jobId
@@ -195,6 +196,7 @@ let ``a ship-agnostic program starts and completes with no ship selected, taking
                     (program instructions)
                     None
                     None
+                    2
                     2
                 |> Async.RunSynchronously
             with
@@ -389,6 +391,7 @@ let ``a second job on the same ship is rejected while the first is still active`
                 (Some "FAKE-AGENT-1")
                 (Some initialShip)
                 2
+                2
             |> Async.RunSynchronously
 
         match result with
@@ -573,6 +576,7 @@ let ``the sweep pauses a job whose lease expired without a competing acquirer, f
                 (Some "FAKE-AGENT-1")
                 (Some initialShip)
                 2
+                2
             |> Async.RunSynchronously
 
         match result with
@@ -719,6 +723,47 @@ let ``acceptContract reconciles after an ambiguous failure without a duplicate a
         | None -> Assert.Fail("job not found"))
 
 [<Fact>]
+let ``fulfillContract reconciles after an ambiguous failure without a duplicate fulfill`` () =
+    use fixture = new JobFixture()
+
+    withJobTest fixture.RawClient (fun dbPath ->
+        App.dropAfterProcessingDelayMs <- 200
+
+        fixture.Client.Extract(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously |> ignore
+
+        fixture.Client.DeliverContract(App.seededToken, "fake-contract-1", "FAKE-AGENT-1", "IRON", 10)
+        |> Async.RunSynchronously
+        |> ignore
+
+        let shortTimeoutClient = fixture.Factory.CreateClient()
+        shortTimeoutClient.Timeout <- TimeSpan.FromMilliseconds(100.0)
+        let client = SpaceTradersClient(shortTimeoutClient)
+
+        let initialShip = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+
+        let instructions =
+            [ ApiAction("b1", "fulfillContract", Map [ "contractId", Literal(StringLit "fake-contract-1") ]) ]
+
+        let jobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" (program instructions) initialShip
+
+        setFaultMode fixture.RawClient "drop-after-processing"
+
+        withPumpedQueue 20.0 (fun () ->
+            let stepTask = JobRunner.stepOnce client dbPath 1 App.seededToken jobId |> Async.StartAsTask
+            Thread.Sleep(1500)
+            setFaultMode fixture.RawClient "normal"
+            stepTask.Wait(TimeSpan.FromSeconds(10.0)) |> ignore)
+
+        match JobRunner.getStatus jobId with
+        | Some job -> Assert.Equal(Completed, job.status)
+        | None -> Assert.Fail("job not found")
+
+        let updated =
+            fixture.Client.GetContract(App.seededToken, "fake-contract-1") |> Async.RunSynchronously
+
+        Assert.True(updated.contract.fulfilled))
+
+[<Fact>]
 let ``purchaseShip reconciles after an ambiguous failure without a duplicate purchase`` () =
     use fixture = new JobFixture()
 
@@ -755,6 +800,37 @@ let ``purchaseShip reconciles after an ambiguous failure without a duplicate pur
 
         let afterCount = (fixture.Client.ListShips(App.seededToken) |> Async.RunSynchronously) |> List.length
         // exactly one new ship, not two, despite the ambiguous failure and retry.
+        Assert.Equal(beforeCount + 1, afterCount))
+
+[<Fact>]
+let ``negotiateContract reconciles after an ambiguous failure without a duplicate negotiate`` () =
+    use fixture = new JobFixture()
+
+    withJobTest fixture.RawClient (fun dbPath ->
+        App.dropAfterProcessingDelayMs <- 200
+
+        let shortTimeoutClient = fixture.Factory.CreateClient()
+        shortTimeoutClient.Timeout <- TimeSpan.FromMilliseconds(100.0)
+        let client = SpaceTradersClient(shortTimeoutClient)
+
+        let initialShip = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+        let beforeCount = (fixture.Client.ListContracts(App.seededToken) |> Async.RunSynchronously) |> List.length
+        let instructions = [ ApiAction("b1", "negotiateContract", Map.empty) ]
+        let jobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" (program instructions) initialShip
+
+        setFaultMode fixture.RawClient "drop-after-processing"
+
+        withPumpedQueue 20.0 (fun () ->
+            let stepTask = JobRunner.stepOnce client dbPath 1 App.seededToken jobId |> Async.StartAsTask
+            Thread.Sleep(1500)
+            setFaultMode fixture.RawClient "normal"
+            stepTask.Wait(TimeSpan.FromSeconds(10.0)) |> ignore)
+
+        match JobRunner.getStatus jobId with
+        | Some job -> Assert.Equal(Completed, job.status)
+        | None -> Assert.Fail("job not found")
+
+        let afterCount = (fixture.Client.ListContracts(App.seededToken) |> Async.RunSynchronously) |> List.length
         Assert.Equal(beforeCount + 1, afterCount))
 
 [<Fact>]

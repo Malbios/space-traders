@@ -202,3 +202,72 @@ let ``acceptContract accepts a not-yet-accepted seeded contract`` () =
             withPumpedQueue 20.0 (fun () -> fixture.Client.GetContract(App.seededToken, "fake-contract-2") |> Async.RunSynchronously)
 
         Assert.True(updated.contract.accepted))
+
+[<Fact>]
+let ``fulfillContract completes an accepted contract whose deliveries are done`` () =
+    use fixture = new AgentFixture()
+
+    withAgentTest (fun dbPath ->
+        fixture.Client.Extract(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously |> ignore
+
+        fixture.Client.DeliverContract(App.seededToken, "fake-contract-1", "FAKE-AGENT-1", "IRON", 10)
+        |> Async.RunSynchronously
+        |> ignore
+
+        let result =
+            withPumpedQueue 20.0 (fun () ->
+                AgentRemoting.fulfillContract fixture.Client dbPath App.seededToken "fake-contract-1"
+                |> Async.RunSynchronously)
+
+        Assert.Equal(Ok(), result)
+
+        let updated =
+            withPumpedQueue 20.0 (fun () -> fixture.Client.GetContract(App.seededToken, "fake-contract-1") |> Async.RunSynchronously)
+
+        Assert.True(updated.contract.fulfilled))
+
+[<Fact>]
+let ``loadFactions returns all factions and the agent's reputations`` () =
+    use fixture = new AgentFixture()
+
+    withAgentTest (fun dbPath ->
+        let result =
+            withPumpedQueue 20.0 (fun () ->
+                AgentRemoting.loadFactions fixture.Client dbPath App.seededToken |> Async.RunSynchronously)
+
+        match result with
+        | Ok snapshot ->
+            Assert.Contains(snapshot.factions, fun f -> f.symbol = "COSMIC")
+            Assert.Contains(snapshot.factions, fun f -> f.symbol = "GALACTIC")
+            Assert.True(snapshot.reputations |> List.exists (fun (s, r) -> s = "COSMIC" && r = 12))
+            Assert.True(snapshot.reputations |> List.exists (fun (s, r) -> s = "GALACTIC" && r = 3))
+        | Error message -> Assert.Fail(message))
+
+[<Fact>]
+let ``loadPublicAgents returns seeded public agents`` () =
+    use fixture = new AgentFixture()
+
+    withAgentTest (fun dbPath ->
+        let result =
+            withPumpedQueue 20.0 (fun () ->
+                AgentRemoting.loadPublicAgents fixture.Client dbPath App.seededToken |> Async.RunSynchronously)
+
+        match result with
+        | Ok agents ->
+            Assert.Contains(agents, fun a -> a.symbol = "FAKE-AGENT")
+            Assert.Contains(agents, fun a -> a.symbol = "OTHER-AGENT")
+        | Error message -> Assert.Fail(message))
+
+[<Fact>]
+let ``loadSystemWaypoints returns waypoints for a different system`` () =
+    use fixture = new AgentFixture()
+
+    withAgentTest (fun dbPath ->
+        let result =
+            withPumpedQueue 20.0 (fun () ->
+                AgentRemoting.loadSystemWaypoints fixture.Client dbPath App.seededToken "X1-NEARBY"
+                |> Async.RunSynchronously)
+
+        match result with
+        | Ok waypoints -> Assert.NotEmpty(waypoints)
+        | Error message -> Assert.Fail(message))

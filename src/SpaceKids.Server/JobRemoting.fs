@@ -153,6 +153,9 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
 
                                 let! agent = RequestQueue.enqueue dbPath 1 "getAgent" None (fun () -> client.GetAgent(token))
 
+                                let! contracts =
+                                    RequestQueue.enqueue dbPath 1 "listContracts" None (fun () -> client.ListContracts(token))
+
                                 // `programs.workspace_id` references `workspaces(id)`
                                 // — ensure that row exists regardless of whether the
                                 // player has clicked "Speichern" yet; the program
@@ -170,6 +173,7 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                                         shipSymbol
                                         shipOpt
                                         agent.shipCount
+                                        (List.length contracts)
                     }
             step =
                 fun jobId ->

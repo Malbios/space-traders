@@ -148,9 +148,50 @@ let rec private checkFlowStatements (locale: Locale) (insideLoop: bool) (instruc
 /// apart. Derived from which `QueuedAction`/info-read handlers actually read a ship
 /// symbol server-side (`JobRunner.fs`'s `runAction`/`runInfoRead`).
 let shipScopedActionTypes =
-    set [ "navigate"; "orbit"; "dock"; "extract"; "buyGood"; "sellGood"; "survey"; "refuel"; "deliverContract" ]
+    set [
+        "navigate"
+        "orbit"
+        "dock"
+        "extract"
+        "buyGood"
+        "sellGood"
+        "survey"
+        "refuel"
+        "deliverContract"
+        "negotiateContract"
+        "createChart"
+        "extractWithSurvey"
+        "installModule"
+        "installMount"
+        "jettison"
+        "jump"
+        "refine"
+        "removeModule"
+        "removeMount"
+        "repair"
+        "scanShips"
+        "scanSystems"
+        "scanWaypoints"
+        "scrapShip"
+        "siphon"
+        "transferCargo"
+        "warp"
+        "supplyConstruction"
+        "patchShipNav"
+    ]
 
-let shipScopedInfoTypes = set [ "getShipInfo"; "getCargo"; "getFuel" ]
+let shipScopedInfoTypes =
+    set [
+        "getShipInfo"
+        "getCargo"
+        "getFuel"
+        "getRepairCost"
+        "getScrapValue"
+        "getCooldown"
+        "getNav"
+        "getShipModules"
+        "getShipMounts"
+    ]
 
 let rec private instructionNeedsShip (instr: Instruction) : bool =
     match instr with

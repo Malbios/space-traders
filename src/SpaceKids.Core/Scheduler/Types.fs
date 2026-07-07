@@ -71,8 +71,7 @@ type ShipSnapshot =
       /// Milestone 9 (Part A) — ship-local reconciliation signal for `refuel`.
       fuelCurrent: int }
 
-/// All 11 catalog actions (Milestone 6 added the first 6; Milestone 9/Part A adds
-/// survey/deliverContract/acceptContract/purchaseShip/refuel).
+/// All catalog ship/fleet actions wired into the scheduler.
 type QueuedAction =
     | DoNavigate of destination: string
     | DoOrbit
@@ -83,8 +82,29 @@ type QueuedAction =
     | DoSurvey
     | DoDeliverContract of contractId: string * tradeSymbol: string * units: int
     | DoAcceptContract of contractId: string
+    | DoFulfillContract of contractId: string
+    | DoNegotiateContract
     | DoPurchaseShip of shipType: string * waypointSymbol: string
     | DoRefuel
+    | DoJettison of tradeSymbol: string * units: int
+    | DoJump of waypointSymbol: string
+    | DoWarp of waypointSymbol: string
+    | DoTransferCargo of tradeSymbol: string * units: int * targetShipSymbol: string
+    | DoSiphon
+    | DoScrapShip
+    | DoRepair
+    | DoRefine of produce: string
+    | DoScanShips
+    | DoScanSystems
+    | DoScanWaypoints
+    | DoInstallModule of moduleSymbol: string
+    | DoRemoveModule of moduleSymbol: string
+    | DoInstallMount of mountSymbol: string
+    | DoRemoveMount of mountSymbol: string
+    | DoCreateChart
+    | DoExtractWithSurvey of surveySignature: string
+    | DoSupplyConstruction of waypointSymbol: string * tradeSymbol: string * units: int
+    | DoPatchShipNav of flightMode: string
 
 /// Per-action pre-call baseline, captured from `JobState.lastKnownShip` — data
 /// already in hand (§13: "costs nothing, it's bookkeeping of data already in hand"),
@@ -98,7 +118,9 @@ type ActionBaseline =
     | ExtractBaseline of cooldownExpirationBefore: string option * unitsBefore: int
     | SurveyBaseline of cooldownExpirationBefore: string option
     | AcceptContractBaseline of contractId: string
+    | FulfillContractBaseline of contractId: string
     | FleetBaseline of shipCountBefore: int
+    | ContractsCountBaseline of contractCountBefore: int
     | FuelBaseline of unitsBefore: int
 
 /// Mirrors §14's job statuses, minus the DB-only ones — there is no separate
@@ -155,6 +177,9 @@ type JobState =
       /// Populated at job start (a `ListShips` call, same effort as the initial ship
       /// snapshot) and refreshed on every successful purchase/fleet reconciliation.
       lastKnownFleetShipCount: int option
+      /// Contract-list count "last known" bookkeeping for `negotiateContract` —
+      /// analogous to `lastKnownFleetShipCount` for `purchaseShip`.
+      lastKnownContractCount: int option
       /// Flotilla F1: current ship scopes, head = active ship. Empty means fall back
       /// to `shipSymbol`, the primary ship selected at job start. The bool records
       /// whether this scope acquired a dynamic lock that must be released on exit.
@@ -202,12 +227,18 @@ type ApiResult =
     | SurveyOk of cooldownExpiration: string
     | DeliverOk of cargoUnits: int * cargoInventory: Map<string, int> * contractFulfilled: bool
     | AcceptContractOk of accepted: bool
+    | FulfillContractOk of fulfilled: bool
+    | NegotiateContractOk of contractId: string
     | PurchaseShipOk of newShipSymbol: string * fleetShipCount: int
     | RefuelOk of fuelCurrent: int
-    /// Milestone 9/Part A — the two new reconciliation-fetch kinds for actions with
-    /// no ship-local signal (`acceptContract`/`purchaseShip`).
+    | ActionOk
+    | ScrapOk of fleetShipCount: int
+    /// Milestone 9/Part A — reconciliation-fetch kinds for actions with no ship-local
+    /// signal (`acceptContract`/`fulfillContract`/`purchaseShip`/`negotiateContract`).
     | ReconciliationContract of accepted: bool
+    | ReconciliationContractFulfilled of fulfilled: bool
     | ReconciliationFleet of shipCount: int
+    | ReconciliationContracts of contractCount: int
     /// Milestone 9/Part B — an info-read block's result, already converted to a
     /// `Value` (VRecord/VList/VNumber per §8) by the shell.
     | InfoOk of Value
@@ -235,6 +266,12 @@ type WaitReason =
     | ArrivalWait
     | CooldownWait
 
+/// Which contract field a `ReconcileContractState` fetch should compare (accept vs
+/// fulfill — both reconcile via `GET /my/contracts/{id}`, different signals).
+type ContractReconcileField =
+    | CheckAccepted
+    | CheckFulfilled
+
 /// What `step` wants to happen outside the pure core. The shell executes these and,
 /// for `QueueApiCall`/`ReconcileShipState`, eventually feeds an `ApiResponseReceived`
 /// event back in. No direct DB/HTTP/sleep call ever appears in `Step.fs` — only these
@@ -245,11 +282,15 @@ type Effect =
     | ReconcileShipState of jobId: JobId * shipSymbol: string option * attemptNumber: int
     | ReconcileBranchShipState of jobId: JobId * branchId: string * shipSymbol: string option * attemptNumber: int
     /// Milestone 9/Part A — reconciliation via a contract/fleet fetch rather than a
-    /// ship fetch, for `acceptContract`/`purchaseShip` (see `ActionBaseline`).
-    | ReconcileContractState of jobId: JobId * contractId: string * attemptNumber: int
+    /// ship fetch, for `acceptContract`/`fulfillContract`/`purchaseShip`/
+    /// `negotiateContract` (see `ActionBaseline`).
+    | ReconcileContractState of jobId: JobId * contractId: string * attemptNumber: int * field: ContractReconcileField
     | ReconcileFleetState of jobId: JobId * attemptNumber: int
-    | ReconcileBranchContractState of jobId: JobId * branchId: string * contractId: string * attemptNumber: int
+    | ReconcileContractsState of jobId: JobId * attemptNumber: int
+    | ReconcileBranchContractState of
+        jobId: JobId * branchId: string * contractId: string * attemptNumber: int * field: ContractReconcileField
     | ReconcileBranchFleetState of jobId: JobId * branchId: string * attemptNumber: int
+    | ReconcileBranchContractsState of jobId: JobId * branchId: string * attemptNumber: int
     /// Milestone 9/Part B (§8/§14) — an info-read block's fetch. Always safe to
     /// retry (a GET), so unlike `QueueApiCall` there is no baseline to carry.
     | QueueInfoRead of

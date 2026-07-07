@@ -13,18 +13,54 @@ let private loadRestOfState (client: SpaceTradersClient) (dbPath: string) (agent
     async {
         let! ships = RequestQueue.enqueue dbPath 1 "GET /my/ships" None (fun () -> client.ListShips(token))
         let! contracts = RequestQueue.enqueue dbPath 1 "GET /my/contracts" None (fun () -> client.ListContracts(token))
+        let hqSystem = Waypoint.systemSymbolOf agent.headquarters
+
+        let! systems =
+            RequestQueue.enqueue dbPath 1 "GET /systems" None (fun () -> client.ListSystems(token))
+
         let! waypoints =
             RequestQueue.enqueue dbPath 1 "GET /systems/{system}/waypoints" None (fun () ->
-                client.ListWaypoints(token, Waypoint.systemSymbolOf agent.headquarters))
+                client.ListWaypoints(token, hqSystem))
+
         let! market =
             RequestQueue.enqueue dbPath 1 "GET /systems/{system}/waypoints/{waypoint}/market" None (fun () ->
-                client.GetMarket(token, Waypoint.systemSymbolOf agent.headquarters, agent.headquarters))
+                client.GetMarket(token, hqSystem, agent.headquarters))
+
         return
             { agent = agent
               ships = ships
               contracts = contracts
+              systems = systems
+              selectedSystemSymbol = hqSystem
               waypoints = waypoints
               markets = [ market ] }
+    }
+
+let loadSystemWaypoints (client: SpaceTradersClient) (dbPath: string) (token: string) (systemSymbol: string) : Async<Result<Waypoint list, string>> =
+    async {
+        try
+            let! waypoints =
+                RequestQueue.enqueue dbPath 1 $"GET /systems/{systemSymbol}/waypoints" None (fun () ->
+                    client.ListWaypoints(token, systemSymbol))
+
+            return Ok waypoints
+        with
+        | SpaceTradersApiException(statusCode, _) ->
+            return Error $"Wegpunkte konnten nicht geladen werden (Status {statusCode})."
+        | ex ->
+            return Error $"Verbindung zu SpaceTraders fehlgeschlagen: {ex.Message}"
+    }
+
+let loadPublicAgents (client: SpaceTradersClient) (dbPath: string) (token: string) : Async<Result<Agent list, string>> =
+    async {
+        try
+            let! agents = RequestQueue.enqueue dbPath 1 "GET /agents" None (fun () -> client.ListAgents(token))
+            return Ok agents
+        with
+        | SpaceTradersApiException(statusCode, _) ->
+            return Error $"Agenten konnten nicht geladen werden (Status {statusCode})."
+        | ex ->
+            return Error $"Verbindung zu SpaceTraders fehlgeschlagen: {ex.Message}"
     }
 
 /// `RequestQueue.enqueue`'s exceptions can arrive wrapped in an
@@ -88,6 +124,43 @@ let acceptContract (client: SpaceTradersClient) (dbPath: string) (token: string)
         with
         | SpaceTradersApiException(statusCode, _) ->
             return Error $"Der Auftrag konnte nicht angenommen werden (Status {statusCode})."
+        | ex ->
+            return Error $"Verbindung zu SpaceTraders fehlgeschlagen: {ex.Message}"
+    }
+
+/// Factions tab: list all factions plus the agent's reputation with each.
+let loadFactions (client: SpaceTradersClient) (dbPath: string) (token: string) : Async<Result<FactionsSnapshot, string>> =
+    async {
+        try
+            let! factions =
+                RequestQueue.enqueue dbPath 1 "GET /factions" None (fun () -> client.ListFactions(token))
+
+            let! reputations =
+                RequestQueue.enqueue dbPath 1 "GET /my/factions" None (fun () -> client.ListMyFactions(token))
+
+            return
+                Ok
+                    { factions = factions
+                      reputations = reputations |> List.map (fun r -> r.symbol, r.reputation) }
+        with
+        | SpaceTradersApiException(statusCode, _) ->
+            return Error $"Fraktionsdaten konnten nicht geladen werden (Status {statusCode})."
+        | ex ->
+            return Error $"Verbindung zu SpaceTraders fehlgeschlagen: {ex.Message}"
+    }
+
+/// Contracts-tab "Fulfill" button — same shape as `acceptContract` above.
+let fulfillContract (client: SpaceTradersClient) (dbPath: string) (token: string) (contractId: string) : Async<Result<unit, string>> =
+    async {
+        try
+            let! _ =
+                RequestQueue.enqueue dbPath 1 $"POST /my/contracts/{contractId}/fulfill" None (fun () ->
+                    client.FulfillContract(token, contractId))
+
+            return Ok ()
+        with
+        | SpaceTradersApiException(statusCode, _) ->
+            return Error $"Der Auftrag konnte nicht abgeschlossen werden (Status {statusCode})."
         | ex ->
             return Error $"Verbindung zu SpaceTraders fehlgeschlagen: {ex.Message}"
     }
@@ -199,5 +272,37 @@ type AgentRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                         match stored with
                         | None -> return Error "Nicht angemeldet."
                         | Some(_, token) -> return! acceptContract client dbPath token contractId
+                    }
+            fulfillContract =
+                fun contractId ->
+                    async {
+                        let! stored = Persistence.AgentRepository.loadStoredAgent dbPath
+                        match stored with
+                        | None -> return Error "Nicht angemeldet."
+                        | Some(_, token) -> return! fulfillContract client dbPath token contractId
+                    }
+            loadFactions =
+                fun () ->
+                    async {
+                        let! stored = Persistence.AgentRepository.loadStoredAgent dbPath
+                        match stored with
+                        | None -> return Error "Nicht angemeldet."
+                        | Some(_, token) -> return! loadFactions client dbPath token
+                    }
+            loadSystemWaypoints =
+                fun systemSymbol ->
+                    async {
+                        let! stored = Persistence.AgentRepository.loadStoredAgent dbPath
+                        match stored with
+                        | None -> return Error "Nicht angemeldet."
+                        | Some(_, token) -> return! loadSystemWaypoints client dbPath token systemSymbol
+                    }
+            loadPublicAgents =
+                fun () ->
+                    async {
+                        let! stored = Persistence.AgentRepository.loadStoredAgent dbPath
+                        match stored with
+                        | None -> return Error "Nicht angemeldet."
+                        | Some(_, token) -> return! loadPublicAgents client dbPath token
                     }
         }
