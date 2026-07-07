@@ -402,6 +402,7 @@ type Model =
         /// Contracts tab: the contract id currently being fulfilled, if any.
         fulfillingContractId: string option
         contractActionError: string option
+        contractsRefreshing: bool
         factionsSnapshot: FactionsSnapshot option
         factionsLoading: bool
         factionsError: string option
@@ -412,6 +413,7 @@ type Model =
         galaxyMapPanX: float
         galaxyMapPanY: float
         galaxyDragging: bool
+        galaxyMapDragMoved: bool
         systemWaypointsLoading: bool
         systemWaypointsError: string option
         pendingGalaxySystem: string option
@@ -496,6 +498,7 @@ let initModel =
         acceptingContractId = None
         fulfillingContractId = None
         contractActionError = None
+        contractsRefreshing = false
         factionsSnapshot = None
         factionsLoading = false
         factionsError = None
@@ -506,6 +509,7 @@ let initModel =
         galaxyMapPanX = 0.0
         galaxyMapPanY = 0.0
         galaxyDragging = false
+        galaxyMapDragMoved = false
         systemWaypointsLoading = false
         systemWaypointsError = None
         pendingGalaxySystem = None
@@ -535,6 +539,7 @@ type Message =
     | TokenSubmitted of Result<DashboardState, string>
     | LoadDashboard
     | RefreshDashboard
+    | RefreshContracts
     | LoadGalaxyCatalog
     | PollGalaxyCatalog
     | GalaxyCatalogLoaded of Result<GalaxyCatalogSnapshot, string>
@@ -638,6 +643,7 @@ type Message =
     | LoadPublicAgents
     | PublicAgentsLoaded of Result<Agent list, string>
     | SelectGalaxySystem of systemSymbol: string
+    | GalaxyMapClick of offsetX: float * offsetY: float * svgSize: float
     | SystemWaypointsLoaded of Result<Waypoint list, string>
     | GalaxyWheel of deltaY: float
     | GalaxyDragStart
@@ -689,6 +695,7 @@ type Strings =
       shipsHeading: string
       shipLine: string * string * string * string -> string
       contractsHeading: string
+      refreshContracts: string
       contractLine: string * string * bool * bool -> string
       tabContracts: string
       contractsActiveHeading: string
@@ -745,6 +752,7 @@ type Strings =
       agentPublicLine: string * string * int64 * int -> string
       refreshGalaxy: string
       refreshSystem: string
+      galaxyMapPartialRender: int * int * int -> string
       galaxySyncProgress: int * int option -> string
       galaxySyncStale: string
 
@@ -880,6 +888,7 @@ let private stringsDe: Strings =
       shipsHeading = "Schiffe"
       shipLine = fun (symbol, role, status, waypoint) -> $"{symbol} — {role} — {status} bei {waypoint}"
       contractsHeading = "Aufträge"
+      refreshContracts = "Aufträge aktualisieren"
       contractLine = fun (id, ``type``, accepted, fulfilled) -> $"{id} ({``type``}) — angenommen: {accepted}, erfüllt: {fulfilled}"
       tabContracts = "Aufträge"
       contractsActiveHeading = "Aktuelle Aufträge"
@@ -939,6 +948,8 @@ let private stringsDe: Strings =
       agentPublicLine = fun (symbol, hq, credits, ships) -> $"{symbol} — HQ {hq}, {credits} Credits, {ships} Schiffe"
       refreshGalaxy = "Galaxie aktualisieren"
       refreshSystem = "System aktualisieren"
+      galaxyMapPartialRender = fun (rendered, visible, total) ->
+          $"{rendered} von {visible} sichtbaren Systemen ({total} gesamt) — reinzoomen für Details"
       galaxySyncProgress = fun (loaded, total) ->
           match total with
           | Some t -> $"Galaxie wird geladen: {loaded}/{t}"
@@ -1092,6 +1103,7 @@ let private stringsEn: Strings =
       shipsHeading = "Ships"
       shipLine = fun (symbol, role, status, waypoint) -> $"{symbol} — {role} — {status} at {waypoint}"
       contractsHeading = "Contracts"
+      refreshContracts = "Reload contracts"
       contractLine = fun (id, ``type``, accepted, fulfilled) -> $"{id} ({``type``}) — accepted: {accepted}, fulfilled: {fulfilled}"
       tabContracts = "Contracts"
       contractsActiveHeading = "Active contracts"
@@ -1151,6 +1163,8 @@ let private stringsEn: Strings =
       agentPublicLine = fun (symbol, hq, credits, ships) -> $"{symbol} — HQ {hq}, {credits} credits, {ships} ships"
       refreshGalaxy = "Reload galaxy"
       refreshSystem = "Reload system"
+      galaxyMapPartialRender = fun (rendered, visible, total) ->
+          $"Showing {rendered} of {visible} visible systems ({total} total) — zoom in for detail"
       galaxySyncProgress = fun (loaded, total) ->
           match total with
           | Some t -> $"Loading galaxy: {loaded}/{t}"
@@ -1290,6 +1304,137 @@ let private applyGalaxySnapshot (state: DashboardState) (catalog: GalaxyCatalogS
         waypoints = waypoints
         markets = markets }
 
+let internal mapViewSize = 400.0
+let internal mapPadding = 30.0
+
+/// Guards against a degenerate single-point (or empty) range, which would
+/// otherwise divide by zero when scaling.
+let internal computeMapBounds (waypoints: Waypoint list) : float * float * float * float =
+    match waypoints with
+    | [] -> (0.0, 1.0, 0.0, 1.0)
+    | _ ->
+        let xs = waypoints |> List.map (fun w -> float w.x)
+        let ys = waypoints |> List.map (fun w -> float w.y)
+        let minX, maxX = List.min xs, List.max xs
+        let minY, maxY = List.min ys, List.max ys
+        let minX, maxX = if minX = maxX then minX - 1.0, maxX + 1.0 else minX, maxX
+        let minY, maxY = if minY = maxY then minY - 1.0, maxY + 1.0 else minY, maxY
+        (minX, maxX, minY, maxY)
+
+/// Y is flipped (SVG is Y-down) so the schematic reads with north up.
+let internal scaleMapPoint (minX, maxX, minY, maxY) (x: float) (y: float) : float * float =
+    let scale = min ((mapViewSize - 2.0 * mapPadding) / (maxX - minX)) ((mapViewSize - 2.0 * mapPadding) / (maxY - minY))
+    let sx = mapPadding + (x - minX) * scale
+    let sy = mapViewSize - (mapPadding + (y - minY) * scale)
+    (sx, sy)
+
+let internal computeGalaxyBounds (systems: StarSystem list) : float * float * float * float =
+    match systems with
+    | [] -> (0.0, 1.0, 0.0, 1.0)
+    | _ ->
+        let xs = systems |> List.map (fun s -> float s.x)
+        let ys = systems |> List.map (fun s -> float s.y)
+        let minX, maxX = List.min xs, List.max xs
+        let minY, maxY = List.min ys, List.max ys
+        let minX, maxX = if minX = maxX then minX - 1.0, maxX + 1.0 else minX, maxX
+        let minY, maxY = if minY = maxY then minY - 1.0, maxY + 1.0 else minY, maxY
+        (minX, maxX, minY, maxY)
+
+/// Cap rendered galaxy-map DOM nodes so zoom/pan stays responsive with a full
+/// universe catalog in memory.
+let internal galaxyMapMaxNodes = 500
+
+let internal galaxyMapViewMargin = 12.0
+
+type GalaxyMapNode =
+    { system: StarSystem
+      sx: float
+      sy: float }
+
+let internal buildGalaxyMapNodes (systems: StarSystem list) (bounds: float * float * float * float) : GalaxyMapNode list =
+    systems
+    |> List.map (fun system ->
+        let sx, sy = scaleMapPoint bounds (float system.x) (float system.y)
+        { system = system; sx = sx; sy = sy })
+
+let internal galaxyMapNodeBudget (zoom: float) : int =
+    if zoom >= 3.0 then 2500
+    elif zoom >= 2.0 then 1200
+    else galaxyMapMaxNodes
+
+let internal filterGalaxyMapNodes
+    (nodes: GalaxyMapNode list)
+    (viewX: float)
+    (viewY: float)
+    (viewSize: float)
+    (maxNodes: int)
+    (alwaysInclude: string list)
+    : GalaxyMapNode list * int =
+    let margin = galaxyMapViewMargin
+
+    let inView (n: GalaxyMapNode) =
+        n.sx >= viewX - margin
+        && n.sx <= viewX + viewSize + margin
+        && n.sy >= viewY - margin
+        && n.sy <= viewY + viewSize + margin
+
+    let visible = nodes |> List.filter inView
+    let total = visible.Length
+    let alwaysSet = Set.ofList alwaysInclude
+
+    let mustKeep =
+        visible |> List.filter (fun n -> alwaysSet.Contains n.system.symbol)
+
+    let pool =
+        visible
+        |> List.filter (fun n -> not (alwaysSet.Contains n.system.symbol))
+        |> List.sortBy (fun n -> n.system.symbol)
+
+    let budget = max 0 (maxNodes - mustKeep.Length)
+
+    let sampled =
+        if pool.Length <= budget then
+            pool
+        else
+            let stride = (float pool.Length / float budget) |> ceil |> int |> max 1
+
+            pool
+            |> List.indexed
+            |> List.filter (fun (i, _) -> i % stride = 0)
+            |> List.map snd
+            |> List.truncate budget
+
+    let rendered =
+        (mustKeep @ sampled) |> List.distinctBy (fun n -> n.system.symbol)
+
+    rendered, total
+
+let internal svgPointFromClick (viewX: float) (viewY: float) (viewSize: float) (offsetX: float) (offsetY: float) (svgSize: float) =
+    let svgX = viewX + offsetX / svgSize * viewSize
+    let svgY = viewY + offsetY / svgSize * viewSize
+    (svgX, svgY)
+
+let internal galaxyMapShowLabels (zoom: float) (visibleCount: int) =
+    zoom >= 2.5 && visibleCount <= 80
+
+let internal galaxyMapHitRadius (zoom: float) =
+    max 6.0 (14.0 / zoom)
+
+let internal pickGalaxyMapNodeAt (nodes: GalaxyMapNode list) (svgX: float) (svgY: float) (hitRadius: float) : string option =
+    nodes
+    |> List.choose (fun n ->
+        let dx = n.sx - svgX
+        let dy = n.sy - svgY
+        let distSq = dx * dx + dy * dy
+
+        if distSq <= hitRadius * hitRadius then
+            Some(n, distSq)
+        else
+            None)
+    |> List.sortBy snd
+    |> List.tryHead
+    |> Option.map (fun (n, _) -> n.system.symbol)
+
 let private galaxyPollDelayCmd =
     Cmd.OfAsync.perform (fun () -> Async.Sleep 1000) () (fun () -> PollGalaxyCatalog)
 
@@ -1394,6 +1539,9 @@ let update
         // finishes, contract accept/fulfill. Galaxy fields are merged from cache.
         model,
         Cmd.OfAsync.either (fun () -> agentRemote.refreshDashboard ()) () DashboardLoaded (fun ex -> DashboardLoadFailed ex.Message)
+    | RefreshContracts ->
+        { model with contractsRefreshing = true; contractActionError = None },
+        Cmd.OfAsync.either (fun () -> agentRemote.refreshDashboard ()) () DashboardLoaded (fun ex -> DashboardLoadFailed ex.Message)
     | LoadGalaxyCatalog ->
         { model with galaxyInitialLoad = true; galaxyCatalogError = None },
         Cmd.OfAsync.either (fun () -> agentRemote.getGalaxyCatalog ()) () GalaxyCatalogLoaded (fun ex -> GalaxyCatalogLoaded(Error ex.Message))
@@ -1466,9 +1614,9 @@ let update
                         selectedSystemSymbol = existing.selectedSystemSymbol }
             | _ -> stateOpt
 
-        { model with dashboard = merged }, Cmd.none
+        { model with dashboard = merged; contractsRefreshing = false }, Cmd.none
     | DashboardLoadFailed message ->
-        { model with dashboardError = Some message }, Cmd.none
+        { model with dashboardError = Some message; contractsRefreshing = false }, Cmd.none
     | LoadQueueStatus ->
         model, Cmd.OfAsync.either (fun () -> queueRemote.getStatus ()) () QueueStatusLoaded (fun _ -> RemoteCallFailed)
     | QueueStatusLoaded status ->
@@ -1778,17 +1926,44 @@ let update
     | GalaxyWheel deltaY ->
         let factor = if deltaY < 0.0 then 1.15 else 1.0 / 1.15
         { model with galaxyMapZoom = model.galaxyMapZoom * factor |> max 1.0 |> min 8.0 }, Cmd.none
-    | GalaxyDragStart -> { model with galaxyDragging = true }, Cmd.none
+    | GalaxyDragStart -> { model with galaxyDragging = true; galaxyMapDragMoved = false }, Cmd.none
     | GalaxyDragMove(dx, dy) ->
         if model.galaxyDragging then
             { model with
                 galaxyMapPanX = model.galaxyMapPanX - dx / model.galaxyMapZoom
-                galaxyMapPanY = model.galaxyMapPanY - dy / model.galaxyMapZoom },
+                galaxyMapPanY = model.galaxyMapPanY - dy / model.galaxyMapZoom
+                galaxyMapDragMoved = model.galaxyMapDragMoved || abs dx + abs dy > 2.0 },
             Cmd.none
         else
             model, Cmd.none
     | GalaxyDragEnd -> { model with galaxyDragging = false }, Cmd.none
-    | ResetGalaxyMapView -> { model with galaxyMapZoom = 1.0; galaxyMapPanX = 0.0; galaxyMapPanY = 0.0 }, Cmd.none
+    | ResetGalaxyMapView ->
+        { model with galaxyMapZoom = 1.0; galaxyMapPanX = 0.0; galaxyMapPanY = 0.0; galaxyMapDragMoved = false },
+        Cmd.none
+    | GalaxyMapClick(offsetX, offsetY, svgSize) ->
+        if model.galaxyMapDragMoved then
+            { model with galaxyMapDragMoved = false }, Cmd.none
+        else
+            match model.dashboard with
+            | None -> model, Cmd.none
+            | Some state ->
+                let bounds = computeGalaxyBounds state.systems
+                let viewSize = mapViewSize / model.galaxyMapZoom
+                let viewX = (mapViewSize - viewSize) / 2.0 + model.galaxyMapPanX
+                let viewY = (mapViewSize - viewSize) / 2.0 + model.galaxyMapPanY
+                let nodes = buildGalaxyMapNodes state.systems bounds
+                let alwaysInclude =
+                    [ state.selectedSystemSymbol; Waypoint.systemSymbolOf state.agent.headquarters ]
+                    |> List.distinct
+
+                let rendered, _ =
+                    filterGalaxyMapNodes nodes viewX viewY viewSize (galaxyMapNodeBudget model.galaxyMapZoom) alwaysInclude
+
+                let svgX, svgY = svgPointFromClick viewX viewY viewSize offsetX offsetY svgSize
+
+                match pickGalaxyMapNodeAt rendered svgX svgY (galaxyMapHitRadius model.galaxyMapZoom) with
+                | Some symbol -> model, Cmd.ofMsg (SelectGalaxySystem symbol)
+                | None -> model, Cmd.none
 
     | LoadPrograms ->
         model, Cmd.OfAsync.either (fun () -> programRemote.list ()) () ProgramsLoaded (fun _ -> RemoteCallFailed)
@@ -1938,7 +2113,8 @@ let update
                     Some(LoadPublicAgents)
                 else
                     None
-                if tab = GalaxieTab && model.dashboard.IsSome then Some LoadGalaxyCatalog else None ]
+                if tab = GalaxieTab && model.dashboard.IsSome then Some LoadGalaxyCatalog else None
+                if tab = ContractsTab && model.dashboard.IsSome then Some RefreshDashboard else None ]
             |> List.choose id
             |> List.map Cmd.ofMsg
 
@@ -2211,42 +2387,6 @@ let private viewInspector (state: DashboardState) model dispatch =
 let internal partitionContracts (contracts: Contract list) : Contract list * Contract list =
     contracts |> List.partition (fun c -> not c.fulfilled)
 
-let internal mapViewSize = 400.0
-let internal mapPadding = 30.0
-
-/// Guards against a degenerate single-point (or empty) range, which would
-/// otherwise divide by zero when scaling.
-let internal computeMapBounds (waypoints: Waypoint list) : float * float * float * float =
-    match waypoints with
-    | [] -> (0.0, 1.0, 0.0, 1.0)
-    | _ ->
-        let xs = waypoints |> List.map (fun w -> float w.x)
-        let ys = waypoints |> List.map (fun w -> float w.y)
-        let minX, maxX = List.min xs, List.max xs
-        let minY, maxY = List.min ys, List.max ys
-        let minX, maxX = if minX = maxX then minX - 1.0, maxX + 1.0 else minX, maxX
-        let minY, maxY = if minY = maxY then minY - 1.0, maxY + 1.0 else minY, maxY
-        (minX, maxX, minY, maxY)
-
-/// Y is flipped (SVG is Y-down) so the schematic reads with north up.
-let internal scaleMapPoint (minX, maxX, minY, maxY) (x: float) (y: float) : float * float =
-    let scale = min ((mapViewSize - 2.0 * mapPadding) / (maxX - minX)) ((mapViewSize - 2.0 * mapPadding) / (maxY - minY))
-    let sx = mapPadding + (x - minX) * scale
-    let sy = mapViewSize - (mapPadding + (y - minY) * scale)
-    (sx, sy)
-
-let internal computeGalaxyBounds (systems: StarSystem list) : float * float * float * float =
-    match systems with
-    | [] -> (0.0, 1.0, 0.0, 1.0)
-    | _ ->
-        let xs = systems |> List.map (fun s -> float s.x)
-        let ys = systems |> List.map (fun s -> float s.y)
-        let minX, maxX = List.min xs, List.max xs
-        let minY, maxY = List.min ys, List.max ys
-        let minX, maxX = if minX = maxX then minX - 1.0, maxX + 1.0 else minX, maxX
-        let minY, maxY = if minY = maxY then minY - 1.0, maxY + 1.0 else minY, maxY
-        (minX, maxX, minY, maxY)
-
 let private systemColor (systemType: string) : string =
     match systemType with
     | "NEBULA" -> "#9b59b6"
@@ -2301,6 +2441,16 @@ let private viewGalaxyMap (s: Strings) (model: Model) (state: DashboardState) di
     let viewSize = mapViewSize / model.galaxyMapZoom
     let viewX = (mapViewSize - viewSize) / 2.0 + model.galaxyMapPanX
     let viewY = (mapViewSize - viewSize) / 2.0 + model.galaxyMapPanY
+    let nodes = buildGalaxyMapNodes state.systems bounds
+
+    let alwaysInclude =
+        [ state.selectedSystemSymbol; Waypoint.systemSymbolOf state.agent.headquarters ]
+        |> List.distinct
+
+    let rendered, visibleInView =
+        filterGalaxyMapNodes nodes viewX viewY viewSize (galaxyMapNodeBudget model.galaxyMapZoom) alwaysInclude
+
+    let showLabels = galaxyMapShowLabels model.galaxyMapZoom visibleInView
 
     div {
         h2 { s.galaxyMapHeading }
@@ -2313,36 +2463,36 @@ let private viewGalaxyMap (s: Strings) (model: Model) (state: DashboardState) di
             on.mousemove (fun e -> dispatch (GalaxyDragMove(e.MovementX, e.MovementY)))
             on.mouseup (fun _ -> dispatch GalaxyDragEnd)
             on.mouseout (fun _ -> dispatch GalaxyDragEnd)
+            on.click (fun e -> dispatch (GalaxyMapClick(e.OffsetX, e.OffsetY, mapViewSize)))
 
-            for system in state.systems do
-                let sx, sy = scaleMapPoint bounds (float system.x) (float system.y)
-                let selected = system.symbol = state.selectedSystemSymbol
+            for node in rendered do
+                let selected = node.system.symbol = state.selectedSystemSymbol
 
-                elt "g" {
-                    attr.style "cursor: pointer"
-                    on.click (fun _ -> dispatch (SelectGalaxySystem system.symbol))
+                elt "circle" {
+                    "cx" => string node.sx
+                    "cy" => string node.sy
+                    "r" => (if selected then "9" else "5")
+                    "fill" => systemColor node.system.``type``
+                    "stroke" => (if selected then "#000000" else "none")
+                    "stroke-width" => (if selected then "2" else "0")
+                }
 
-                    elt "circle" {
-                        "cx" => string sx
-                        "cy" => string sy
-                        "r" => (if selected then "9" else "7")
-                        "fill" => systemColor system.``type``
-                        "stroke" => (if selected then "#000000" else "none")
-                        "stroke-width" => (if selected then "2" else "0")
-                    }
-
-                    elt "title" { $"{system.symbol} ({system.``type``})" }
-
+                if showLabels || selected then
                     elt "text" {
-                        "x" => string sx
-                        "y" => string (sy + 16.0)
+                        "x" => string node.sx
+                        "y" => string (node.sy + 16.0)
                         "font-size" => "8"
                         "text-anchor" => "middle"
                         "fill" => "currentColor"
-                        system.symbol
+                        "pointer-events" => "none"
+                        node.system.symbol
                     }
-                }
         }
+        if rendered.Length < visibleInView || visibleInView < state.systems.Length then
+            p {
+                attr.style "font-size: 0.8em; opacity: 0.75; margin-top: 0.2rem"
+                s.galaxyMapPartialRender(rendered.Length, visibleInView, state.systems.Length)
+            }
         button {
             attr.style "font-size: 0.8em; padding: 0.2em 0.6em; margin-top: 0.3rem"
             attr.disabled model.galaxyReloading
@@ -2826,6 +2976,13 @@ let private viewContracts (s: Strings) (model: Model) (state: DashboardState) di
 
     div {
         h2 { s.contractsHeading }
+        button {
+            attr.disabled model.contractsRefreshing
+            on.click (fun _ -> dispatch RefreshContracts)
+            s.refreshContracts
+        }
+        if model.contractsRefreshing then
+            p { s.loadingEllipsis }
         match model.contractActionError with
         | Some err -> p { attr.style "color: #cc0000"; s.errorPrefix err }
         | None -> ()

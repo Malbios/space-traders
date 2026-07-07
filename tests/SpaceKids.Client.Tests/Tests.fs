@@ -161,3 +161,34 @@ let ``partitionContracts splits a mix and preserves order within each partition`
     let active, history = partitionContracts [ c1; c2; c3; c4 ]
     Assert.Equal<Contract list>([ c1; c3 ], active)
     Assert.Equal<Contract list>([ c2; c4 ], history)
+
+let private starSystem (symbol: string) (x: int) (y: int) : StarSystem =
+    { symbol = symbol
+      sectorSymbol = "SECTOR"
+      constellation = None
+      name = None
+      ``type`` = "BLUE_STAR"
+      x = x
+      y = y }
+
+[<Fact>]
+let ``filterGalaxyMapNodes caps rendered nodes but always keeps pinned systems`` () =
+    let systems =
+        [ for i in 0..99 -> starSystem $"S{i}" (i % 10) (i / 10) ]
+
+    let bounds = computeGalaxyBounds systems
+    let nodes = buildGalaxyMapNodes systems bounds
+    let rendered, visible = filterGalaxyMapNodes nodes 0.0 0.0 mapViewSize 20 [ "S42" ]
+
+    Assert.Equal(100, visible)
+    Assert.True(rendered.Length <= 20)
+    Assert.Contains(rendered, fun n -> n.system.symbol = "S42")
+
+[<Fact>]
+let ``pickGalaxyMapNodeAt chooses the nearest system within the hit radius`` () =
+    let systems = [ starSystem "NEAR" 0 0; starSystem "FAR" 50 50 ]
+    let bounds = computeGalaxyBounds systems
+    let nodes = buildGalaxyMapNodes systems bounds
+    let near = nodes |> List.find (fun n -> n.system.symbol = "NEAR")
+    let picked = pickGalaxyMapNodeAt nodes near.sx near.sy 8.0
+    Assert.Equal(Some "NEAR", picked)
