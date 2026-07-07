@@ -127,3 +127,37 @@ let ``pilotName is stable for the same key`` () =
 let ``pilotName always returns a name from the real pool`` () =
     for key in [ ""; "a"; "SHIP-1"; "job-12345"; String.replicate 50 "x" ] do
         Assert.Contains(pilotName key, pilotNamePool)
+
+let private contract (id: string) (fulfilled: bool) : Contract =
+    { id = id
+      factionSymbol = "COSMIC"
+      ``type`` = "PROCUREMENT"
+      terms =
+        { deadline = "2026-12-31T00:00:00.000Z"
+          payment = { onAccepted = 1000; onFulfilled = 5000 }
+          deliver = [ { tradeSymbol = "IRON"; destinationSymbol = "X1-TEST-A1"; unitsRequired = 10; unitsFulfilled = 0 } ] }
+      accepted = true
+      fulfilled = fulfilled
+      expiration = None
+      deadlineToAccept = None }
+
+[<Fact>]
+let ``partitionContracts returns two empty lists for an empty input`` () =
+    Assert.Equal(([], []), partitionContracts [])
+
+[<Fact>]
+let ``partitionContracts puts every fulfilled contract into history`` () =
+    let contracts = [ contract "c1" true; contract "c2" true ]
+    Assert.Equal(([], contracts), partitionContracts contracts)
+
+[<Fact>]
+let ``partitionContracts puts every unfulfilled contract into active`` () =
+    let contracts = [ contract "c1" false; contract "c2" false ]
+    Assert.Equal((contracts, []), partitionContracts contracts)
+
+[<Fact>]
+let ``partitionContracts splits a mix and preserves order within each partition`` () =
+    let c1, c2, c3, c4 = contract "c1" false, contract "c2" true, contract "c3" false, contract "c4" true
+    let active, history = partitionContracts [ c1; c2; c3; c4 ]
+    Assert.Equal<Contract list>([ c1; c3 ], active)
+    Assert.Equal<Contract list>([ c2; c4 ], history)
