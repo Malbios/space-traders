@@ -52,6 +52,13 @@ function blocklyThemeFor(theme: string): Blockly.Theme {
     return theme === "dark" ? darkBlocklyTheme : Blockly.Themes.Classic;
 }
 
+/** Matches `workshopContainerId` in `Main.fs` — only this workspace gets definition blocks in its toolbox. */
+const WORKSHOP_CONTAINER_ID = "blockly-workshop-spike";
+
+function toolboxOptionsFor(containerId: string): { includeDefinitionCategory: boolean } {
+    return { includeDefinitionCategory: containerId === WORKSHOP_CONTAINER_ID };
+}
+
 const workspaces = new Map<string, Blockly.WorkspaceSvg>();
 /** Per-workspace list of custom blocks currently injected into that workspace's "Eigene Blöcke" category (§9b). */
 const customBlocksByContainer = new Map<string, CustomBlockToolboxEntry[]>();
@@ -72,7 +79,9 @@ function refreshToolbox(containerId: string): void {
     const ws = requireWorkspace(containerId);
     const customBlocks = customBlocksByContainer.get(containerId) ?? [];
     const dynamicAccessorTypes = dynamicAccessorTypesByContainer.get(containerId) ?? [];
-    ws.updateToolbox(buildCatalogToolbox(customBlocks, dynamicAccessorTypes) as Blockly.utils.toolbox.ToolboxDefinition);
+    ws.updateToolbox(
+        buildCatalogToolbox(customBlocks, dynamicAccessorTypes, toolboxOptionsFor(containerId)) as Blockly.utils.toolbox.ToolboxDefinition,
+    );
 }
 
 const deferAfterLayout = (fn: () => void): Promise<void> =>
@@ -133,7 +142,7 @@ function initWorkspace(containerId: string, readOnly: boolean): void {
     dynamicAccessorTypesByContainer.set(containerId, []);
     changeLogByContainer.set(containerId, []);
     const ws = Blockly.inject(el, {
-        toolbox: buildCatalogToolbox([], []) as Blockly.utils.toolbox.ToolboxDefinition,
+        toolbox: buildCatalogToolbox([], [], toolboxOptionsFor(containerId)) as Blockly.utils.toolbox.ToolboxDefinition,
         readOnly,
         theme: blocklyThemeFor(getTheme()),
     });
@@ -173,7 +182,7 @@ function setLocale(locale: Locale): void {
         }
 
         const newWs = Blockly.inject(el, {
-            toolbox: buildCatalogToolbox(customBlocks, dynamicAccessorTypes) as Blockly.utils.toolbox.ToolboxDefinition,
+            toolbox: buildCatalogToolbox(customBlocks, dynamicAccessorTypes, toolboxOptionsFor(containerId)) as Blockly.utils.toolbox.ToolboxDefinition,
             readOnly,
             theme: blocklyThemeFor(getTheme()),
         });

@@ -96,10 +96,15 @@ function callerToolboxEntry(entry: CustomBlockToolboxEntry): object {
     return { kind: "block", type: "callCustomBlock", extraState: { customBlockId: entry.id } };
 }
 
+export interface CatalogToolboxOptions {
+    /** Blockwerkstatt only: "Eigener Block" definition blocks (def shell, param get, build record). */
+    includeDefinitionCategory?: boolean;
+}
+
 /**
- * The real German catalog-driven toolbox (§7/§19 Milestone 3). Serves both the main
- * program workspace and the block-workshop workspace — both should offer the same
- * primitives.
+ * The real German catalog-driven toolbox (§7/§19 Milestone 3). Program workspaces get
+ * catalog primitives plus saved custom-block callers; the Blockwerkstatt workshop also
+ * gets the "Eigener Block" definition category.
  *
  * `customBlocks` is the live list of custom blocks (§9b) to inject into "Eigene
  * Blöcke", one generic `callCustomBlock` entry per id — regenerated and pushed via
@@ -107,7 +112,11 @@ function callerToolboxEntry(entry: CustomBlockToolboxEntry): object {
  * the per-custom-block structured-output accessor blocks (§9 Outputs, Milestone
  * 9/Part C), appended alongside the fixed §8 accessors in "Zugriffe".
  */
-export function buildCatalogToolbox(customBlocks: CustomBlockToolboxEntry[], dynamicAccessorTypes: string[]): object {
+export function buildCatalogToolbox(
+    customBlocks: CustomBlockToolboxEntry[],
+    dynamicAccessorTypes: string[],
+    options: CatalogToolboxOptions = {},
+): object {
     const names = CATEGORY_NAMES[getCurrentLocale()];
 
     const sortedActions = sortByLabel(catalogActionBlockTypes, getCatalogBlockLabel);
@@ -121,6 +130,17 @@ export function buildCatalogToolbox(customBlocks: CustomBlockToolboxEntry[], dyn
     const sortedCustomBlocks = [...customBlocks].sort((left, right) =>
         left.name.localeCompare(right.name, getCurrentLocale()),
     );
+
+    const definitionCategory = {
+        kind: "category",
+        name: names.customBlock,
+        colour: "290",
+        contents: [
+            { kind: "block", type: "sk_custom_block_def" },
+            { kind: "block", type: "sk_param_get" },
+            { kind: "block", type: "sk_build_record" },
+        ],
+    };
 
     return {
         kind: "categoryToolbox",
@@ -158,16 +178,7 @@ export function buildCatalogToolbox(customBlocks: CustomBlockToolboxEntry[], dyn
                 colour: "330",
                 custom: "VARIABLE",
             },
-            {
-                kind: "category",
-                name: names.customBlock,
-                colour: "290",
-                contents: [
-                    { kind: "block", type: "sk_custom_block_def" },
-                    { kind: "block", type: "sk_param_get" },
-                    { kind: "block", type: "sk_build_record" },
-                ],
-            },
+            ...(options.includeDefinitionCategory ? [definitionCategory] : []),
             {
                 kind: "category",
                 name: names.customBlocks,
