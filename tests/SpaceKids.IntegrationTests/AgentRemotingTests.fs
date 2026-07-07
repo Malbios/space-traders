@@ -183,3 +183,22 @@ let ``fetchWaypointShipyard has empty priced ships but non-empty shipTypes when 
             Assert.Empty(shipyard.ships)
             Assert.NotEmpty(shipyard.shipTypes)
         | None -> Assert.Fail("expected a shipyard for X1-TEST-C3"))
+
+/// Contracts tab: `fake-contract-2` is seeded unaccepted specifically so this
+/// (and the Accept button in the client) has something to exercise.
+[<Fact>]
+let ``acceptContract accepts a not-yet-accepted seeded contract`` () =
+    use fixture = new AgentFixture()
+
+    withAgentTest (fun dbPath ->
+        let result =
+            withPumpedQueue 20.0 (fun () ->
+                AgentRemoting.acceptContract fixture.Client dbPath App.seededToken "fake-contract-2"
+                |> Async.RunSynchronously)
+
+        Assert.Equal(Ok(), result)
+
+        let updated =
+            withPumpedQueue 20.0 (fun () -> fixture.Client.GetContract(App.seededToken, "fake-contract-2") |> Async.RunSynchronously)
+
+        Assert.True(updated.contract.accepted))

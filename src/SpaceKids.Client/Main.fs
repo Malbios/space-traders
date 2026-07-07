@@ -43,6 +43,7 @@ type AgentService =
         /// trait — `None` if the waypoint turns out not to have one after all.
         getWaypointMarket: string -> Async<Market option>
         getWaypointShipyard: string -> Async<Shipyard option>
+        acceptContract: string -> Async<Result<unit, string>>
     }
 
     interface IRemoteService with
@@ -231,6 +232,7 @@ type Tab =
     | ProgrammierenTab
     | PilotenTab
     | GalaxieTab
+    | ContractsTab
     | SettingsTab
 
 type Model =
@@ -335,6 +337,14 @@ type Model =
         /// local-only polls whose per-tick console noise should be silent by
         /// default). Stored in `localStorage`, same reasoning as `theme`.
         logLevel: string
+        /// Contracts tab: fulfilled contracts are collapsed under a history
+        /// section by default so the active ones aren't buried.
+        contractsHistoryExpanded: bool
+        /// Contracts tab: the contract id currently being accepted, if any —
+        /// disables its Accept button for the round trip (same in-flight-guard
+        /// role as `startingJob`, to avoid a repeat of the stuck-Start-button bug).
+        acceptingContractId: string option
+        contractActionError: string option
     }
 
 let private terminalPilotStatuses = [ "Completed"; "Failed"; "Cancelled" ]
@@ -407,6 +417,9 @@ let initModel =
         pollIntervalSeconds = 1
         theme = "light"
         logLevel = "off"
+        contractsHistoryExpanded = false
+        acceptingContractId = None
+        contractActionError = None
     }
 
 type Message =
@@ -519,6 +532,9 @@ type Message =
     /// `LoadDashboard`'s `DashboardLoadFailed` for the pattern this mirrors) — a
     /// down SpaceKids server should be visible and not spammed, not silent.
     | RemoteCallFailed
+    | AcceptContractClicked of contractId: string
+    | ContractActionCompleted of Result<unit, string>
+    | ToggleContractsHistory
 
 let private callVoid (js: IJSRuntime) (identifier: string) (args: obj[]) : Async<unit> =
     js.InvokeVoidAsync(identifier, args).AsTask() |> Async.AwaitTask
@@ -565,6 +581,17 @@ type Strings =
       shipLine: string * string * string * string -> string
       contractsHeading: string
       contractLine: string * string * bool * bool -> string
+      tabContracts: string
+      contractsActiveHeading: string
+      contractsHistoryHeading: string
+      contractsHistoryToggleShow: string
+      contractsHistoryToggleHide: string
+      contractDeliverLine: string * string * int * int -> string
+      contractPaymentLine: int * int -> string
+      contractDeadlineLine: string -> string
+      acceptContractButton: string
+      contractAcceptedLabel: string
+      contractPendingLabel: string
       waypointsHeading: string
       waypointLine: string * string -> string
       marketHeading: string
@@ -725,6 +752,20 @@ let private stringsDe: Strings =
       shipLine = fun (symbol, role, status, waypoint) -> $"{symbol} — {role} — {status} bei {waypoint}"
       contractsHeading = "Aufträge"
       contractLine = fun (id, ``type``, accepted, fulfilled) -> $"{id} ({``type``}) — angenommen: {accepted}, erfüllt: {fulfilled}"
+      tabContracts = "Aufträge"
+      contractsActiveHeading = "Aktuelle Aufträge"
+      contractsHistoryHeading = "Verlauf"
+      contractsHistoryToggleShow = "Verlauf anzeigen"
+      contractsHistoryToggleHide = "Verlauf verbergen"
+      contractDeliverLine =
+        fun (tradeSymbol, destination, unitsFulfilled, unitsRequired) ->
+            $"{tradeSymbol} nach {destination}: {unitsFulfilled} / {unitsRequired}"
+      contractPaymentLine =
+        fun (onAccepted, onFulfilled) -> $"Bezahlung: {onAccepted} Credits bei Annahme, {onFulfilled} Credits bei Erfüllung"
+      contractDeadlineLine = fun deadline -> $"Frist: {deadline}"
+      acceptContractButton = "Auftrag annehmen"
+      contractAcceptedLabel = "Angenommen"
+      contractPendingLabel = "Noch nicht angenommen"
       waypointsHeading = "Wegpunkte"
       waypointLine = fun (symbol, ``type``) -> $"{symbol} ({``type``})"
       marketHeading = "Markt"
@@ -899,6 +940,20 @@ let private stringsEn: Strings =
       shipLine = fun (symbol, role, status, waypoint) -> $"{symbol} — {role} — {status} at {waypoint}"
       contractsHeading = "Contracts"
       contractLine = fun (id, ``type``, accepted, fulfilled) -> $"{id} ({``type``}) — accepted: {accepted}, fulfilled: {fulfilled}"
+      tabContracts = "Contracts"
+      contractsActiveHeading = "Active contracts"
+      contractsHistoryHeading = "History"
+      contractsHistoryToggleShow = "Show history"
+      contractsHistoryToggleHide = "Hide history"
+      contractDeliverLine =
+        fun (tradeSymbol, destination, unitsFulfilled, unitsRequired) ->
+            $"{tradeSymbol} to {destination}: {unitsFulfilled} / {unitsRequired}"
+      contractPaymentLine =
+        fun (onAccepted, onFulfilled) -> $"Payment: {onAccepted} credits on accept, {onFulfilled} credits on fulfillment"
+      contractDeadlineLine = fun deadline -> $"Deadline: {deadline}"
+      acceptContractButton = "Accept contract"
+      contractAcceptedLabel = "Accepted"
+      contractPendingLabel = "Not yet accepted"
       waypointsHeading = "Waypoints"
       waypointLine = fun (symbol, ``type``) -> $"{symbol} ({``type``})"
       marketHeading = "Market"
@@ -1590,6 +1645,18 @@ let update
             pilotsPollBackoffTicks = min 30 (max 2 (model.pilotsPollBackoffTicks * 2)) },
         Cmd.none
 
+    | AcceptContractClicked contractId ->
+        { model with acceptingContractId = Some contractId; contractActionError = None },
+        Cmd.OfAsync.either
+            (fun () -> agentRemote.acceptContract contractId)
+            ()
+            ContractActionCompleted
+            (fun ex -> ContractActionCompleted(Error ex.Message))
+    | ContractActionCompleted(Ok()) -> { model with acceptingContractId = None }, Cmd.ofMsg LoadDashboard
+    | ContractActionCompleted(Error message) ->
+        { model with acceptingContractId = None; contractActionError = Some message }, Cmd.none
+    | ToggleContractsHistory -> { model with contractsHistoryExpanded = not model.contractsHistoryExpanded }, Cmd.none
+
 let private viewDashboard (s: Strings) (state: DashboardState) dispatch =
     div {
         h3 { s.pilotLabel state.agent.symbol }
@@ -1603,11 +1670,6 @@ let private viewDashboard (s: Strings) (state: DashboardState) dispatch =
                     on.click (fun _ -> dispatch (InspectShip ship.symbol))
                     s.shipLine (ship.symbol, ship.registration.role, ship.nav.status, ship.nav.waypointSymbol)
                 }
-        }
-        h3 { s.contractsHeading }
-        ul {
-            for contract in state.contracts do
-                li { s.contractLine (contract.id, contract.``type``, contract.accepted, contract.fulfilled) }
         }
         h3 { s.waypointsHeading }
         ul {
@@ -1756,6 +1818,12 @@ let private viewInspector (state: DashboardState) model dispatch =
 // escape hatches this file already relies on elsewhere for non-curated HTML. No
 // JS/TS interop: unlike Blockly, nothing here owns its own mutable object graph —
 // it's just static SVG nodes Bolero already knows how to diff.
+
+/// Contracts tab: splits contracts into the ones still worth acting on and the
+/// completed ones, which get collapsed into a history section so they don't
+/// bury the active ones. Order within each partition is preserved.
+let internal partitionContracts (contracts: Contract list) : Contract list * Contract list =
+    contracts |> List.partition (fun c -> not c.fulfilled)
 
 let internal mapViewSize = 400.0
 let internal mapPadding = 30.0
@@ -2241,6 +2309,49 @@ let private viewSettings (model: Model) dispatch =
         viewQueueStatus model dispatch
     }
 
+let private viewContracts (s: Strings) (model: Model) (state: DashboardState) dispatch =
+    let active, history = partitionContracts state.contracts
+
+    div {
+        h2 { s.contractsHeading }
+        match model.contractActionError with
+        | Some err -> p { attr.style "color: #cc0000"; s.errorPrefix err }
+        | None -> ()
+
+        h3 { s.contractsActiveHeading }
+        for contract in active do
+            div {
+                attr.style "border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem; margin: 0.5rem 0"
+                p { attr.style "font-weight: bold"; $"{contract.id} ({contract.``type``})" }
+                for good in contract.terms.deliver do
+                    p { s.contractDeliverLine (good.tradeSymbol, good.destinationSymbol, good.unitsFulfilled, good.unitsRequired) }
+                p { s.contractPaymentLine (contract.terms.payment.onAccepted, contract.terms.payment.onFulfilled) }
+                p { s.contractDeadlineLine contract.terms.deadline }
+                if contract.accepted then
+                    p { s.contractAcceptedLabel }
+                else
+                    p { s.contractPendingLabel }
+                    button {
+                        attr.disabled (model.acceptingContractId = Some contract.id)
+                        on.click (fun _ -> dispatch (AcceptContractClicked contract.id))
+                        s.acceptContractButton
+                    }
+            }
+
+        button {
+            on.click (fun _ -> dispatch ToggleContractsHistory)
+            if model.contractsHistoryExpanded then s.contractsHistoryToggleHide else s.contractsHistoryToggleShow
+        }
+        if model.contractsHistoryExpanded then
+            div {
+                h3 { s.contractsHistoryHeading }
+                ul {
+                    for contract in history do
+                        li { s.contractLine (contract.id, contract.``type``, contract.accepted, contract.fulfilled) }
+                }
+            }
+    }
+
 let view model dispatch =
     let s = stringsFor model.locale
 
@@ -2255,6 +2366,7 @@ let view model dispatch =
             tabButton model dispatch ProgrammierenTab s.tabProgrammieren
             tabButton model dispatch PilotenTab s.tabPiloten
             tabButton model dispatch GalaxieTab s.tabGalaxie
+            tabButton model dispatch ContractsTab s.tabContracts
             tabButton model dispatch SettingsTab s.tabSettings
         }
 
@@ -2340,6 +2452,13 @@ let view model dispatch =
                     }
                 }
                 viewDashboard s state dispatch
+        }
+
+        div {
+            attr.style (tabStyle model ContractsTab)
+            match model.dashboard with
+            | None -> p { s.loginInSettingsHint }
+            | Some state -> viewContracts s model state dispatch
         }
 
         div {

@@ -73,6 +73,25 @@ let fetchWaypointShipyard (client: SpaceTradersClient) (dbPath: string) (token: 
             return None
     }
 
+/// Contracts-tab "Accept" button (player-triggered, priority 1 like every other
+/// direct interactive call here). Standalone module function, same reason as
+/// `fetchWaypointMarket`/`fetchWaypointShipyard` above: testable without a
+/// Bolero remote handler instance.
+let acceptContract (client: SpaceTradersClient) (dbPath: string) (token: string) (contractId: string) : Async<Result<unit, string>> =
+    async {
+        try
+            let! _ =
+                RequestQueue.enqueue dbPath 1 $"POST /my/contracts/{contractId}/accept" None (fun () ->
+                    client.AcceptContract(token, contractId))
+
+            return Ok ()
+        with
+        | SpaceTradersApiException(statusCode, _) ->
+            return Error $"Der Auftrag konnte nicht angenommen werden (Status {statusCode})."
+        | ex ->
+            return Error $"Verbindung zu SpaceTraders fehlgeschlagen: {ex.Message}"
+    }
+
 /// Server-side implementation of AgentService (Milestone 2, §19): every SpaceTraders
 /// call goes through RequestQueue.enqueue (§13's global-queue principle applies from
 /// day one, even before the real priority/backoff queue lands in Milestone 5).
@@ -172,5 +191,13 @@ type AgentRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                         match stored with
                         | None -> return None
                         | Some(_, token) -> return! fetchWaypointShipyard client dbPath token waypointSymbol
+                    }
+            acceptContract =
+                fun contractId ->
+                    async {
+                        let! stored = Persistence.AgentRepository.loadStoredAgent dbPath
+                        match stored with
+                        | None -> return Error "Nicht angemeldet."
+                        | Some(_, token) -> return! acceptContract client dbPath token contractId
                     }
         }
