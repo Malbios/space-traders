@@ -75,6 +75,28 @@ function refreshToolbox(containerId: string): void {
     ws.updateToolbox(buildCatalogToolbox(customBlocks, dynamicAccessorTypes) as Blockly.utils.toolbox.ToolboxDefinition);
 }
 
+/** Re-measure a workspace after its container becomes visible (e.g. a hidden sub-tab
+ * was switched on). Blockly injects into zero-size hidden divs render as blank white
+ * canvases with no toolbox until this runs. */
+function resizeWorkspace(containerId: string): void {
+    const ws = workspaces.get(containerId);
+    if (!ws) {
+        return;
+    }
+    // Defer one frame so the browser has applied `display`/`layout` changes first.
+    setTimeout(() => {
+        Blockly.svgResize(ws);
+        ws.resizeContents();
+    }, 0);
+}
+
+/** Idempotent init + layout refresh — safe to call whenever a workspace's tab/panel
+ * becomes visible. */
+function ensureWorkspaceReady(containerId: string, readOnly: boolean): void {
+    initWorkspace(containerId, readOnly);
+    resizeWorkspace(containerId);
+}
+
 function initWorkspace(containerId: string, readOnly: boolean): void {
     if (workspaces.has(containerId)) {
         return;
@@ -232,24 +254,6 @@ function firstBlockId(containerId: string): string | null {
     return blocks[0]?.id ?? null;
 }
 
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-/**
- * Milestone 3 (§19): highlights each block of the first top-level statement stack in
- * sequence, with a short pause between each — a fake/simulated run to prove highlighting
- * works across the full catalog. Not real DSL execution (Milestone 4 builds that).
- */
-async function simulateRun(containerId: string): Promise<void> {
-    const ws = requireWorkspace(containerId);
-    let block = ws.getTopBlocks(true)[0] ?? null;
-    while (block) {
-        highlightBlock(containerId, block.id);
-        await sleep(700);
-        block = block.getNextBlock();
-    }
-    clearHighlight(containerId);
-}
-
 let nextCustomBlockSeq = 1;
 
 /**
@@ -297,7 +301,8 @@ interface SpaceKidsHost {
     firstBlockId: typeof firstBlockId;
     getChangeLog: typeof getChangeLog;
     publishCustomBlockSignature: typeof publishCustomBlockSignature;
-    simulateRun: typeof simulateRun;
+    ensureWorkspaceReady: typeof ensureWorkspaceReady;
+    resizeWorkspace: typeof resizeWorkspace;
     setLocale: typeof setLocale;
     getTheme: typeof getTheme;
     setTheme: typeof setTheme;
@@ -322,7 +327,8 @@ window.spaceKids = {
     firstBlockId,
     getChangeLog,
     publishCustomBlockSignature,
-    simulateRun,
+    ensureWorkspaceReady,
+    resizeWorkspace,
     setLocale,
     getTheme,
     setTheme,

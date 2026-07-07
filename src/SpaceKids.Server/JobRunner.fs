@@ -47,6 +47,33 @@ let private tickLock = new SemaphoreSlim(1, 1)
 
 let private realClock: Clock = { now = fun () -> System.DateTimeOffset.UtcNow }
 
+/// Ephemeral simulation jobs (`simulateProgram`) never touch SQLite or ship locks.
+let private isEphemeral (jobId: JobId) = jobId.StartsWith("__sim__")
+
+/// While set, `tick` uses this clock for `__sim__` jobs so `sk_wait`/arrival waits
+/// fast-forward instead of sleeping in real time.
+let private simClockHolder = ref<Option<Clock * DateTimeOffset ref>>(None)
+
+let private clockFor (jobId: JobId) : Clock =
+    if isEphemeral jobId then
+        match !simClockHolder with
+        | Some(clock, _) -> clock
+        | None -> realClock
+    else
+        realClock
+
+type SimulationStep =
+    { scope: string
+      blockId: string
+      detail: string option }
+
+type SimulationRunResult =
+    { success: bool
+      status: string
+      error: string option
+      steps: SimulationStep list
+      log: string list }
+
 let private initialFrame: Frame =
     { scope = "main"
       position =
@@ -877,14 +904,17 @@ let private lastErrorOf (status: JobStatus) : string option =
     | _ -> None
 
 let private persist (dbPath: string) (job: JobState) : Async<unit> =
-    Persistence.JobRepository.update
-        dbPath
-        job.jobId
-        (statusName job.status)
-        (Persistence.JobStateJson.serializeJobState job)
-        (Step.currentBlockId job)
-        (nextWakeAtOf job.status)
-        (lastErrorOf job.status)
+    if isEphemeral job.jobId then
+        async { return () }
+    else
+        Persistence.JobRepository.update
+            dbPath
+            job.jobId
+            (statusName job.status)
+            (Persistence.JobStateJson.serializeJobState job)
+            (Step.currentBlockId job)
+            (nextWakeAtOf job.status)
+            (lastErrorOf job.status)
 
 /// Hydrates a job from its `jobs` row into the in-memory cache if it isn't already
 /// there — used both at scheduler startup (loading every non-terminal job) and when
@@ -934,21 +964,22 @@ let rec private applyEffects
             | JobCompleted jobId
             | JobFailed(jobId, _)
             | JobCancelled jobId ->
-                // Milestone 7 (§14): the job just went terminal — release its ship
-                // lock so another program can take the ship over immediately,
-                // rather than waiting for the lease to expire.
-                match jobs.TryGetValue jobId with
-                | true, job ->
-                    match job.shipSymbol with
-                    | Some sym -> do! Persistence.ShipLockRepository.release dbPath sym
-                    | None -> ()
+                if not (isEphemeral jobId) then
+                    // Milestone 7 (§14): the job just went terminal — release its ship
+                    // lock so another program can take the ship over immediately,
+                    // rather than waiting for the lease to expire.
+                    match jobs.TryGetValue jobId with
+                    | true, job ->
+                        match job.shipSymbol with
+                        | Some sym -> do! Persistence.ShipLockRepository.release dbPath sym
+                        | None -> ()
 
-                    for sym in job.dynamicShipLocks |> List.distinct do
-                        do! Persistence.ShipLockRepository.release dbPath sym
+                        for sym in job.dynamicShipLocks |> List.distinct do
+                            do! Persistence.ShipLockRepository.release dbPath sym
 
-                    for sym in job.parallelBranches |> List.collect (fun b -> b.job.dynamicShipLocks) |> List.distinct do
-                        do! Persistence.ShipLockRepository.release dbPath sym
-                | false, _ -> ()
+                        for sym in job.parallelBranches |> List.collect (fun b -> b.job.dynamicShipLocks) |> List.distinct do
+                            do! Persistence.ShipLockRepository.release dbPath sym
+                    | false, _ -> ()
             | StartWait _ ->
                 // Nothing to do here — `job.status`/`next_wake_at` already record
                 // what it's waiting for (persisted by `tick`). The scheduler's tick
@@ -1091,55 +1122,74 @@ let rec private applyEffects
                 let! result = runInfoRead client dbPath token priority (shipSymbol |> Option.defaultValue "") infoType args
                 do! tick client dbPath token priority jobId (BranchApiResponseReceived(jobId, branchId, attemptNumber, result))
             | AcquireShipScope(jobId, blockId, shipSymbol, _hasElse) ->
-                let! lockResult = Persistence.ShipLockRepository.tryAcquire dbPath shipSymbol jobId leaseSeconds
+                let acquireAndFetch =
+                    async {
+                        let! result =
+                            async {
+                                try
+                                    let! ship =
+                                        RequestQueue.enqueue dbPath priority $"getShip:{shipSymbol}" None (fun () ->
+                                            client.GetShip(token, shipSymbol))
 
-                match lockResult with
-                | Error _ -> ()
-                | Ok _orphanedJobIdOpt ->
-                    let! result =
-                        async {
-                            try
-                                let! ship =
-                                    RequestQueue.enqueue dbPath priority $"getShip:{shipSymbol}" None (fun () ->
-                                        client.GetShip(token, shipSymbol))
+                                    return Choice1Of2(toSnapshot ship)
+                                with ex ->
+                                    return Choice2Of2 ex.Message
+                            }
 
-                                return Choice1Of2(toSnapshot ship)
-                            with ex ->
-                                return Choice2Of2 ex.Message
-                        }
+                        match result with
+                        | Choice1Of2 snapshot ->
+                            do! tick client dbPath token priority jobId (ShipScopeAcquired(jobId, blockId, shipSymbol, snapshot))
+                        | Choice2Of2 message ->
+                            if not (isEphemeral jobId) then
+                                do! Persistence.ShipLockRepository.release dbPath shipSymbol
 
-                    match result with
-                    | Choice1Of2 snapshot ->
-                        do! tick client dbPath token priority jobId (ShipScopeAcquired(jobId, blockId, shipSymbol, snapshot))
-                    | Choice2Of2 message ->
-                        do! Persistence.ShipLockRepository.release dbPath shipSymbol
-                        do! tick client dbPath token priority jobId (ShipScopeUnavailable(jobId, blockId, shipSymbol, message))
+                            do! tick client dbPath token priority jobId (ShipScopeUnavailable(jobId, blockId, shipSymbol, message))
+                    }
+
+                if isEphemeral jobId then
+                    do! acquireAndFetch
+                else
+                    let! lockResult = Persistence.ShipLockRepository.tryAcquire dbPath shipSymbol jobId leaseSeconds
+
+                    match lockResult with
+                    | Error _ -> ()
+                    | Ok _orphanedJobIdOpt -> do! acquireAndFetch
             | AcquireBranchShipScope(jobId, branchId, blockId, shipSymbol, _hasElse) ->
-                let! lockResult = Persistence.ShipLockRepository.tryAcquire dbPath shipSymbol jobId leaseSeconds
+                let acquireAndFetch =
+                    async {
+                        let! result =
+                            async {
+                                try
+                                    let! ship =
+                                        RequestQueue.enqueue dbPath priority $"getShip:{shipSymbol}" None (fun () ->
+                                            client.GetShip(token, shipSymbol))
 
-                match lockResult with
-                | Error _ -> ()
-                | Ok _orphanedJobIdOpt ->
-                    let! result =
-                        async {
-                            try
-                                let! ship =
-                                    RequestQueue.enqueue dbPath priority $"getShip:{shipSymbol}" None (fun () ->
-                                        client.GetShip(token, shipSymbol))
+                                    return Choice1Of2(toSnapshot ship)
+                                with ex ->
+                                    return Choice2Of2 ex.Message
+                            }
 
-                                return Choice1Of2(toSnapshot ship)
-                            with ex ->
-                                return Choice2Of2 ex.Message
-                        }
+                        match result with
+                        | Choice1Of2 snapshot ->
+                            do! tick client dbPath token priority jobId (BranchShipScopeAcquired(jobId, branchId, blockId, shipSymbol, snapshot))
+                        | Choice2Of2 message ->
+                            if not (isEphemeral jobId) then
+                                do! Persistence.ShipLockRepository.release dbPath shipSymbol
 
-                    match result with
-                    | Choice1Of2 snapshot ->
-                        do! tick client dbPath token priority jobId (BranchShipScopeAcquired(jobId, branchId, blockId, shipSymbol, snapshot))
-                    | Choice2Of2 message ->
-                        do! Persistence.ShipLockRepository.release dbPath shipSymbol
-                        do! tick client dbPath token priority jobId (BranchShipScopeUnavailable(jobId, branchId, blockId, shipSymbol, message))
-            | ReleaseShipScope(_jobId, shipSymbol) ->
-                do! Persistence.ShipLockRepository.release dbPath shipSymbol
+                            do! tick client dbPath token priority jobId (BranchShipScopeUnavailable(jobId, branchId, blockId, shipSymbol, message))
+                    }
+
+                if isEphemeral jobId then
+                    do! acquireAndFetch
+                else
+                    let! lockResult = Persistence.ShipLockRepository.tryAcquire dbPath shipSymbol jobId leaseSeconds
+
+                    match lockResult with
+                    | Error _ -> ()
+                    | Ok _orphanedJobIdOpt -> do! acquireAndFetch
+            | ReleaseShipScope(jobId, shipSymbol) ->
+                if not (isEphemeral jobId) then
+                    do! Persistence.ShipLockRepository.release dbPath shipSymbol
     }
 
 /// One scheduler tick: pulls the job, calls the pure core, persists the result,
@@ -1163,7 +1213,7 @@ and private tick
                     | false, _ -> return None
                     | true, job ->
                         try
-                            let job', effects = Step.step realClock job event
+                            let job', effects = Step.step (clockFor jobId) job event
                             jobs[jobId] <- job'
                             do! persist dbPath job'
                             return Some effects
@@ -1414,6 +1464,131 @@ let hydrate (rows: (JobId * string) seq) : unit =
     for jobId, executionStateJson in rows do
         if not (jobs.ContainsKey jobId) then
             jobs[jobId] <- Persistence.JobStateJson.deserializeJobState executionStateJson
+
+let private simulationDetail (job: JobState) : string option =
+    match job.status with
+    | WaitingForArrival until -> Some($"wait until {until:o}")
+    | WaitingForCooldown until -> Some($"cooldown until {until:o}")
+    | Failed message -> Some message
+    | _ -> job.log |> List.tryHead
+
+let private captureSimulationStep (job: JobState) : SimulationStep =
+    match Step.blockIdPerFrame job |> List.tryHead with
+    | Some(scope, Some blockId) -> { scope = scope; blockId = blockId; detail = job.log |> List.tryHead }
+    | Some(scope, None) -> { scope = scope; blockId = ""; detail = simulationDetail job }
+    | None -> { scope = "main"; blockId = ""; detail = simulationDetail job }
+
+let private startEphemeralJob
+    (program: CompiledProgram)
+    (shipSymbol: string option)
+    (initialShip: Ship option)
+    (initialFleetShipCount: int)
+    (initialContractCount: int)
+    : JobId =
+    let jobId = "__sim__" + System.Guid.NewGuid().ToString()
+
+    let job =
+        { jobId = jobId
+          programId = "__simulate__"
+          program = program
+          shipSymbol = shipSymbol
+          status = Running
+          stack = [ initialFrame ]
+          lastKnownShip = initialShip |> Option.map toSnapshot
+          lastKnownFleetShipCount = Some initialFleetShipCount
+          lastKnownContractCount = Some initialContractCount
+          currentShipStack = []
+          dynamicShipLocks = []
+          parallelBranches = []
+          log = []
+          pausePending = false
+          cancelPending = false }
+
+    jobs[jobId] <- job
+    jobId
+
+let private isTerminalStatus (status: JobStatus) =
+    match status with
+    | Completed | Failed _ | Cancelled -> true
+    | _ -> false
+
+let rec private runSimulationLoop
+    (client: SpaceTradersClient)
+    (dbPath: string)
+    (token: string)
+    (jobId: JobId)
+    (steps: SimulationStep list)
+    (simNow: DateTimeOffset ref)
+    : Async<SimulationRunResult> =
+    async {
+        match jobs.TryGetValue jobId with
+        | false, _ ->
+            return
+                { success = false
+                  status = "Failed"
+                  error = Some "Simulation job disappeared."
+                  steps = steps
+                  log = [] }
+        | true, job when isTerminalStatus job.status ->
+            jobs.TryRemove(jobId) |> ignore
+
+            let success, err =
+                match job.status with
+                | Completed -> true, None
+                | Failed message -> false, Some message
+                | Cancelled -> false, Some "Cancelled"
+                | _ -> false, Some(statusName job.status)
+
+            return
+                { success = success
+                  status = statusName job.status
+                  error = err
+                  steps = steps
+                  log = List.rev job.log }
+        | true, job ->
+            let step = captureSimulationStep job
+
+            let steps' =
+                match steps with
+                | last :: _ when last.blockId = step.blockId && last.detail = step.detail -> steps
+                | _ -> steps @ [ step ]
+
+            match job.status with
+            | WaitingForArrival until
+            | WaitingForCooldown until ->
+                simNow.Value <- until.AddMilliseconds(1)
+                do! tick client dbPath token 1 jobId WakeTick
+                return! runSimulationLoop client dbPath token jobId steps' simNow
+            | _ ->
+                do! stepOnce client dbPath 1 token jobId
+                return! runSimulationLoop client dbPath token jobId steps' simNow
+    }
+
+/// Compile-time companion to `startJob`: runs a program ephemerally (no `jobs`/`programs`
+/// rows, no ship-lock leases) and returns a block-by-block trace plus the program log.
+let simulateProgram
+    (client: SpaceTradersClient)
+    (dbPath: string)
+    (token: string)
+    (program: CompiledProgram)
+    (shipSymbol: string option)
+    (initialShip: Ship option)
+    (initialFleetShipCount: int)
+    (initialContractCount: int)
+    : Async<SimulationRunResult> =
+    async {
+        let simNow = ref System.DateTimeOffset.UtcNow
+        let simClock: Clock = { now = fun () -> simNow.Value }
+        simClockHolder := Some(simClock, simNow)
+
+        try
+            let jobId =
+                startEphemeralJob program shipSymbol initialShip initialFleetShipCount initialContractCount
+
+            return! runSimulationLoop client dbPath token jobId [] simNow
+        finally
+            simClockHolder := None
+    }
 
 /// Test-only: this module is a process-wide singleton (matching `RequestQueue`'s own
 /// pattern), so tests that exercise it directly must reset state between cases.

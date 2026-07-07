@@ -2,6 +2,7 @@ module SpaceKids.Server.JobRemoting
 
 open Bolero.Remoting
 open Bolero.Remoting.Server
+open SpaceKids.Core.Dsl
 open SpaceKids.Core.Scheduler
 open SpaceKids.SpaceTraders
 open SpaceKids.Client.Main
@@ -79,6 +80,36 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
     /// request thread for it is an acceptable, deliberate tradeoff.
     let customBlockLookup (customBlockId: string) : SpaceKids.Core.Dsl.CustomBlockDefinition option =
         Persistence.CustomBlockRepository.load dbPath customBlockId |> Async.RunSynchronously
+
+    let rec instructionNeedsRuntime (program: CompiledProgram) (instr: Instruction) : bool =
+        match instr with
+        | ApiAction _ | InfoRead _ | WithShip _ | Parallel _ -> true
+        | If(_, branches, elseBranch) ->
+            branches |> List.exists (snd >> List.exists (instructionNeedsRuntime program))
+            || elseBranch |> Option.map (List.exists (instructionNeedsRuntime program)) |> Option.defaultValue false
+        | Repeat(_, _, body)
+        | WhileUntil(_, _, _, body)
+        | ForEach(_, _, _, body) -> List.exists (instructionNeedsRuntime program) body
+        | CallCustomBlock(_, customBlockId, _, _) ->
+            match program.customBlocks.TryFind customBlockId with
+            | Some cb -> cb.instructions |> List.exists (instructionNeedsRuntime program)
+            | None -> true
+        | _ -> false
+
+    let programNeedsRuntime (program: CompiledProgram) : bool =
+        program.instructions |> List.exists (instructionNeedsRuntime program)
+
+    let toSimulationDto (result: JobRunner.SimulationRunResult) : SimulationResultDto =
+        { success = result.success
+          status = result.status
+          error = result.error
+          log = result.log
+          steps =
+            result.steps
+            |> List.map (fun step ->
+                { scope = step.scope
+                  blockId = step.blockId
+                  detail = step.detail }) }
 
     override this.Handler =
         {
@@ -246,5 +277,92 @@ type JobRemoteHandler(client: SpaceTradersClient, ctx: IRemoteContext) =
                                   shipSymbol = row.shipSymbol
                                   status = row.state
                                   finishedAt = row.updatedAt })
+                    }
+            simulateProgram =
+                fun (workspaceJson, shipSymbol) ->
+                    async {
+                        let! locale = currentLocale ()
+
+                        let compiled =
+                            Compiler.compileWorkspace locale customBlockLookup workspaceJson
+                            |> Result.bind (fun program ->
+                                match Validator.validate locale program with
+                                | [] -> Ok program
+                                | errors -> Error errors)
+
+                        match compiled with
+                        | Error errors ->
+                            let message = errors |> List.map (fun e -> e.message) |> String.concat "; "
+                            return Error message
+                        | Ok program ->
+                            let needsRuntime = programNeedsRuntime program
+
+                            let! tokenOpt =
+                                if needsRuntime then currentToken () else async { return None }
+
+                            let shipRequiredMessage =
+                                match shipSymbol, Validator.findShipRequirementAtStart program with
+                                | None, Some req ->
+                                    Some(
+                                        match locale with
+                                        | De ->
+                                            $"Dieses Programm braucht ein Schiff wegen Block „{req.kind}“ ({req.blockId}). Wähle oben in Piloten ein Schiff."
+                                        | En ->
+                                            $"This program needs a ship because of block \"{req.kind}\" ({req.blockId}). Select a ship under Pilots."
+                                    )
+                                | _ -> None
+
+                            match shipRequiredMessage with
+                            | Some message -> return Error message
+                            | None ->
+                                match needsRuntime, tokenOpt with
+                                | true, None ->
+                                    let message =
+                                        match locale with
+                                        | De -> "Bitte zuerst ein SpaceTraders-Token anmelden."
+                                        | En -> "Please log in with a SpaceTraders token first."
+
+                                    return Error message
+                                | _ ->
+                                    let token = tokenOpt |> Option.defaultValue ""
+
+                                    let! shipOpt =
+                                        async {
+                                            match shipSymbol with
+                                            | Some sym when needsRuntime ->
+                                                let! ship =
+                                                    RequestQueue.enqueue dbPath 1 $"getShip:{sym}" None (fun () ->
+                                                        client.GetShip(token, sym))
+
+                                                return Some ship
+                                            | _ -> return None
+                                        }
+
+                                    let fleetCount, contractCount =
+                                        if needsRuntime then
+                                            let agent =
+                                                RequestQueue.enqueue dbPath 1 "getAgent" None (fun () -> client.GetAgent(token))
+                                                |> Async.RunSynchronously
+
+                                            let contracts =
+                                                RequestQueue.enqueue dbPath 1 "listContracts" None (fun () -> client.ListContracts(token))
+                                                |> Async.RunSynchronously
+
+                                            agent.shipCount, List.length contracts
+                                        else
+                                            0, 0
+
+                                    let! result =
+                                        JobRunner.simulateProgram
+                                            client
+                                            dbPath
+                                            token
+                                            program
+                                            shipSymbol
+                                            shipOpt
+                                            fleetCount
+                                            contractCount
+
+                                    return Ok(toSimulationDto result)
                     }
         }

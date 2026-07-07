@@ -133,6 +133,22 @@ type SettingsService =
 /// Milestone 6/7 (§14/§15/§19): runs a compiled program against one real ship,
 /// persisted server-side (`JobRunner.fs`/`JobScheduler.fs`) so it survives restarts
 /// and keeps making progress in the background.
+type SimulationStepDto =
+    {
+        scope: string
+        blockId: string
+        detail: string option
+    }
+
+type SimulationResultDto =
+    {
+        success: bool
+        status: string
+        error: string option
+        steps: SimulationStepDto list
+        log: string list
+    }
+
 type JobStatusDto =
     {
         status: string
@@ -210,6 +226,10 @@ type JobService =
         /// survives a server restart since it reads the persisted `jobs` table
         /// directly instead of `JobRunner.fs`'s in-memory dictionary.
         listHistory: unit -> Async<JobHistoryDto list>
+        /// Current workspace JSON -> compile, validate, and run ephemerally against
+        /// the logged-in agent (or purely in-process for logic-only programs).
+        /// Returns compile/validation errors as `Error`, or a step trace + log on `Ok`.
+        simulateProgram: string * string option -> Async<Result<SimulationResultDto, string>>
     }
 
     interface IRemoteService with
@@ -422,6 +442,12 @@ type Model =
         systemWaypointsLoading: bool
         systemWaypointsError: string option
         pendingGalaxySystem: string option
+        /// Programme tab: last server-side simulation outcome (compile errors,
+        /// execution trace, messages, success/failure).
+        simulationOutcome: string option
+        simulationLog: string list
+        simulationSteps: SimulationStepDto list
+        simulationPlaybackIndex: int option
     }
 
 let private terminalPilotStatuses = [ "Completed"; "Failed"; "Cancelled" ]
@@ -519,6 +545,10 @@ let initModel =
         systemWaypointsLoading = false
         systemWaypointsError = None
         pendingGalaxySystem = None
+        simulationOutcome = None
+        simulationLog = []
+        simulationSteps = []
+        simulationPlaybackIndex = None
     }
 
 type Message =
@@ -539,7 +569,9 @@ type Message =
     | PublishSignature
     | Published of string
     | SimulateRun
-    | Simulated
+    | SimulationResultLoaded of Result<SimulationResultDto, string>
+    | SimulationPlaybackTick
+    | WorkshopReady
     | TokenInputChanged of string
     | SubmitToken
     | TokenSubmitted of Result<DashboardState, string>
@@ -677,6 +709,14 @@ type Strings =
       signaturePublished: string
       simulating: string
       simulationDone: string
+      simulationSucceeded: string
+      simulationFailed: string -> string
+      simulationCompileFailed: string -> string
+      simulationLogHeading: string
+      simulationStepsHeading: string
+      simulationStepLine: string * string * string -> string
+      simulationLoginRequired: string
+      simulationShipRequired: string
       pleaseOpenProgramFirst: string
       creating: string
       blockCreated: string
@@ -872,6 +912,15 @@ let private stringsDe: Strings =
       signaturePublished = "Signatur an Programm-Werkstatt übergeben."
       simulating = "Simuliere Ausführung..."
       simulationDone = "Simulation beendet."
+      simulationSucceeded = "Simulation erfolgreich abgeschlossen."
+      simulationFailed = fun msg -> $"Simulation fehlgeschlagen: {msg}"
+      simulationCompileFailed = fun msg -> $"Kompilierung/Prüfung fehlgeschlagen: {msg}"
+      simulationLogHeading = "Ausgabe"
+      simulationStepsHeading = "Ausgeführte Blöcke"
+      simulationStepLine = fun (scope, blockId, detail) ->
+          if detail <> "" then $"{scope} › {blockId}: {detail}" else $"{scope} › {blockId}"
+      simulationLoginRequired = "Bitte zuerst ein SpaceTraders-Token in den Einstellungen anmelden."
+      simulationShipRequired = "Dieses Programm braucht ein Schiff — wähle oben in Piloten ein Schiff."
       pleaseOpenProgramFirst = "Bitte zuerst ein Programm öffnen."
       creating = "Erstelle..."
       blockCreated = "Block erstellt."
@@ -1089,6 +1138,15 @@ let private stringsEn: Strings =
       signaturePublished = "Signature handed off to the program workshop."
       simulating = "Simulating run..."
       simulationDone = "Simulation finished."
+      simulationSucceeded = "Simulation completed successfully."
+      simulationFailed = fun msg -> $"Simulation failed: {msg}"
+      simulationCompileFailed = fun msg -> $"Compile/validation failed: {msg}"
+      simulationLogHeading = "Output"
+      simulationStepsHeading = "Executed blocks"
+      simulationStepLine = fun (scope, blockId, detail) ->
+          if detail <> "" then $"{scope} › {blockId}: {detail}" else $"{scope} › {blockId}"
+      simulationLoginRequired = "Please log in with a SpaceTraders token in Settings first."
+      simulationShipRequired = "This program needs a ship — select one under Pilots."
       pleaseOpenProgramFirst = "Please open a program first."
       creating = "Creating..."
       blockCreated = "Block created."
@@ -1493,12 +1551,13 @@ let update
 
     match message with
     | Init ->
-        // The main program container isn't initialized here — no program is open
-        // yet at startup (saved/named multiple-program library); `OpenProgram`
-        // initializes it on demand, keyed by the program's own id.
-        model, Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.initWorkspace" [| box model.workshopContainerId; box false |]) () (fun () -> Inited)
-    | Inited ->
-        { model with status = s.workshopLoaded }, Cmd.none
+        // Blockly workspaces live inside tab panels that start hidden (`display:
+        // none`). Injecting while hidden yields a blank canvas — both the program
+        // editor (`OpenProgram`) and the Blockwerkstatt (`ensureWorkspaceReady` on
+        // sub-tab switch / open custom block) init lazily once visible.
+        model, Cmd.none
+    | Inited -> model, Cmd.none
+    | WorkshopReady -> model, Cmd.none
 
     | Save ->
         let saveToDb = async {
@@ -1547,10 +1606,71 @@ let update
         { model with publishedCustomBlockId = Some customBlockId; status = s.signaturePublished }, Cmd.none
 
     | SimulateRun ->
-        { model with status = s.simulating },
-        Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.simulateRun" [| box model.containerId |]) () (fun () -> Simulated)
-    | Simulated ->
-        { model with status = s.simulationDone }, Cmd.none
+        if model.currentProgramId.IsNone then
+            { model with status = s.pleaseOpenProgramFirst }, Cmd.none
+        else
+            { model with
+                status = s.simulating
+                simulationOutcome = None
+                simulationLog = []
+                simulationSteps = []
+                simulationPlaybackIndex = None },
+            Cmd.OfAsync.perform
+                (fun () ->
+                    async {
+                        let! json = call<string> js "spaceKids.serializeWorkspace" [| box model.containerId |]
+                        return! jobRemote.simulateProgram (json, model.selectedShipSymbol)
+                    })
+                ()
+                SimulationResultLoaded
+    | SimulationResultLoaded(Error message) ->
+        { model with
+            status = s.simulationCompileFailed message
+            simulationOutcome = Some(s.simulationCompileFailed message) },
+        Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.clearHighlight" [| box model.containerId |]) () (fun () -> Highlighted)
+    | SimulationResultLoaded(Ok result) ->
+        let outcome =
+            if result.success then
+                s.simulationSucceeded
+            else
+                s.simulationFailed (result.error |> Option.defaultValue result.status)
+
+        let highlightCmd =
+            if result.steps.IsEmpty then
+                Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.clearHighlight" [| box model.containerId |]) () (fun () -> Highlighted)
+            else
+                Cmd.ofMsg SimulationPlaybackTick
+
+        { model with
+            status = if result.success then s.simulationDone else outcome
+            simulationOutcome = Some outcome
+            simulationLog = List.rev result.log
+            simulationSteps = result.steps
+            simulationPlaybackIndex = if result.steps.IsEmpty then None else Some 0 },
+        highlightCmd
+    | SimulationPlaybackTick ->
+        match model.simulationPlaybackIndex, model.simulationSteps with
+        | Some index, steps when index < steps.Length ->
+            let step = steps.[index]
+            let highlightCmd =
+                if step.blockId <> "" then
+                    Cmd.OfAsync.perform
+                        (fun () -> callVoid js "spaceKids.highlightBlock" [| box model.containerId; box step.blockId |])
+                        ()
+                        (fun () -> Highlighted)
+                else
+                    Cmd.none
+
+            let nextIndex = index + 1
+
+            let nextCmd =
+                if nextIndex < steps.Length then
+                    Cmd.OfAsync.perform (fun () -> async { do! Async.Sleep 450 }) () (fun () -> SimulationPlaybackTick)
+                else
+                    Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.clearHighlight" [| box model.containerId |]) () (fun () -> Highlighted)
+
+            { model with simulationPlaybackIndex = Some nextIndex }, Cmd.batch [ highlightCmd; nextCmd ]
+        | _ -> model, Cmd.none
 
     | TokenInputChanged value ->
         { model with tokenInput = value }, Cmd.none
@@ -1776,7 +1896,14 @@ let update
         let json = jsonOpt |> Option.defaultValue """{"blocks":{"languageVersion":0,"blocks":[]}}"""
 
         { model with workshopStatus = s.workshopLoaded },
-        Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.loadWorkspace" [| box model.workshopContainerId; box json |]) () (fun () -> Loaded)
+        Cmd.OfAsync.perform
+            (fun () ->
+                async {
+                    do! callVoid js "spaceKids.ensureWorkspaceReady" [| box model.workshopContainerId; box false |]
+                    do! callVoid js "spaceKids.loadWorkspace" [| box model.workshopContainerId; box json |]
+                })
+            ()
+            (fun () -> Loaded)
 
     | RenameNameInputChanged value ->
         { model with renameNameInput = value }, Cmd.none
@@ -2040,7 +2167,7 @@ let update
             programStatus = s.programLoading },
         Cmd.batch [
             closeOldCmd
-            Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.initWorkspace" [| box id; box false |]) () (fun () -> Inited)
+            Cmd.OfAsync.perform (fun () -> callVoid js "spaceKids.ensureWorkspaceReady" [| box id; box false |]) () (fun () -> Inited)
             Cmd.OfAsync.perform (fun () -> programRemote.loadDefinition id) () ProgramDefinitionLoaded
             // Per-program watch mode: `watchModeLocked` is only recomputed on
             // `PilotsLoaded`, which doesn't fire on its own just because a
@@ -2139,7 +2266,23 @@ let update
     | LogLevelSet -> model, Cmd.none
 
     | SwitchProgramSubTab subTab ->
-        { model with activeProgramSubTab = subTab }, Cmd.none
+        let resizeCmd =
+            match subTab with
+            | CustomBlocksSubTab ->
+                Cmd.OfAsync.perform
+                    (fun () -> callVoid js "spaceKids.ensureWorkspaceReady" [| box model.workshopContainerId; box false |])
+                    ()
+                    (fun () -> WorkshopReady)
+            | ProgramsSubTab ->
+                match model.currentProgramId with
+                | Some id ->
+                    Cmd.OfAsync.perform
+                        (fun () -> callVoid js "spaceKids.ensureWorkspaceReady" [| box id; box model.readOnly |])
+                        ()
+                        (fun () -> WorkshopReady)
+                | None -> Cmd.none
+
+        { model with activeProgramSubTab = subTab }, resizeCmd
     | SwitchTab tab ->
         let lazyLoadCmds =
             [
@@ -3208,6 +3351,35 @@ let view model dispatch =
                             }
                             button { on.click (fun _ -> dispatch SimulateRun); s.simulateRunButton }
                         }
+                        match model.simulationOutcome with
+                        | None -> ()
+                        | Some outcome ->
+                            div {
+                                attr.style "border: 1px solid #888; padding: 0.5rem; margin: 0.5rem 0; background: rgba(128,128,128,0.08)"
+                                p { attr.style "font-weight: bold; margin: 0 0 0.5rem 0"; outcome }
+                                if not model.simulationLog.IsEmpty then
+                                    div {
+                                        p { attr.style "font-weight: bold; margin: 0.25rem 0"; s.simulationLogHeading }
+                                        ul {
+                                            for line in model.simulationLog do
+                                                li { line }
+                                        }
+                                    }
+                                if not model.simulationSteps.IsEmpty then
+                                    div {
+                                        p { attr.style "font-weight: bold; margin: 0.25rem 0"; s.simulationStepsHeading }
+                                        ul {
+                                            for step in model.simulationSteps do
+                                                li {
+                                                    s.simulationStepLine (
+                                                        step.scope,
+                                                        step.blockId,
+                                                        step.detail |> Option.defaultValue ""
+                                                    )
+                                                }
+                                        }
+                                    }
+                            }
                         if model.watchModeLocked then
                             p { s.watchModeLockedBanner }
                         h2 { s.programHeading }
