@@ -1368,9 +1368,12 @@ let internal computeGalaxyBounds (systems: StarSystem list) : float * float * fl
         let minY, maxY = if minY = maxY then minY - 1.0, maxY + 1.0 else minY, maxY
         (minX, maxX, minY, maxY)
 
-/// Cap rendered galaxy-map DOM nodes so zoom/pan stays responsive with a full
-/// universe catalog in memory.
+/// Cap rendered galaxy-map DOM nodes at wide zoom so panning stays responsive with a
+/// full universe catalog in memory. Deep zoom raises the budget until every system
+/// in the viewport is drawn (no stride sampling).
 let internal galaxyMapMaxNodes = 500
+
+let internal galaxyMapMaxZoom = 64.0
 
 let internal galaxyMapViewMargin = 12.0
 
@@ -1386,8 +1389,11 @@ let internal buildGalaxyMapNodes (systems: StarSystem list) (bounds: float * flo
         { system = system; sx = sx; sy = sy })
 
 let internal galaxyMapNodeBudget (zoom: float) : int =
-    if zoom >= 3.0 then 2500
-    elif zoom >= 2.0 then 1200
+    if zoom >= 16.0 then System.Int32.MaxValue
+    elif zoom >= 8.0 then 10000
+    elif zoom >= 4.0 then 5000
+    elif zoom >= 2.0 then 2500
+    elif zoom >= 1.5 then 1200
     else galaxyMapMaxNodes
 
 let internal filterGalaxyMapNodes
@@ -1443,7 +1449,9 @@ let internal svgPointFromClick (viewX: float) (viewY: float) (viewSize: float) (
     (svgX, svgY)
 
 let internal galaxyMapShowLabels (zoom: float) (visibleCount: int) =
-    zoom >= 2.5 && visibleCount <= 80
+    if zoom >= 8.0 then visibleCount <= 200
+    elif zoom >= 4.0 then visibleCount <= 120
+    else zoom >= 2.5 && visibleCount <= 80
 
 let internal galaxyMapHitRadius (zoom: float) =
     max 6.0 (14.0 / zoom)
@@ -1953,7 +1961,7 @@ let update
 
     | GalaxyWheel deltaY ->
         let factor = if deltaY < 0.0 then 1.15 else 1.0 / 1.15
-        { model with galaxyMapZoom = model.galaxyMapZoom * factor |> max 1.0 |> min 8.0 }, Cmd.none
+        { model with galaxyMapZoom = model.galaxyMapZoom * factor |> max 1.0 |> min galaxyMapMaxZoom }, Cmd.none
     | GalaxyDragStart -> { model with galaxyDragging = true; galaxyMapDragMoved = false }, Cmd.none
     | GalaxyDragMove(dx, dy) ->
         if model.galaxyDragging then

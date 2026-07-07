@@ -177,6 +177,22 @@ let private starSystem (symbol: string) (x: int) (y: int) : StarSystem =
       y = y }
 
 [<Fact>]
+let ``galaxyMapNodeBudget removes sampling cap at deep zoom`` () =
+    Assert.Equal(galaxyMapMaxNodes, galaxyMapNodeBudget 1.0)
+    Assert.True(galaxyMapNodeBudget 16.0 > 10000)
+
+[<Fact>]
+let ``filterGalaxyMapNodes shows every visible node when budget exceeds viewport count`` () =
+    let systems =
+        [ for i in 0..49 -> starSystem $"S{i}" (i % 10) (i / 10) ]
+
+    let bounds = computeGalaxyBounds systems
+    let nodes = buildGalaxyMapNodes systems bounds
+    let rendered, visible = filterGalaxyMapNodes nodes 0.0 0.0 mapViewSize (galaxyMapNodeBudget 16.0) []
+
+    Assert.Equal(visible, rendered.Length)
+
+[<Fact>]
 let ``filterGalaxyMapNodes caps rendered nodes but always keeps pinned systems`` () =
     let systems =
         [ for i in 0..99 -> starSystem $"S{i}" (i % 10) (i / 10) ]
