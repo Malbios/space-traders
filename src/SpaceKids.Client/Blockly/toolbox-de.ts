@@ -17,6 +17,12 @@ const CATEGORY_NAMES = {
         info: "Informationen",
         accessors: "Zugriffe",
         logic: "Logik",
+        loops: "Schleifen",
+        math: "Mathe",
+        text: "Text",
+        lists: "Listen",
+        flow: "Ablauf",
+        flotilla: "Flotille",
         variables: "Variablen",
         customBlock: "Eigener Block",
         customBlocks: "Eigene Blöcke",
@@ -26,6 +32,12 @@ const CATEGORY_NAMES = {
         info: "Information",
         accessors: "Accessors",
         logic: "Logic",
+        loops: "Loops",
+        math: "Math",
+        text: "Text",
+        lists: "Lists",
+        flow: "Flow",
+        flotilla: "Flotilla",
         variables: "Variables",
         customBlock: "Custom block",
         customBlocks: "Custom blocks",
@@ -53,26 +65,16 @@ const PROGRAMMING_BLOCK_LABELS: Record<string, { de: string; en: string }> = {
     text: { de: "Text", en: "text" },
 };
 
-const PROGRAMMING_BLOCK_TYPES: string[] = [
-    "controls_if",
-    "controls_repeat_ext",
-    "controls_whileUntil",
-    "controls_forEach",
-    "controls_flow_statements",
-    "logic_compare",
-    "logic_operation",
-    "logic_negate",
-    "logic_boolean",
-    "math_arithmetic",
-    "math_change",
-    "math_number",
-    "text",
-    "lists_create_with",
-    "lists_setIndex",
-    "lists_getIndex",
-    "sk_show_message",
-    "sk_wait",
-];
+/** Split from one overloaded "Logik" bucket into per-kind groups (a real block was
+ * found lumped in wrong — `text`, a string primitive, sat in "Logik") — each group
+ * becomes its own toolbox category below. `PROGRAMMING_BLOCK_LABELS` stays the single
+ * shared label lookup across all of them, keyed by block type, not category. */
+const LOGIC_BLOCK_TYPES: string[] = ["controls_if", "logic_compare", "logic_operation", "logic_negate", "logic_boolean"];
+const LOOP_BLOCK_TYPES: string[] = ["controls_repeat_ext", "controls_whileUntil", "controls_forEach", "controls_flow_statements"];
+const MATH_BLOCK_TYPES: string[] = ["math_arithmetic", "math_change", "math_number"];
+const TEXT_BLOCK_TYPES: string[] = ["text"];
+const LIST_BLOCK_TYPES: string[] = ["lists_create_with", "lists_setIndex", "lists_getIndex"];
+const FLOW_BLOCK_TYPES: string[] = ["sk_show_message", "sk_wait"];
 
 function programmingBlockLabel(blockType: string): string {
     const labels = PROGRAMMING_BLOCK_LABELS[blockType];
@@ -126,7 +128,12 @@ export function buildCatalogToolbox(
         (type) => (genericRecordFieldBlockTypes.includes(type) ? getCatalogBlockLabel(type) : type),
     );
     const sortedFlotilla = sortByLabel(flotillaBlockTypes, getCatalogBlockLabel);
-    const sortedProgramming = sortByLabel(PROGRAMMING_BLOCK_TYPES, programmingBlockLabel);
+    const sortedLogic = sortByLabel(LOGIC_BLOCK_TYPES, programmingBlockLabel);
+    const sortedLoops = sortByLabel(LOOP_BLOCK_TYPES, programmingBlockLabel);
+    const sortedMath = sortByLabel(MATH_BLOCK_TYPES, programmingBlockLabel);
+    const sortedText = sortByLabel(TEXT_BLOCK_TYPES, programmingBlockLabel);
+    const sortedLists = sortByLabel(LIST_BLOCK_TYPES, programmingBlockLabel);
+    const sortedFlow = sortByLabel(FLOW_BLOCK_TYPES, programmingBlockLabel);
     const sortedCustomBlocks = [...customBlocks].sort((left, right) =>
         left.name.localeCompare(right.name, getCurrentLocale()),
     );
@@ -167,10 +174,43 @@ export function buildCatalogToolbox(
                 kind: "category",
                 name: names.logic,
                 colour: "210",
-                contents: [
-                    ...sortedFlotilla.map((type) => ({ kind: "block", type })),
-                    ...sortedProgramming.map((type) => ({ kind: "block", type })),
-                ],
+                contents: sortedLogic.map((type) => ({ kind: "block", type })),
+            },
+            {
+                kind: "category",
+                name: names.loops,
+                colour: "120",
+                contents: sortedLoops.map((type) => ({ kind: "block", type })),
+            },
+            {
+                kind: "category",
+                name: names.math,
+                colour: "255",
+                contents: sortedMath.map((type) => ({ kind: "block", type })),
+            },
+            {
+                kind: "category",
+                name: names.text,
+                colour: "45",
+                contents: sortedText.map((type) => ({ kind: "block", type })),
+            },
+            {
+                kind: "category",
+                name: names.lists,
+                colour: "315",
+                contents: sortedLists.map((type) => ({ kind: "block", type })),
+            },
+            {
+                kind: "category",
+                name: names.flow,
+                colour: "190",
+                contents: sortedFlow.map((type) => ({ kind: "block", type })),
+            },
+            {
+                kind: "category",
+                name: names.flotilla,
+                colour: "20",
+                contents: sortedFlotilla.map((type) => ({ kind: "block", type })),
             },
             {
                 kind: "category",
