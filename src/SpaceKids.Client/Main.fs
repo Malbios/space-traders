@@ -2166,10 +2166,11 @@ let update
         { model with marketsWaypointsLoading = false; marketsWaypointsError = Some message }, Cmd.none
     | LoadMarketData waypointSymbol ->
         { model with marketsDataLoading = model.marketsDataLoading.Add waypointSymbol },
-        Cmd.OfAsync.perform
+        Cmd.OfAsync.either
             (fun () -> agentRemote.getWaypointMarket waypointSymbol)
             ()
             (fun market -> MarketDataLoaded(waypointSymbol, market))
+            (fun _ -> MarketDataLoaded(waypointSymbol, None))
     | MarketDataLoaded(waypointSymbol, market) ->
         { model with
             marketsDataLoading = model.marketsDataLoading.Remove waypointSymbol
@@ -2210,10 +2211,11 @@ let update
         { model with shipyardsWaypointsLoading = false; shipyardsWaypointsError = Some message }, Cmd.none
     | LoadShipyardData waypointSymbol ->
         { model with shipyardsDataLoading = model.shipyardsDataLoading.Add waypointSymbol },
-        Cmd.OfAsync.perform
+        Cmd.OfAsync.either
             (fun () -> agentRemote.getWaypointShipyard waypointSymbol)
             ()
             (fun shipyard -> ShipyardDataLoaded(waypointSymbol, shipyard))
+            (fun _ -> ShipyardDataLoaded(waypointSymbol, None))
     | ShipyardDataLoaded(waypointSymbol, shipyard) ->
         { model with
             shipyardsDataLoading = model.shipyardsDataLoading.Remove waypointSymbol

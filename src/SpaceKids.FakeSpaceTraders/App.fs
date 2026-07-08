@@ -244,6 +244,19 @@ let private waypoints =
         y = 4
         traits =
           [ { symbol = "MARKETPLACE"; name = "Marktplatz"; description = "Ein Ort zum Handeln." }
+            { symbol = "SHIPYARD"; name = "Werft"; description = "Hier können Schiffe gekauft werden." } ] }
+      /// Regression fixture: the real API omits the `ships` key entirely (not an
+      /// empty array) when no ship is present, unlike `shipyardFixture` above which
+      /// always includes it. The shipyard route special-cases this one symbol to
+      /// return that raw shape, so `fetchWaypointShipyard`'s null-normalization has
+      /// something to actually guard against.
+      { symbol = "X1-TEST-D4"
+        ``type`` = "PLANET"
+        systemSymbol = systemSymbol
+        x = -8
+        y = 5
+        traits =
+          [ { symbol = "MARKETPLACE"; name = "Marktplatz"; description = "Ein Ort zum Handeln." }
             { symbol = "SHIPYARD"; name = "Werft"; description = "Hier können Schiffe gekauft werden." } ] } ]
 
 let private nearbyWaypoints =
@@ -759,7 +772,18 @@ let configureApp (app: WebApplication) =
                             task {
                                 let waypointSymbol = routeWaypointSymbol ctx
 
-                                if hasTrait waypointSymbol "SHIPYARD" then
+                                if waypointSymbol = "X1-TEST-D4" then
+                                    // Regression fixture: real API omits `ships`
+                                    // entirely rather than sending `[]` — raw JSON,
+                                    // bypassing `shipyardFixture`'s normal shape.
+                                    return
+                                        Results.Content(
+                                            sprintf
+                                                """{"data":{"symbol":"%s","shipTypes":[{"type":"SHIP_MINING_DRONE"}]}}"""
+                                                waypointSymbol,
+                                            "application/json"
+                                        )
+                                elif hasTrait waypointSymbol "SHIPYARD" then
                                     return ok (shipyardFixture waypointSymbol)
                                 else
                                     return Results.NotFound()

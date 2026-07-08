@@ -143,7 +143,16 @@ let fetchWaypointShipyard (client: SpaceTradersClient) (dbPath: string) (token: 
                 RequestQueue.enqueue dbPath 1 $"GET /systems/{{system}}/waypoints/{waypointSymbol}/shipyard" requestJson (fun () ->
                     client.GetShipyard(token, Waypoint.systemSymbolOf waypointSymbol, waypointSymbol))
 
-            return Some result
+            // Same real-API omission behavior as `Market.tradeGoods` (see the doc
+            // comment on that field in `Types.fs`): when no ship of ours is docked
+            // here, the real API omits the `ships` key entirely rather than sending
+            // an empty array. Plain `System.Text.Json` then binds the F# list
+            // constructor parameter to `null`, not `[]` — normalize it here so
+            // `shipyard.ships.IsEmpty` downstream never sees a null reference.
+            let normalized =
+                if isNull (box result.ships) then { result with ships = [] } else result
+
+            return Some normalized
         with ex when isNotFound ex ->
             return None
     }

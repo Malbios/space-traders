@@ -184,6 +184,25 @@ let ``fetchWaypointShipyard has empty priced ships but non-empty shipTypes when 
             Assert.NotEmpty(shipyard.shipTypes)
         | None -> Assert.Fail("expected a shipyard for X1-TEST-C3"))
 
+/// Regression test: the real API omits the `ships` key entirely (not an empty
+/// array) when no ship is present — `X1-TEST-D4`'s fixture simulates that raw
+/// shape. Before the null-normalization fix in `fetchWaypointShipyard`, this
+/// crashed with a `NullReferenceException` instead of returning `Some` with an
+/// empty `ships` list.
+[<Fact>]
+let ``fetchWaypointShipyard normalizes a missing ships key to an empty list`` () =
+    use fixture = new AgentFixture()
+
+    withAgentTest (fun dbPath ->
+        let result =
+            withPumpedQueue 20.0 (fun () ->
+                AgentRemoting.fetchWaypointShipyard fixture.Client dbPath App.seededToken "X1-TEST-D4"
+                |> Async.RunSynchronously)
+
+        match result with
+        | Some shipyard -> Assert.Empty(shipyard.ships)
+        | None -> Assert.Fail("expected a shipyard for X1-TEST-D4"))
+
 /// Contracts tab: `fake-contract-2` is seeded unaccepted specifically so this
 /// (and the Accept button in the client) has something to exercise.
 [<Fact>]

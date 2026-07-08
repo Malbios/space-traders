@@ -53,7 +53,7 @@ let ``ListContracts returns the seeded contracts`` () =
 let ``ListWaypoints returns the seeded waypoints`` () =
     use fixture = new FakeSpaceTradersFixture()
     let waypoints = fixture.Client.ListWaypoints(App.seededToken, "X1-TEST") |> Async.RunSynchronously
-    Assert.Equal(3, waypoints.Length)
+    Assert.Equal(4, waypoints.Length)
 
 [<Fact>]
 let ``ListWaypoints round-trips each waypoint's traits`` () =
