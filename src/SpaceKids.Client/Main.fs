@@ -364,6 +364,15 @@ type Model =
         /// read-only/edit locking for *any* active pilot.
         watchedJobId: string option
         watchedFrames: (string * string option) list
+        /// The pilot whose full activity log is currently expanded on its card, if
+        /// any (§9d/§14 follow-up) — independent of `watchedJobId`/highlight polling.
+        /// Only one at a time, same single-`Option` convention `watchedJobId` already
+        /// uses. Fetched on-demand via `jobRemote.getStatus` (the same call
+        /// `WatchTick` already makes for highlighting) rather than bundled into the
+        /// regular pilot-list poll, since most pilots never need their full log
+        /// shown.
+        expandedLogJobId: string option
+        expandedLogLines: string list
         /// Entity inspector (visual-map feature): the currently open detail
         /// panel, if any (cleared whenever a *different* entity is opened).
         /// Market/shipyard data moved to the dedicated Markets/Shipyards tabs
@@ -551,6 +560,8 @@ let initModel =
         workshopStatus = ""
         watchedJobId = None
         watchedFrames = []
+        expandedLogJobId = None
+        expandedLogLines = []
         inspecting = None
         mapTickCount = 0
         mapZoom = 1.0
@@ -682,6 +693,15 @@ type Message =
     /// `model.watchedJobId` before applying, so a slow response for a pilot the
     /// player has since stopped watching can't overwrite a newer, faster watch.
     | WatchStatusLoaded of jobId: string * JobStatusDto option
+    /// Toggles the full activity log panel on one pilot's card (§9d/§14 follow-up:
+    /// `lastLogLine` alone can't show every message printed inside a loop). Turning
+    /// it on fires the fetch below; turning it off (or switching to a different
+    /// pilot's log) just clears the state, no request involved.
+    | ToggleExpandedLog of jobId: string
+    /// `jobId` is the one this response was requested *for* — same stale-response
+    /// guard `WatchStatusLoaded` already uses, since the player can toggle to a
+    /// different pilot (or collapse) while the request is in flight.
+    | ExpandedLogLoaded of jobId: string * JobStatusDto option
     | InspectShip of string
     | InspectWaypoint of string
     | CloseInspector
@@ -925,6 +945,8 @@ type Strings =
       noShipLabel: string
       pilotStatusLine: string -> string
       lastLogLine: string -> string
+      showFullLog: string
+      hideFullLog: string
       resume: string
       pause: string
       stop: string
@@ -1155,6 +1177,8 @@ let private stringsDe: Strings =
       noShipLabel = "kein Schiff"
       pilotStatusLine = fun status -> $"Status: {status}"
       lastLogLine = fun line -> $"Zuletzt: {line}"
+      showFullLog = "Verlauf anzeigen"
+      hideFullLog = "Verlauf ausblenden"
       resume = "Fortsetzen"
       pause = "Pause"
       stop = "Stoppen"
@@ -1385,6 +1409,8 @@ let private stringsEn: Strings =
       noShipLabel = "no ship"
       pilotStatusLine = fun status -> $"Status: {status}"
       lastLogLine = fun line -> $"Last: {line}"
+      showFullLog = "Show full log"
+      hideFullLog = "Hide full log"
       resume = "Resume"
       pause = "Pause"
       stop = "Stop"
@@ -2130,6 +2156,23 @@ let update
                 Cmd.OfAsync.perform (fun () -> async { do! Async.Sleep 1000 }) () (fun () -> WatchTick)
 
         { model with watchedFrames = frames }, Cmd.batch [ programHighlightCmd; workshopHighlightCmd; nextTickCmd ]
+
+    | ToggleExpandedLog jobId ->
+        if model.expandedLogJobId = Some jobId then
+            { model with expandedLogJobId = None; expandedLogLines = [] }, Cmd.none
+        else
+            { model with expandedLogJobId = Some jobId; expandedLogLines = [] },
+            Cmd.OfAsync.perform (fun () -> jobRemote.getStatus jobId) () (fun dto -> ExpandedLogLoaded(jobId, dto))
+    | ExpandedLogLoaded(requestedJobId, _) when model.expandedLogJobId <> Some requestedJobId ->
+        // Stale response — collapsed, or toggled to a different pilot, while this
+        // request was in flight (same reasoning as `WatchStatusLoaded`'s own guard).
+        model, Cmd.none
+    | ExpandedLogLoaded(_, None) -> { model with expandedLogJobId = None; expandedLogLines = [] }, Cmd.none
+    | ExpandedLogLoaded(_, Some dto) ->
+        // `dto.log` is newest-first (`job.log`'s own prepend order, same as
+        // `lastLogLine`'s `List.tryHead` relies on) — reversed here so the panel
+        // reads top-to-bottom in the order messages were actually printed.
+        { model with expandedLogLines = List.rev dto.log }, Cmd.none
 
     | InspectShip shipSymbol -> { model with inspecting = Some(InspectedShip shipSymbol) }, Cmd.none
     | InspectWaypoint waypointSymbol -> { model with inspecting = Some(InspectedWaypoint waypointSymbol) }, Cmd.none
@@ -3229,6 +3272,16 @@ let private viewJobRunner model dispatch =
                     match pilot.lastLogLine with
                     | Some line -> p { s.lastLogLine line }
                     | None -> ()
+                    button {
+                        on.click (fun _ -> dispatch (ToggleExpandedLog pilot.jobId))
+                        if model.expandedLogJobId = Some pilot.jobId then s.hideFullLog else s.showFullLog
+                    }
+                    if model.expandedLogJobId = Some pilot.jobId then
+                        ul {
+                            attr.style "margin: 0.25rem 0 0.5rem 1rem; padding-left: 1rem"
+                            for line in model.expandedLogLines do
+                                li { line }
+                        }
                     if not isTerminal then
                         if isPaused then
                             button { on.click (fun _ -> dispatch (ResumePilot pilot.jobId)); s.resume }
