@@ -373,6 +373,11 @@ type Model =
         /// shown.
         expandedLogJobId: string option
         expandedLogLines: string list
+        /// The (waypointSymbol, shipType) pair whose full detail (frame/reactor/
+        /// engine/modules/mounts/crew) is currently unfolded in the Shipyards tab, if
+        /// any — single-expansion-at-a-time, same convention as `expandedLogJobId`.
+        /// Pure UI toggle: the data's already local in `shipyardsData`, no fetch.
+        expandedShipyardShipType: (string * string) option
         /// Entity inspector (visual-map feature): the currently open detail
         /// panel, if any (cleared whenever a *different* entity is opened).
         /// Market/shipyard data moved to the dedicated Markets/Shipyards tabs
@@ -562,6 +567,7 @@ let initModel =
         watchedFrames = []
         expandedLogJobId = None
         expandedLogLines = []
+        expandedShipyardShipType = None
         inspecting = None
         mapTickCount = 0
         mapZoom = 1.0
@@ -721,6 +727,10 @@ type Message =
     | LoadShipyardData of waypointSymbol: string
     | ShipyardDataLoaded of waypointSymbol: string * Shipyard option
     | SetShipyardsFilter of string
+    /// Toggles a ship type's full detail (frame/reactor/engine/modules/mounts/crew)
+    /// open on its row in the Shipyards tab — pure UI state, no fetch (the data's
+    /// already in `shipyardsData`).
+    | ToggleShipyardShipType of waypointSymbol: string * shipType: string
     | MapTick
     | MapWheel of deltaY: float
     | MapDragStart
@@ -896,6 +906,21 @@ type Strings =
       loadShipyard: string
       shipyardTypeLine: string * int -> string
       shipTypeNameLine: string -> string
+      showShipDetails: string
+      hideShipDetails: string
+      frameHeading: string
+      reactorHeading: string
+      engineHeading: string
+      modulesHeading: string
+      mountsHeading: string
+      crewHeading: string
+      /// Compact "Power/Crew/Slots" line for a frame/reactor/engine/module/mount's
+      /// shared requirements struct — skips any `None` entries rather than showing
+      /// a placeholder for a requirement that kind of component never has.
+      requirementsLine: int option * int option * int option -> string
+      crewLine: int * int -> string
+      moduleLine: string * string -> string
+      mountLine: string * string -> string
       pricesHiddenHint: string
       shipNotFound: string -> string
       waypointNotFound: string -> string
@@ -1111,6 +1136,24 @@ let private stringsDe: Strings =
       loadShipyard = "Werft laden"
       shipyardTypeLine = fun (``type``, price) -> $"{``type``}: {price} Credits"
       shipTypeNameLine = fun ``type`` -> ``type``
+      showShipDetails = "Details anzeigen"
+      hideShipDetails = "Details ausblenden"
+      frameHeading = "Rahmen"
+      reactorHeading = "Reaktor"
+      engineHeading = "Antrieb"
+      modulesHeading = "Module"
+      mountsHeading = "Aufsätze"
+      crewHeading = "Besatzung"
+      requirementsLine =
+        fun (power, crew, slots) ->
+            [ power |> Option.map (fun v -> $"Energie: {v}")
+              crew |> Option.map (fun v -> $"Besatzung: {v}")
+              slots |> Option.map (fun v -> $"Plätze: {v}") ]
+            |> List.choose id
+            |> String.concat " · "
+      crewLine = fun (required, capacity) -> $"Benötigt: {required} / Kapazität: {capacity}"
+      moduleLine = fun (symbol, name) -> $"{name} ({symbol})"
+      mountLine = fun (symbol, name) -> $"{name} ({symbol})"
       pricesHiddenHint = "Preise werden nur angezeigt, wenn eines deiner Schiffe hier ist."
       shipNotFound = fun symbol -> $"Schiff {symbol} nicht gefunden."
       waypointNotFound = fun symbol -> $"Wegpunkt {symbol} nicht gefunden."
@@ -1345,6 +1388,24 @@ let private stringsEn: Strings =
       loadShipyard = "Load shipyard"
       shipyardTypeLine = fun (``type``, price) -> $"{``type``}: {price} credits"
       shipTypeNameLine = fun ``type`` -> ``type``
+      showShipDetails = "Show details"
+      hideShipDetails = "Hide details"
+      frameHeading = "Frame"
+      reactorHeading = "Reactor"
+      engineHeading = "Engine"
+      modulesHeading = "Modules"
+      mountsHeading = "Mounts"
+      crewHeading = "Crew"
+      requirementsLine =
+        fun (power, crew, slots) ->
+            [ power |> Option.map (fun v -> $"Power: {v}")
+              crew |> Option.map (fun v -> $"Crew: {v}")
+              slots |> Option.map (fun v -> $"Slots: {v}") ]
+            |> List.choose id
+            |> String.concat " · "
+      crewLine = fun (required, capacity) -> $"Required: {required} / Capacity: {capacity}"
+      moduleLine = fun (symbol, name) -> $"{name} ({symbol})"
+      mountLine = fun (symbol, name) -> $"{name} ({symbol})"
       pricesHiddenHint = "Prices are only shown when one of your ships is here."
       shipNotFound = fun symbol -> $"Ship {symbol} not found."
       waypointNotFound = fun symbol -> $"Waypoint {symbol} not found."
@@ -2268,6 +2329,12 @@ let update
                 | None -> model.shipyardsData },
         Cmd.none
     | SetShipyardsFilter text -> { model with shipyardsFilterText = text }, Cmd.none
+    | ToggleShipyardShipType(waypointSymbol, shipType) ->
+        let key = waypointSymbol, shipType
+
+        { model with
+            expandedShipyardShipType = if model.expandedShipyardShipType = Some key then None else Some key },
+        Cmd.none
 
     | MapTick ->
         let count = model.mapTickCount + 1
@@ -3082,6 +3149,62 @@ let private viewMarketCard (s: Strings) (model: Model) dispatch (waypoint: Waypo
                     ul { for good in names do li { s.exportLine good.name } }
     }
 
+/// The frame/reactor/engine/modules/mounts/crew detail unfolded beneath a ship
+/// type's row when expanded (`model.expandedShipyardShipType`) — this data has been
+/// on `ShipyardShipEntry` since the generic-accessor work, just never rendered here.
+let private viewShipTypeDetail (s: Strings) (entry: ShipyardShipEntry) =
+    div {
+        attr.style "margin: 0.25rem 0 0.5rem 1rem; padding: 0.25rem 0.5rem; border-left: 2px solid #ccc"
+        if entry.name <> "" then
+            p {
+                attr.style "font-weight: bold"
+                entry.name
+            }
+        if entry.description <> "" then p { entry.description }
+
+        p {
+            attr.style "font-weight: bold; margin: 0.25rem 0"
+            s.frameHeading
+        }
+        ul {
+            li { entry.frame.name }
+            li { s.requirementsLine (entry.frame.requirements.power, entry.frame.requirements.crew, entry.frame.requirements.slots) }
+        }
+        p {
+            attr.style "font-weight: bold; margin: 0.25rem 0"
+            s.reactorHeading
+        }
+        ul {
+            li { entry.reactor.name }
+            li { s.requirementsLine (entry.reactor.requirements.power, entry.reactor.requirements.crew, entry.reactor.requirements.slots) }
+        }
+        p {
+            attr.style "font-weight: bold; margin: 0.25rem 0"
+            s.engineHeading
+        }
+        ul {
+            li { entry.engine.name }
+            li { s.requirementsLine (entry.engine.requirements.power, entry.engine.requirements.crew, entry.engine.requirements.slots) }
+        }
+        if not entry.modules.IsEmpty then
+            p {
+                attr.style "font-weight: bold; margin: 0.25rem 0"
+                s.modulesHeading
+            }
+            ul { for m in entry.modules do li { s.moduleLine (m.symbol, m.name) } }
+        if not entry.mounts.IsEmpty then
+            p {
+                attr.style "font-weight: bold; margin: 0.25rem 0"
+                s.mountsHeading
+            }
+            ul { for m in entry.mounts do li { s.mountLine (m.symbol, m.name) } }
+        p {
+            attr.style "font-weight: bold; margin: 0.25rem 0"
+            s.crewHeading
+        }
+        p { s.crewLine (entry.crew.required, entry.crew.capacity) }
+    }
+
 let private viewShipyardCard (s: Strings) (model: Model) dispatch (waypoint: Waypoint) =
     div {
         attr.style "border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem; margin: 0.5rem 0"
@@ -3099,7 +3222,17 @@ let private viewShipyardCard (s: Strings) (model: Model) dispatch (waypoint: Way
             if not shipyard.ships.IsEmpty then
                 ul {
                     for entry in shipyard.ships do
-                        li { s.shipyardTypeLine (entry.``type``, entry.purchasePrice) }
+                        let isExpanded = model.expandedShipyardShipType = Some(waypoint.symbol, entry.``type``)
+
+                        li {
+                            text (s.shipyardTypeLine (entry.``type``, entry.purchasePrice))
+                            button {
+                                attr.style "font-size: 0.8em; padding: 0.1em 0.5em; margin-left: 0.5rem"
+                                on.click (fun _ -> dispatch (ToggleShipyardShipType(waypoint.symbol, entry.``type``)))
+                                if isExpanded then s.hideShipDetails else s.showShipDetails
+                            }
+                            if isExpanded then viewShipTypeDetail s entry
+                        }
                 }
             elif not shipyard.shipTypes.IsEmpty then
                 p { s.pricesHiddenHint }
