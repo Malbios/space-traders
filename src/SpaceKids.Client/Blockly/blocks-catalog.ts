@@ -1172,14 +1172,17 @@ export function registerCatalogBlocks(): void {
  * is the exact same check string every list-producing catalog/accessor block
  * already declares as its `outputCheck` (`getWaypoints`, `shipyardTypes`,
  * `marketGoods`, ...), so this doesn't block any legitimate program — an
- * unchecked block (e.g. `variables_get`) still connects fine either way.
+ * unchecked block (e.g. `variables_get`) still connects fine either way. Also
+ * accepts `"Array"`, stock Blockly's own output check on `lists_create_with` — found
+ * live that a plain list-literal block could never actually connect into `LIST`
+ * without it (`"List"` alone rejected `"Array"` as a mismatched check).
  * Idempotent (patches the stock `init` once, safe to call once at seam init).
  */
 export function registerStockBlockChecks(): void {
     const originalForEach = Blockly.Blocks["controls_forEach"].init;
     Blockly.Blocks["controls_forEach"].init = function (this: Blockly.Block) {
         originalForEach.call(this);
-        this.getInput("LIST")?.connection?.setCheck("List");
+        this.getInput("LIST")?.connection?.setCheck(["List", "Array"]);
     };
 
     // `controls_if`'s IF0 and `controls_whileUntil`'s BOOL already check stock
