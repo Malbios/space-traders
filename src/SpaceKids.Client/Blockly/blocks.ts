@@ -48,7 +48,7 @@ export function registerTrivialBlocks(): void {
  * mutator-arg block (a type dropdown + a name field) rather than six separate block
  * types — inputs stay untyped value sockets with a text label only, consistent with
  * this project's existing "plain value sockets, not typed" simplification for the
- * fixed 20-block catalog (docs/05-agent-handoff.md).
+ * block catalog (docs/04-block-catalog.md).
  *
  * `typeLabel` is purely decorative (no runtime type-checking depends on it) and is
  * persisted as-is once a custom block is saved — switching locale after saving does not

@@ -138,6 +138,50 @@ Success log: Das Schiff wurde aufgetankt.
 Failure log: Auftanken ist fehlgeschlagen.
 ```
 
+### Weitere Aktionsblöcke (full API coverage, post-roadmap)
+
+Added to close the last gap `scripts/api-block-gap.mjs` reported (see `docs/decisions.md`'s
+"full SpaceTraders API block coverage" entry) — every remaining SpaceTraders ship/agent
+action, not just the original 11. Same statement-block shape as above; compact table
+since most share a generic completion message rather than bespoke per-block copy.
+Failure text for all of these is the generic API-error message (`ApiFailed msg`, the raw
+classified HTTP failure), not bespoke German copy like the original 11's — a real
+difference from the original catalog, not an oversight: coverage was the point of this
+batch, not narrative polish.
+
+```txt
+German label              Blockly type        DSL instruction                                    Success log
+Schließe Auftrag ab       fulfillContract     fulfillContract(contractId)                        Auftrag abgeschlossen.
+Verhandle Auftrag         negotiateContract   negotiateContract()                                Neuer Auftrag verhandelt: {contractId}.
+Erstelle Karte            createChart         createChart()                                      Vermessung abgeschlossen. (shares SurveyOk)
+Baue mit Vermessung ab    extractWithSurvey   extractWithSurvey(surveySignature)                 Abgebaut: {units}x {good}. (shares ExtractOk)
+Installiere Modul         installModule       installModule(moduleSymbol)                        Erledigt. (shares ActionOk)
+Installiere Aufsatz       installMount        installMount(mountSymbol)                          Erledigt.
+Wirf Fracht ab            jettison            jettison(tradeSymbol, units)                       Gekauft: {units}x {tradeSymbol} für 0 Credits. (shares TradeOk, JETTISON)
+Springe zu Wegpunkt       jump                jump(waypointSymbol)                               Unterwegs... (shares NavigateOk)
+Veredle Rohstoffe         refine              refine(produce)                                    Abgebaut: {units}x {produce}. (shares ExtractOk)
+Entferne Modul            removeModule        removeModule(moduleSymbol)                         Erledigt.
+Entferne Aufsatz          removeMount         removeMount(mountSymbol)                           Erledigt.
+Repariere Schiff          repair              repair()                                           Aufgetankt. (shares RefuelOk — reused for the fuel-current field only)
+Scanne Schiffe            scanShips           scanShips()                                        Vermessung abgeschlossen. (shares SurveyOk)
+Scanne Systeme            scanSystems         scanSystems()                                      Vermessung abgeschlossen.
+Scanne Wegpunkte          scanWaypoints       scanWaypoints()                                    Vermessung abgeschlossen.
+Verschrotte Schiff        scrapShip           scrapShip()                                        Schiff verschrottet.
+Entnehme Gas              siphon              siphon()                                           Abgebaut: 1x FUEL. (shares ExtractOk)
+Übertrage Fracht          transferCargo       transferCargo(tradeSymbol, units, targetShipSymbol) Gekauft: {units}x {tradeSymbol} für 0 Credits. (shares TradeOk, TRANSFER)
+Warpe zu Wegpunkt         warp                warp(waypointSymbol)                               Unterwegs... (shares NavigateOk)
+Liefere Baumaterial       supplyConstruction  supplyConstruction(waypointSymbol, tradeSymbol, units) Gekauft: {units}x {tradeSymbol} für 0 Credits. (shares TradeOk, SUPPLY)
+Setze Flugmodus           patchShipNav        patchShipNav(flightMode)                           (nav status/waypoint updated silently, no dedicated log line)
+```
+
+`jettison`/`transferCargo`/`supplyConstruction` reusing `TradeOk`'s buy/sell-verb log
+text (always "Gekauft... für 0 Credits" since none of them are a real purchase) is a
+known cosmetic rough edge — functionally correct (cargo updates correctly), just not
+narratively accurate. `repair`'s reuse of `RefuelOk` is the same kind of shortcut (only
+the ship's fuel field is actually reused from that result type; repair itself doesn't
+touch fuel — the real value it returns, hull health, isn't tracked in `JobState` at
+all yet).
+
 ## Informationsblöcke (information blocks)
 
 Value blocks (§6: "they plug into variable assignments, conditions, and other inputs" —
@@ -232,6 +276,42 @@ Inputs: keine
 Requirements: keine
 Failure log: Kontostand konnte nicht abgerufen werden.
 ```
+
+### Weitere Informationsblöcke (full API coverage, post-roadmap)
+
+Same batch as the action blocks above. Each returns one of the new record/list shapes
+documented in "Weitere Datensätze" below.
+
+```txt
+German label                     Blockly type       DSL instruction                          Returns
+Hole Reparaturkosten             getRepairCost      getRepairCost() -> Preis                 PriceRecord
+Hole Verschrottungswert          getScrapValue      getScrapValue() -> Preis                 PriceRecord
+Hole Wegpunkt                    getWaypoint        getWaypoint(waypointSymbol) -> Wegpunkt  Wegpunkt (existing record, arbitrary waypoint not just the loaded system)
+Hole meine Agentendaten          getMyAgent         getMyAgent() -> Agent                    AgentRecord
+Hole öffentliche Agentendaten    getPublicAgent     getPublicAgent(agentSymbol) -> Agent      AgentRecord
+Hole öffentliche Agenten         getPublicAgents    getPublicAgents() -> Liste von Agent      List<AgentRecord>
+Hole Abklingzeit                 getCooldown        getCooldown() -> Abklingzeit             CooldownRecord
+Hole Navigationsdaten            getNav             getNav() -> Navigation                   NavRecord
+Hole Lieferkette                 getSupplyChain     getSupplyChain() -> Liste von Lieferkette List<{Export, Import}>
+Hole Schiffsmodule               getShipModules     getShipModules() -> Liste von Modul      List<{Symbol, Name}>
+Hole Schiffsaufsätze             getShipMounts      getShipMounts() -> Liste von Aufsatz      List<{Symbol, Name}>
+Hole Bauplatz                    getConstruction    getConstruction(waypointSymbol) -> Bauplatz ConstructionRecord
+Hole Sprungtor                   getJumpGate        getJumpGate(waypointSymbol) -> Sprungtor  JumpGateRecord
+Hole Sternensysteme              getSystems         getSystems() -> Liste von System          List<SystemRecord>
+Hole Sternensystem               getSystem          getSystem(systemSymbol) -> System         SystemRecord
+Hole Fraktion                    getFaction         getFaction(factionSymbol) -> Fraktion     FactionRecord
+Hole Fraktionen                  getFactions        getFactions() -> Liste von Fraktion       List<FactionRecord>
+Hole meine Fraktionen            getMyFactions      getMyFactions() -> Liste von Fraktionsruf List<{Symbol, Reputation}>
+```
+
+**Known limitation: none of these new record types have accessor blocks yet.** The
+original 9 records (§8 below) each got a full set of `Name aus X`/etc. accessor blocks;
+this batch's priority was API *coverage* (every operation reachable at all), not field-
+level access — a program can pass one of these records to `Zeige Nachricht` (which
+stringifies whatever it's given) or store it in a variable, but can't currently pull out
+e.g. `AgentRecord.Credits` on its own. Adding accessor blocks for these follows the
+exact same pattern `docs/04-block-catalog.md`'s existing §8 table already documents, if
+this turns out to be needed in practice.
 
 ## Programmierblöcke (programming blocks)
 
@@ -359,6 +439,55 @@ waypointTypeField    Typ aus Wegpunkt              -> Wegpunkt.Type
 waypointSystemField  System aus Wegpunkt           -> Wegpunkt.System
 waypointHasShipyard  Hat Werft aus Wegpunkt        -> Wegpunkt.HasShipyard
 waypointHasMarket    Hat Markt aus Wegpunkt        -> Wegpunkt.HasMarket
+```
+
+### Weitere Datensätze (full API coverage, post-roadmap, no accessor blocks yet)
+
+Built by `JobRunner.fs`'s record builders (`agentRecord`/`systemRecord`/`factionRecord`/
+`factionReputationRecord`/`jumpGateRecord`/`constructionRecord`/`constructionMaterialRecord`/
+`navRecord`/`cooldownRecord`/`priceRecord`/`moduleList`/`mountList`/`supplyChainList`) for
+the info blocks above — same canonical-English-key convention as §8's static records, just
+not yet reachable field-by-field from the DSL (see the limitation note above).
+
+```txt
+AgentRecord (getMyAgent, getPublicAgent, one item of getPublicAgents' list)
+  Symbol, Headquarters, Credits, StartingFaction, ShipCount
+
+SystemRecord (getSystem, one item of getSystems' list)
+  Symbol, Sector, Type, X, Y, Name, Constellation
+
+FactionRecord (getFaction, one item of getFactions' list)
+  Symbol, Name, Description, Headquarters, IsRecruiting
+
+Fraktionsruf / FactionReputation (one item of getMyFactions' list)
+  Symbol, Reputation
+
+Sprungtor / JumpGateRecord (getJumpGate)
+  Symbol, Connections (Liste von Text)
+
+Bauplatz / ConstructionRecord (getConstruction)
+  Symbol, IsComplete, Materials (Liste von Baumaterial)
+
+Baumaterial / ConstructionMaterial (one item of Bauplatz's Materials list)
+  TradeSymbol, Required, Fulfilled
+
+Navigation / NavRecord (getNav)
+  Waypoint, System, Status, FlightMode
+
+Abklingzeit / CooldownRecord (getCooldown)
+  Ship, TotalSeconds, RemainingSeconds, Expiration
+
+Preis / PriceRecord (getRepairCost, getScrapValue)
+  Waypoint, Ship, TotalPrice
+
+Modul (one item of getShipModules' list)
+  Symbol, Name
+
+Aufsatz (one item of getShipMounts' list)
+  Symbol, Name
+
+Lieferkette (one item of getSupplyChain's list)
+  Export, Import
 ```
 
 Registered in `blocks-catalog.ts`'s `ACCESSOR_BLOCKS` array (also exported as

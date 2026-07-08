@@ -6,5 +6,5 @@ was since extended with zoom/pan), and the backlog items found along the way
 (logic blocks, break/continue, ship-agnostic programs, map zoom) are all done as
 well.
 
-See `docs/05-agent-handoff.md` for project context, and git history for what this
+See `docs/decisions.md` for project context, and git history for what this
 file used to track milestone-by-milestone.

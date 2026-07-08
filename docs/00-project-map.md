@@ -6,10 +6,12 @@ Where things live and what to read first.
 
 1. `README.md` — commands, prerequisites.
 2. `TODO.md` — outstanding tasks.
-3. `docs/05-agent-handoff.md` — current state, what's known-broken, next tasks.
-4. `docs/decisions.md` — hard-to-reverse calls already made; don't relitigate without
-   reading why first.
-5. `plan.md` — the full build plan (product goals, architecture, all milestones). Long;
+3. `docs/decisions.md` — hard-to-reverse calls already made and current state; don't
+   relitigate without reading why first. There's no separate "current state" handoff
+   doc right now (the previous one, `docs/05-agent-handoff.md`, was retired — see git
+   history for what it used to track) — `decisions.md`'s dated entries plus `git log`
+   are the source of truth for "what happened since the roadmap closed out."
+4. `plan.md` — the full build plan (product goals, architecture, all milestones). Long;
    grep for the section you need (§-numbers referenced throughout code comments and
    other docs map to this file's headings).
 
@@ -28,17 +30,27 @@ src/
                                  every input/output carries a `.setCheck` type
                                  since Milestone 13/Part B
       toolbox-de.ts               buildCatalogToolbox — program vs Blockwerkstatt
-                                 toolboxes differ (see docs/07-july-2026-session.md)
-    Main.fs                  Elmish app — Milestone 0/2/3 work all on one non-routed
-                               page (Blockly editor + mutator workshop + SpaceTraders
-                               dashboard). Real routing/dashboards come with the DSL
-                               milestones, not before.
+                                 toolboxes differ (`includeDefinitionCategory`); categories
+                                 are alphabetized except Logik, which keeps mitSchiff/
+                                 parallel pinned at the top (see docs/decisions.md)
+    Main.fs                  Elmish app — originally Milestone 0/2/3 spikes on one
+                               non-routed page, now a full tabbed dashboard (Programme,
+                               Eigene Blöcke, Piloten, Galaxie, Aufträge, Fraktionen,
+                               Agenten, Einstellungen) — still no real Bolero routing,
+                               just in-page view switches, per docs/decisions.md
   SpaceKids.Server/         ASP.NET Core host
     Startup.fs                Classic Blazor WASM hosting wiring — see docs/decisions.md
                                before changing this
     Index.fs                  The server-rendered page shell
+    GalaxyHydration.fs        Read-through galaxy-catalog cache/pagination (post-roadmap,
+                               see docs/decisions.md) — paginates `ListSystems` at a fixed
+                               550ms/page delay to stay under the real API's rate limit,
+                               backed by Persistence/ApiCacheRepository.fs's 6h TTL cache
     Persistence/               Migrations, WAL/busy_timeout, backups (§12) — see
                                docs/decisions.md
+      ApiCacheRepository.fs        Generic read-through cache table (`api_cache`) for
+                                     rarely-changing GET payloads — currently only the
+                                     galaxy catalog uses it (see GalaxyHydration.fs above)
       Migrations/0001_initial.sql  Full 12-table core schema
       MigrationRunner.fs            Applies pending migrations, tracked in schema_versions
       Database.fs                   Connection + busy_timeout pragma
@@ -130,12 +142,15 @@ tests/
                                    ship locks, restart resume, lease sweep, deferred
                                    pause added in Milestone 7
 docs/
-  decisions.md              Hard-to-reverse calls and why
-  04-block-catalog.md        The German block catalog (§6/§7) — consumed by the
-                               toolbox build (M3) and will be consumed again by the
-                               DSL compiler (M4)
-  05-agent-handoff.md        Current state / next tasks (update every session)
-  flotilla-plan.md            Multi-ship program feature — planning only, not started
+  decisions.md              Hard-to-reverse calls and why — also the closest thing to a
+                               "current state" doc now that 05-agent-handoff.md is gone
+  04-block-catalog.md        The German block catalog (§6/§7 plus every post-roadmap
+                               addition) — consumed by the toolbox build and the DSL
+                               compiler/validator
+  06-localization.md          German/English terminology glossary (Milestone 12)
+  flotilla-plan.md            Multi-ship program feature (mitSchiff/parallel) —
+                               shipped; design rationale lives here, shipping details
+                               in docs/decisions.md
   (other docs listed in plan.md §17 are created as their milestones start)
 ```
 
@@ -283,3 +298,16 @@ structure. See `plan.md` §19 for what each milestone covers.
   limitations"). See `docs/decisions.md` for a real bug found during live
   verification (the persisted locale never actually reached the Blockly JS
   side on page load).
+- **Post-roadmap: Flotilla (`mitSchiff`/`parallel` multi-ship programs): done.**
+  A scope-block that changes which ship in-scope actions target, and a generic
+  fork/join `parallel` block, together enabling one program to fly multiple
+  ships concurrently (`docs/flotilla-plan.md` for the full design, `docs/decisions.md`
+  for shipping details). Browser-verified via `scripts/verify-flotilla.mjs`.
+- **Post-roadmap: full SpaceTraders API block coverage + dashboard rate-limit
+  fix: done.** `scripts/api-block-gap.mjs` reports 0 missing operations — every
+  remaining SpaceTraders action/info operation got a block (~38 new blocks;
+  see `docs/04-block-catalog.md`), plus new Agents/Factions dashboard tabs and
+  a `fulfillContract` UI button. Separately, real-API login was hitting SpaceTraders'
+  rate limit fetching the full galaxy catalog eagerly — fixed with a cached,
+  paginated, lazy-loaded galaxy catalog (`GalaxyHydration.fs`, `api_cache`).
+  See `docs/decisions.md` for both.

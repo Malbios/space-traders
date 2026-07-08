@@ -56,5 +56,6 @@ docs/                         Design docs, decisions log, catalog, localization 
 
 ## Status
 
-Milestone 0 (toolchain + Blockly↔Bolero interop spike) is complete. See
-`docs/05-agent-handoff.md` for current state and next steps.
+Every milestone in `plan.md` §19 has shipped, plus post-roadmap work (Flotilla
+multi-ship programs, full SpaceTraders API block coverage). See `docs/decisions.md`
+for current state, design rationale, and what's been built.

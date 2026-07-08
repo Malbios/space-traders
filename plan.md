@@ -179,7 +179,7 @@ app) picks German or English for everything a player sees.
 | Custom block labels     | German or English (switchable) |
 | Tooltips                | German or English (switchable) |
 | Activity logs           | German or English (switchable) |
-| Error messages          | German or English (switchable) — except `Compiler.fs`'s own compile-time errors, still German-only (a known follow-up gap, see `docs/05-agent-handoff.md`) |
+| Error messages          | German or English (switchable), including `Compiler.fs`'s own compile-time errors (closed as a Milestone 13/Part A follow-up — see `docs/decisions.md`) |
 | Code                    | English  |
 | F# types                | English  |
 | API client              | English  |

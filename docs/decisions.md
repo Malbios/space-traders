@@ -1410,3 +1410,112 @@ section and saw the finished run, restarted the real `SpaceKids.Server`
 process entirely, reloaded the page, and confirmed the same finished run was
 still listed; Part D — started a pilot, read its displayed name, reloaded the
 page, and confirmed the same ship showed the identical name.
+
+## Post-roadmap: Flotilla shipped (`mitSchiff`/`parallel`)
+
+`docs/flotilla-plan.md` already has the full design rationale ("Decisions made") —
+this entry only covers what that doc doesn't: the actual shipping (`9db2482`) and two
+follow-ups.
+
+**Shipped as planned, both milestones (F1 `mitSchiff`, F2 `parallel`) in one commit
+rather than two**, once the design was fully settled — `JobState` gained the runtime
+"current ship" stack and the recursive branch tree described in the plan; dynamic
+per-scope ship-lock acquisition; the `sonst`/`if unavailable` branch for unresolvable-
+or self-deadlocked ship references; branch status lines on pilot cards. Verified with
+a dedicated script, `scripts/verify-flotilla.mjs` (Blockly mutator round-trip, a
+two-ship `parallel` program run to completion against `SpaceKids.FakeSpaceTraders`) —
+the first browser-verification script in this repo that isn't a one-off scripted
+`playwright` driver improvised per-session; `package.json`'s `npm run verify:browser`
+now runs it directly (`c3be1cd`).
+
+**Follow-up (`7b5796d`): dropped the separate "Flottille" toolbox category.**
+`mitSchiff`/`parallel` originally got their own category; moved into the renamed
+Logik/Logic category (formerly Programmierung/Programming) instead, at the top,
+alongside the other control-flow blocks (`for`, `while`, branching) — grouping by
+*kind of block* (control flow) rather than *feature that introduced it* matches how
+every other category in the toolbox is organized, and a lone one-feature category
+was starting to look like a special case with no real justification.
+
+**Follow-up (`a13dd2d`): closed two small pre-existing gaps found while polishing.**
+`lists_getIndex`/`lists_setIndex` now compile/evaluate every WHERE mode
+(FROM_START/FROM_END/FIRST/LAST/RANDOM) for both get and set, not just the common
+"plain index" shape (previously listed as a known limitation). `Validator.fs` also
+gained a check for accessor/literal *kind* mismatches on custom-block call arguments
+(e.g. passing a `ShipRecord`-shaped accessor where the signature expects a plain
+number) — still the same heuristic-not-full-type-system approach as the rest of
+`Validator.fs`'s argument checking, just covering one more shape. `docs/06-localization.md`
+(the German/English terminology glossary, including `mitSchiff`/`parallel`'s own
+"with ship"/"parallel branches" entries) was added in the same commit.
+
+## Post-roadmap: full SpaceTraders API block coverage + dashboard rate-limit fix
+
+Four commits (`375dc40`, `6138459`, `c5a5aec`, then the rate-limit fix
+`c20b292`/`f350a7b`/`5bbca67`), closing out the last real gap in block coverage and
+fixing a real-API problem the fake never surfaced.
+
+**`scripts/api-block-gap.mjs` is the new source of truth for "is every SpaceTraders
+operation covered."** Parses the vendored `scripts/SpaceTraders.openapi.json` against
+a hand-maintained `operationId -> Blockly block type` map, and reports covered/
+UI-only/deliberately-skipped/partial/missing counts. Written specifically to answer
+"are we actually done with the block catalog" with a number instead of a manual
+cross-check — running it now reports **0 missing**. `parse-openapi-ops.mjs`/
+`parse-agent-tools-ops.mjs` are the small helper scripts that fed its authoring.
+
+**~38 new action/info blocks** (`375dc40`/`6138459`) bring every remaining
+SpaceTraders operation into the catalog: ship actions (fulfillContract,
+negotiateContract, createChart, extractWithSurvey, installModule/removeModule,
+installMount/removeMount, jettison, jump, refine, repair, scanShips/Systems/Waypoints,
+scrapShip, siphon, transferCargo, warp, supplyConstruction, patchShipNav) and info
+reads (getRepairCost, getScrapValue, getWaypoint, getMyAgent, getPublicAgent(s),
+getCooldown, getNav, getSupplyChain, getShipModules, getShipMounts, getConstruction,
+getJumpGate, getSystems/getSystem, getFaction(s), getMyFactions). Full per-block entries
+are in `docs/04-block-catalog.md`. `fulfillContract` got the deepest wiring of the
+batch — a new reconciliation path in `Step.fs`/`JobRunner.fs` plus a dashboard
+"Auftrag abschließen" button on the Contracts tab, mirroring `acceptContract`'s
+existing shape. New **Agents** and **Factions** tabs expose the read-only
+`getPublicAgent(s)`/`getFaction(s)` data as dashboard panels, not just DSL blocks —
+the first tabs in this app whose entire reason to exist is "show what a new info-read
+block can fetch," rather than the info-read block exposing UI state that already
+existed. Toolbox categories were alphabetized as part of this batch (Flotilla's
+`mitSchiff`/`parallel` stay pinned at the top of Logik per the entry above, not
+alphabetized in with the rest).
+
+**`c5a5aec` hardened `supplyConstruction`**: the real API doesn't reject supplying
+more units than a ship is carrying — it just constructs a physically inconsistent
+result — so the fake now validates cargo before applying the supply and returns 400
+on insufficient cargo, matching the "harden the fake to catch what the real API would
+reject" pattern already used for market/shipyard 404s. Also fixed a reconciliation bug
+found while adding this: `patchShipNav`'s ambiguous-failure recovery needs
+`FlightModeBaseline` on the ship snapshot to tell "flight mode already changed" from
+"not yet" apart, and it wasn't being captured.
+
+**Real-API rate limiting was a real, previously-unhit problem: this project's real
+account started getting rejected on login.** SpaceTraders enforces roughly 2 req/sec;
+`loadDashboard`'s galaxy catalog fetch pages through *every* system in the galaxy
+(thousands of systems, 20 per page) — fine against the fake (unlimited), but eagerly
+doing that on every login/page-init against the real API blew straight through the
+limit. Fixed in three steps, each narrowing the problem:
+- `5bbca67`: split `loadDashboard` (full catalog — page init, token submit, manual
+  refresh) from a new, cheap `refreshDashboard` (agent/ships/contracts only — used for
+  pilot-completion polling and contract-update refreshes, which don't need the whole
+  galaxy re-fetched every time).
+- `f350a7b`: added `api_cache` (new table) + `SpaceKids.Server/GalaxyHydration.fs` — a
+  read-through cache keyed `galaxy:<agentSymbol>:...` with a 6-hour TTL
+  (`ApiCacheRepository.tryGet`/`tryGetFresh`/`put`, ttl in `GalaxyHydration.galaxyCatalogTtl`),
+  so a full catalog load only re-hits the real API once every 6 hours per agent, and
+  paginates at a fixed 550ms per-page delay (well under the 2 req/sec ceiling) with a
+  `backgroundPriority` of 2 through the existing `RequestQueue` tiers. Token submit
+  invalidates the cache for that agent (`ApiCacheRepository.invalidateForAgent`), so a
+  re-pasted token doesn't serve another account's stale galaxy data.
+- `c20b292`: even a *cached* full catalog load was still happening eagerly on login/
+  page-init — deferred it entirely until the Galaxie tab is actually opened
+  (`LoadGalaxyCatalog` only dispatches on first `GalaxieTab` visibility, matching the
+  lazy-init pattern already used for Blockly workspaces in hidden sub-tabs). Login
+  itself now only needs `submitToken`'s cheap agent/ships/contracts fetch.
+
+**Verification:** `SpaceKids.IntegrationTests/AgentRemotingTests.fs` gained tests for
+the `refreshDashboard`/`loadDashboard` split (asserting the cheap path never touches
+waypoints/markets) and for `fetchSystemsCached` (asserting a second call within the
+TTL doesn't issue a second `GET /systems` request, counted via `request_queue_events`).
+`SpaceKids.Core.Tests`/`SpaceKids.IntegrationTests` gained scheduler/JobRunner cases
+for `supplyConstruction`, `patchShipNav`, and `scrapShip`. 243 tests total, all green.
