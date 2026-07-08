@@ -247,6 +247,90 @@ let private supplyChainList (entries: SupplyChainEntry list) : Value =
             VRecord(Map.ofList [ "Export", VString e.exportSymbol; "Import", VString e.importSymbol ]))
     )
 
+let private optionalNumber (value: int option) : Value =
+    VNumber(value |> Option.map float |> Option.defaultValue 0.0)
+
+let private requirementsRecord (r: ShipComponentRequirements) : Value =
+    VRecord(Map.ofList [ "Power", optionalNumber r.power; "Crew", optionalNumber r.crew; "Slots", optionalNumber r.slots ])
+
+let private shipyardFrameRecord (f: ShipyardShipFrame) : Value =
+    VRecord(
+        Map.ofList
+            [ "Symbol", VString f.symbol
+              "Name", VString f.name
+              "Description", VString f.description
+              "ModuleSlots", VNumber(float f.moduleSlots)
+              "MountingPoints", VNumber(float f.mountingPoints)
+              "FuelCapacity", VNumber(float f.fuelCapacity)
+              "Requirements", requirementsRecord f.requirements ]
+    )
+
+let private shipyardReactorRecord (r: ShipyardShipReactor) : Value =
+    VRecord(
+        Map.ofList
+            [ "Symbol", VString r.symbol
+              "Name", VString r.name
+              "Description", VString r.description
+              "PowerOutput", VNumber(float r.powerOutput)
+              "Requirements", requirementsRecord r.requirements ]
+    )
+
+let private shipyardEngineRecord (e: ShipyardShipEngine) : Value =
+    VRecord(
+        Map.ofList
+            [ "Symbol", VString e.symbol
+              "Name", VString e.name
+              "Description", VString e.description
+              "Speed", VNumber(float e.speed)
+              "Requirements", requirementsRecord e.requirements ]
+    )
+
+let private shipyardModuleRecord (m: ShipyardShipModule) : Value =
+    VRecord(
+        Map.ofList
+            [ "Symbol", VString m.symbol
+              "Name", VString m.name
+              "Description", VString m.description
+              "Capacity", optionalNumber m.capacity
+              "Range", optionalNumber m.range
+              "Requirements", requirementsRecord m.requirements ]
+    )
+
+let private shipyardMountRecord (m: ShipyardShipMount) : Value =
+    VRecord(
+        Map.ofList
+            [ "Symbol", VString m.symbol
+              "Name", VString m.name
+              "Description", VString m.description
+              "Strength", optionalNumber m.strength
+              "Deposits", VList(m.deposits |> Option.defaultValue [] |> List.map VString)
+              "Requirements", requirementsRecord m.requirements ]
+    )
+
+let private shipyardCrewRecord (c: ShipyardShipCrew) : Value =
+    VRecord(Map.ofList [ "Required", VNumber(float c.required); "Capacity", VNumber(float c.capacity) ])
+
+/// The `ships` array's full-detail entry (only ever populated when a ship of yours
+/// is docked there — see `ShipyardShipEntry`'s own doc comment in
+/// `SpaceTraders/Types.fs` for the "field names not yet verified against a live
+/// response" caveat this inherits).
+let private shipyardShipEntryRecord (s: ShipyardShipEntry) : Value =
+    VRecord(
+        Map.ofList
+            [ "Type", VString s.``type``
+              "Name", VString s.name
+              "Description", VString s.description
+              "Supply", VString s.supply
+              "Activity", VString(s.activity |> Option.defaultValue "")
+              "Price", VNumber(float s.purchasePrice)
+              "Frame", shipyardFrameRecord s.frame
+              "Reactor", shipyardReactorRecord s.reactor
+              "Engine", shipyardEngineRecord s.engine
+              "Modules", VList(s.modules |> List.map shipyardModuleRecord)
+              "Mounts", VList(s.mounts |> List.map shipyardMountRecord)
+              "Crew", shipyardCrewRecord s.crew ]
+    )
+
 /// `RequestQueue.enqueue`'s `AmbiguousFailure` can arrive wrapped in an
 /// `AggregateException` depending on the Async<->Task interop path it crosses (the
 /// same nesting the Milestone 5 tests already had to account for) — unwrap before
@@ -668,9 +752,7 @@ let private runInfoRead
 
                     let types =
                         if not r.ships.IsEmpty then
-                            r.ships
-                            |> List.map (fun s ->
-                                VRecord(Map.ofList [ "Type", VString s.``type``; "Price", VNumber(float s.purchasePrice) ]))
+                            r.ships |> List.map shipyardShipEntryRecord
                         else
                             r.shipTypes
                             |> List.map (fun t -> VRecord(Map.ofList [ "Type", VString t.``type``; "Price", VNumber 0.0 ]))

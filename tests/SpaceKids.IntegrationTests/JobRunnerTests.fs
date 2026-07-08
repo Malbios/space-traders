@@ -1880,6 +1880,65 @@ let ``getShipModules resolves against the real fake over HTTP`` () =
             | [] -> Assert.Fail("expected a stack frame")
         | None -> Assert.Fail("job not found"))
 
+/// `getShipyard`'s full-detail shape (frame/reactor/engine/modules/mounts/crew, not
+/// just `Type`/`Price`) is only populated by the real API when a ship of yours is
+/// docked at that shipyard (`ShipyardShipEntry`'s own doc comment in
+/// `SpaceTraders/Types.fs`) — both seeded fake ships live at headquarters, so a
+/// shipyard call there exercises the full nested `VRecord`, not the price-free
+/// `shipTypes` fallback.
+[<Fact>]
+let ``getShipyard resolves the full nested ship-type detail when a ship is docked`` () =
+    use fixture = new JobFixture()
+
+    withJobTest fixture.RawClient (fun dbPath ->
+        let initialShip = fixture.Client.GetShip(App.seededToken, "FAKE-AGENT-1") |> Async.RunSynchronously
+
+        let instructions =
+            [ InfoRead("b1", "getShipyard", Map [ "waypointSymbol", Literal(StringLit "X1-TEST-A1") ], "$t1")
+              SetVariable("b2", "yard", TempRef "$t1") ]
+
+        let jobId = startJobSync fixture.Client dbPath "FAKE-AGENT-1" (program instructions) initialShip
+
+        withPumpedQueue 20.0 (fun () ->
+            JobRunner.runToCompletion fixture.Client dbPath 1 App.seededToken jobId
+            |> Async.RunSynchronously)
+
+        match JobRunner.getStatus jobId with
+        | Some job ->
+            Assert.Equal(Completed, job.status)
+
+            match job.stack with
+            | top :: _ ->
+                match top.locals.["yard"] with
+                | VRecord yard ->
+                    match yard.["Types"] with
+                    | VList(VRecord shipType :: _) ->
+                        Assert.Equal(VString "SHIP_MINING_DRONE", shipType.["Type"])
+                        Assert.Equal(VNumber 50000.0, shipType.["Price"])
+                        Assert.Equal(VString "Mining Drone", shipType.["Name"])
+
+                        match shipType.["Frame"] with
+                        | VRecord frame ->
+                            Assert.Equal(VString "FRAME_DRONE", frame.["Symbol"])
+                            Assert.Equal(VNumber 3.0, frame.["ModuleSlots"])
+
+                            match frame.["Requirements"] with
+                            | VRecord requirements -> Assert.Equal(VNumber 1.0, requirements.["Power"])
+                            | other -> Assert.Fail($"expected Frame.Requirements to be a VRecord, got {other}")
+                        | other -> Assert.Fail($"expected Types[0].Frame to be a VRecord, got {other}")
+
+                        match shipType.["Mounts"] with
+                        | VList(VRecord mount :: _) -> Assert.Equal(VString "MOUNT_MINING_LASER_I", mount.["Symbol"])
+                        | other -> Assert.Fail($"expected Types[0].Mounts to be a non-empty VList, got {other}")
+
+                        match shipType.["Crew"] with
+                        | VRecord crew -> Assert.Equal(VNumber 0.0, crew.["Required"])
+                        | other -> Assert.Fail($"expected Types[0].Crew to be a VRecord, got {other}")
+                    | other -> Assert.Fail($"expected Types to be a non-empty VList, got {other}")
+                | other -> Assert.Fail($"expected a VRecord, got {other}")
+            | [] -> Assert.Fail("expected a stack frame")
+        | None -> Assert.Fail("job not found"))
+
 [<Fact>]
 let ``getShipMounts resolves against the real fake over HTTP`` () =
     use fixture = new JobFixture()

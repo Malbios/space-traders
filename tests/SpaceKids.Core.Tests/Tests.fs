@@ -857,6 +857,38 @@ let ``the generic recordField block compiles to Accessor over its TARGET input, 
             program.instructions
         )
 
+/// The new nested ship-type detail accessors (`frameField` etc., added alongside
+/// `shipyardTypeField`'s new `Frame`/`Reactor`/`Engine`/`Modules`/`Mounts`/`Crew`
+/// fields) are plain `RECORD_FIELD_BLOCKS` entries like any other, so they compile
+/// through the exact same `GENERIC_ACCESSOR_TYPES` path — this locks in a chained
+/// example (`shipType -> Frame -> ModuleSlots`) rather than re-testing the generic
+/// mechanism itself, which the `recordField`/`shipField` tests above already cover.
+[<Fact>]
+let ``a chained nested accessor (frameField reading a Werft ship type's Frame) compiles correctly`` () =
+    let json =
+        """
+        { "blocks": { "languageVersion": 0, "blocks": [
+            { "type": "variables_set", "id": "b1", "fields": { "VAR": "slots" }, "inputs": {
+                "VALUE": { "block": { "type": "frameField", "id": "b2", "fields": { "FIELD": "ModuleSlots" }, "inputs": {
+                    "TARGET": { "block": { "type": "shipyardTypeField", "id": "b3", "fields": { "FIELD": "Frame" }, "inputs": {
+                        "TARGET": { "block": { "type": "getShipyard", "id": "b4", "inputs": {
+                            "WAYPOINT_SYMBOL": { "block": """ + textBlock "b4w" "X1-TEST-A1" + """ }
+                        } } }
+                    } } }
+                } } }
+            } }
+        ] } }
+        """
+
+    match Compiler.compileWorkspace De noCustomBlocks json with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        Assert.Equal<Instruction list>(
+            [ InfoRead("b4", "getShipyard", Map [ "waypointSymbol", Literal(StringLit "X1-TEST-A1") ], "$t1")
+              SetVariable("b1", "slots", Accessor("ModuleSlots", Accessor("Frame", TempRef "$t1"))) ],
+            program.instructions
+        )
+
 /// Regression: "Replace per-field accessor blocks with generic field-dropdown
 /// blocks" removed the old one-block-type-per-field accessors (`shipFuel` etc.)
 /// without a migration path, breaking every already-saved program/custom block that

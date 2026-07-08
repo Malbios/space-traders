@@ -556,10 +556,81 @@ export const RECORD_FIELD_BLOCKS: RecordFieldBlockSpec[] = [
         { name: "Waypoint", label: { de: "Wegpunkt", en: "Waypoint" }, outputCheck: "String" },
         { name: "Types", label: { de: "Schiffstypen", en: "Ship types" }, outputCheck: "List" },
     ] },
-    // Schiffstyp (a Werft's Schiffstypen list item)
+    // Schiffstyp (a Werft's Schiffstypen list item) — `Type`/`Price` are always
+    // present (populated even from the price-free `shipTypes` fallback, §8); the
+    // rest are only populated when a ship of yours is docked at that shipyard (see
+    // `ShipyardShipEntry`'s own doc comment in `SpaceTraders/Types.fs`).
     { type: "shipyardTypeField", recordLabel: { de: "Schiffstyp", en: "ship type" }, targetCheck: "ShipyardTypeRecord", fields: [
         { name: "Type", label: { de: "Typ", en: "Type" }, outputCheck: "String" },
         { name: "Price", label: { de: "Preis", en: "Price" }, outputCheck: "Number" },
+        { name: "Name", label: { de: "Name", en: "Name" }, outputCheck: "String" },
+        { name: "Description", label: { de: "Beschreibung", en: "Description" }, outputCheck: "String" },
+        { name: "Supply", label: { de: "Angebot", en: "Supply" }, outputCheck: "String" },
+        { name: "Activity", label: { de: "Aktivität", en: "Activity" }, outputCheck: "String" },
+        { name: "Frame", label: { de: "Rahmen", en: "Frame" }, outputCheck: "FrameRecord" },
+        { name: "Reactor", label: { de: "Reaktor", en: "Reactor" }, outputCheck: "ReactorRecord" },
+        { name: "Engine", label: { de: "Antrieb", en: "Engine" }, outputCheck: "EngineRecord" },
+        { name: "Modules", label: { de: "Module", en: "Modules" }, outputCheck: "List" },
+        { name: "Mounts", label: { de: "Aufsätze", en: "Mounts" }, outputCheck: "List" },
+        { name: "Crew", label: { de: "Besatzung", en: "Crew" }, outputCheck: "CrewRecord" },
+    ] },
+    // Rahmen (a Schiffstyp's Frame)
+    { type: "frameField", recordLabel: { de: "Rahmen", en: "frame" }, targetCheck: "FrameRecord", fields: [
+        { name: "Symbol", label: { de: "Symbol", en: "Symbol" }, outputCheck: "String" },
+        { name: "Name", label: { de: "Name", en: "Name" }, outputCheck: "String" },
+        { name: "Description", label: { de: "Beschreibung", en: "Description" }, outputCheck: "String" },
+        { name: "ModuleSlots", label: { de: "Modulplätze", en: "Module slots" }, outputCheck: "Number" },
+        { name: "MountingPoints", label: { de: "Befestigungspunkte", en: "Mounting points" }, outputCheck: "Number" },
+        { name: "FuelCapacity", label: { de: "Treibstoffkapazität", en: "Fuel capacity" }, outputCheck: "Number" },
+        { name: "Requirements", label: { de: "Anforderungen", en: "Requirements" }, outputCheck: "RequirementsRecord" },
+    ] },
+    // Reaktor (a Schiffstyp's Reactor)
+    { type: "reactorField", recordLabel: { de: "Reaktor", en: "reactor" }, targetCheck: "ReactorRecord", fields: [
+        { name: "Symbol", label: { de: "Symbol", en: "Symbol" }, outputCheck: "String" },
+        { name: "Name", label: { de: "Name", en: "Name" }, outputCheck: "String" },
+        { name: "Description", label: { de: "Beschreibung", en: "Description" }, outputCheck: "String" },
+        { name: "PowerOutput", label: { de: "Energieleistung", en: "Power output" }, outputCheck: "Number" },
+        { name: "Requirements", label: { de: "Anforderungen", en: "Requirements" }, outputCheck: "RequirementsRecord" },
+    ] },
+    // Antrieb (a Schiffstyp's Engine)
+    { type: "engineField", recordLabel: { de: "Antrieb", en: "engine" }, targetCheck: "EngineRecord", fields: [
+        { name: "Symbol", label: { de: "Symbol", en: "Symbol" }, outputCheck: "String" },
+        { name: "Name", label: { de: "Name", en: "Name" }, outputCheck: "String" },
+        { name: "Description", label: { de: "Beschreibung", en: "Description" }, outputCheck: "String" },
+        { name: "Speed", label: { de: "Geschwindigkeit", en: "Speed" }, outputCheck: "Number" },
+        { name: "Requirements", label: { de: "Anforderungen", en: "Requirements" }, outputCheck: "RequirementsRecord" },
+    ] },
+    // Modul (a Schiffstyp's Module list item — distinct from `moduleField`, which
+    // reads an already-*installed* module on one of the player's own ships)
+    { type: "shipyardModuleField", recordLabel: { de: "Modul", en: "module" }, targetCheck: "ShipyardModuleRecord", fields: [
+        { name: "Symbol", label: { de: "Symbol", en: "Symbol" }, outputCheck: "String" },
+        { name: "Name", label: { de: "Name", en: "Name" }, outputCheck: "String" },
+        { name: "Description", label: { de: "Beschreibung", en: "Description" }, outputCheck: "String" },
+        { name: "Capacity", label: { de: "Kapazität", en: "Capacity" }, outputCheck: "Number" },
+        { name: "Range", label: { de: "Reichweite", en: "Range" }, outputCheck: "Number" },
+        { name: "Requirements", label: { de: "Anforderungen", en: "Requirements" }, outputCheck: "RequirementsRecord" },
+    ] },
+    // Aufsatz (a Schiffstyp's Mounts list item — distinct from `mountField`, which
+    // reads an already-*installed* mount on one of the player's own ships)
+    { type: "shipyardMountField", recordLabel: { de: "Aufsatz", en: "mount" }, targetCheck: "ShipyardMountRecord", fields: [
+        { name: "Symbol", label: { de: "Symbol", en: "Symbol" }, outputCheck: "String" },
+        { name: "Name", label: { de: "Name", en: "Name" }, outputCheck: "String" },
+        { name: "Description", label: { de: "Beschreibung", en: "Description" }, outputCheck: "String" },
+        { name: "Strength", label: { de: "Stärke", en: "Strength" }, outputCheck: "Number" },
+        { name: "Deposits", label: { de: "Vorkommen", en: "Deposits" }, outputCheck: "List" },
+        { name: "Requirements", label: { de: "Anforderungen", en: "Requirements" }, outputCheck: "RequirementsRecord" },
+    ] },
+    // Besatzung (a Schiffstyp's Crew)
+    { type: "crewField", recordLabel: { de: "Besatzung", en: "crew" }, targetCheck: "CrewRecord", fields: [
+        { name: "Required", label: { de: "Benötigt", en: "Required" }, outputCheck: "Number" },
+        { name: "Capacity", label: { de: "Kapazität", en: "Capacity" }, outputCheck: "Number" },
+    ] },
+    // Anforderungen (the shared power/crew/slots struct every frame/reactor/engine/
+    // module/mount above carries)
+    { type: "requirementsField", recordLabel: { de: "Anforderungen", en: "requirements" }, targetCheck: "RequirementsRecord", fields: [
+        { name: "Power", label: { de: "Energie", en: "Power" }, outputCheck: "Number" },
+        { name: "Crew", label: { de: "Besatzung", en: "Crew" }, outputCheck: "Number" },
+        { name: "Slots", label: { de: "Plätze", en: "Slots" }, outputCheck: "Number" },
     ] },
     // Markt (getMarket)
     { type: "marketField", recordLabel: { de: "Markt", en: "market" }, targetCheck: "MarketRecord", fields: [

@@ -261,12 +261,83 @@ type GetContractResult = { contract: Contract }
 
 type ShipyardShipType = { ``type``: string }
 
-/// The `ships` array's per-type purchase price is only populated by the real API when
-/// a ship of yours is docked at that shipyard; `shipTypes` (always present) has no
-/// price. Documented simplification (§8, same class as the existing "market is always
-/// headquarters" one): the Werft record prefers `ships`' prices, falling back to
-/// `shipTypes` with a price of 0 when `ships` is empty.
-type ShipyardShipEntry = { ``type``: string; purchasePrice: int }
+/// Shared `requirements` shape every frame/reactor/engine/module/mount carries on
+/// the real API — each sub-field is only meaningfully populated for some component
+/// kinds (e.g. a module rarely needs `crew`), so all three are optional rather than
+/// assumed always-present, same caution as `Cooldown.expiration`/`Market.tradeGoods`
+/// elsewhere in this file.
+type ShipComponentRequirements =
+    { power: int option
+      crew: int option
+      slots: int option }
+
+type ShipyardShipFrame =
+    { symbol: string
+      name: string
+      description: string
+      moduleSlots: int
+      mountingPoints: int
+      fuelCapacity: int
+      requirements: ShipComponentRequirements }
+
+type ShipyardShipReactor =
+    { symbol: string
+      name: string
+      description: string
+      powerOutput: int
+      requirements: ShipComponentRequirements }
+
+type ShipyardShipEngine =
+    { symbol: string
+      name: string
+      description: string
+      speed: int
+      requirements: ShipComponentRequirements }
+
+type ShipyardShipModule =
+    { symbol: string
+      name: string
+      description: string
+      capacity: int option
+      range: int option
+      requirements: ShipComponentRequirements }
+
+type ShipyardShipMount =
+    { symbol: string
+      name: string
+      description: string
+      strength: int option
+      deposits: string list option
+      requirements: ShipComponentRequirements }
+
+type ShipyardShipCrew = { required: int; capacity: int }
+
+/// The `ships` array's per-type purchase price (and, from here on, its full detail —
+/// frame/reactor/engine/modules/mounts/crew) is only populated by the real API when
+/// a ship of yours is docked at that shipyard; `shipTypes` (always present) has none
+/// of this. Documented simplification (§8, same class as the existing "market is
+/// always headquarters" one): the Werft record prefers `ships`' full detail, falling
+/// back to `shipTypes` with just a type and a price of 0 when `ships` is empty.
+/// **Field names below are reconstructed from general knowledge of the real
+/// SpaceTraders v2 API, not verified against a live response or a schema file in
+/// this repo** (the bundled `scripts/SpaceTraders.openapi.json` only has inlined
+/// path refs to external model files that aren't present) — worth a manual check
+/// against a real account's shipyard response before relying on this in production;
+/// `System.Text.Json` silently leaves an unmatched field at its type default rather
+/// than erroring, so a mismatch would show up as empty/zero values, not a crash.
+type ShipyardShipEntry =
+    { ``type``: string
+      name: string
+      description: string
+      supply: string
+      activity: string option
+      purchasePrice: int
+      frame: ShipyardShipFrame
+      reactor: ShipyardShipReactor
+      engine: ShipyardShipEngine
+      modules: ShipyardShipModule list
+      mounts: ShipyardShipMount list
+      crew: ShipyardShipCrew }
 
 /// `GET /systems/{systemSymbol}/waypoints/{waypointSymbol}/shipyard` response —
 /// flat under `data`, same as `Market`; there is no extra `shipyard` nesting

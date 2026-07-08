@@ -207,14 +207,51 @@ let mutable private nextContractNumber = 3
 let private hasShipAt (waypointSymbol: string) : bool =
     readAllShips () |> List.exists (fun s -> s.nav.waypointSymbol = waypointSymbol)
 
+/// Plausible (not necessarily field-exact-to-the-real-API — see `ShipyardShipEntry`'s
+/// own doc comment in `SpaceTraders/Types.fs`) full detail for the one ship type this
+/// fixture ever sells, so tests exercise the whole nested shape (frame/reactor/
+/// engine/modules/mounts/crew), not just `type`/`purchasePrice`.
+let private miningDroneShipyardEntry: ShipyardShipEntry =
+    { ``type`` = "SHIP_MINING_DRONE"
+      name = "Mining Drone"
+      description = "A small mining drone."
+      supply = "MODERATE"
+      activity = Some "STRONG"
+      purchasePrice = 50000
+      frame =
+        { symbol = "FRAME_DRONE"
+          name = "Drone"
+          description = "A small, unmanned frame."
+          moduleSlots = 3
+          mountingPoints = 2
+          fuelCapacity = 0
+          requirements = { power = Some 1; crew = Some 0; slots = None } }
+      reactor =
+        { symbol = "REACTOR_SOLAR_I"
+          name = "Solar Reactor I"
+          description = "A basic solar power reactor."
+          powerOutput = 3
+          requirements = { power = None; crew = Some 0; slots = Some 0 } }
+      engine =
+        { symbol = "ENGINE_IMPULSE_DRIVE_I"
+          name = "Impulse Drive I"
+          description = "A basic low-energy engine."
+          speed = 3
+          requirements = { power = Some 1; crew = Some 0; slots = None } }
+      modules = []
+      mounts =
+        [ { symbol = "MOUNT_MINING_LASER_I"
+            name = "Mining Laser I"
+            description = "A basic mining laser."
+            strength = Some 3
+            deposits = None
+            requirements = { power = Some 1; crew = Some 0; slots = None } } ]
+      crew = { required = 0; capacity = 0 } }
+
 let private shipyardFixture (waypointSymbol: string) : Shipyard =
     { symbol = waypointSymbol
       shipTypes = [ { ``type`` = "SHIP_MINING_DRONE" } ]
-      ships =
-        if hasShipAt waypointSymbol then
-            [ { ``type`` = "SHIP_MINING_DRONE"; purchasePrice = 50000 } ]
-        else
-            [] }
+      ships = if hasShipAt waypointSymbol then [ miningDroneShipyardEntry ] else [] }
 
 let private waypoints =
     [ { symbol = headquarters
