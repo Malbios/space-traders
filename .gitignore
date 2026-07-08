@@ -26,3 +26,6 @@ backups/
 .vscode/
 *.swp
 .DS_Store
+
+# Local scratch notes
+notes.md
