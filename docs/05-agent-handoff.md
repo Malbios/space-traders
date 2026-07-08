@@ -166,6 +166,25 @@
 
 ## Changed this session
 
+**July 2026 — custom block toolbox + persistence seeding + no-op save** (`5bdc63e`,
+`19c36de`, `d4a138e`). Full domain write-up in
+`docs/07-custom-block-toolbox-persistence.md`. Summary:
+
+- Program workspaces no longer show the **"Eigener Block"** definition category —
+  only the Blockwerkstatt workshop does (`buildCatalogToolbox`'s
+  `includeDefinitionCategory`, gated by `blockly-workshop-spike` in
+  `blockly-host.ts`). **"Eigene Blöcke"** (saved callers) stays on both.
+- **"Eigene Blöcke"** repopulates from SQLite on load via new `spaceKids.syncCustomBlocks`
+  (`Main.fs` `syncCustomBlockToolbox` after `CustomBlocksLoaded`) — fixes empty toolbox
+  after remount/reload when callers were previously only injected on workshop save.
+- Saving unchanged workshop JSON no longer appends a `custom_block_versions` row
+  (`saveVersionIfChanged`, remoting early exit before compile). Test:
+  `saveVersionIfChanged keeps the version when workshop JSON is unchanged`.
+- `AGENTS.md` now requires full `dotnet test SpaceKids.slnx` (or at least build)
+  before handoff when Server/remoting/cross-project code changes.
+
+---
+
 **Note:** everything below predates the two most recent work sessions, which
 happened *after* `plan.md`'s roadmap (all milestones) was fully closed out and
 `TODO.md` was cleared. Those two sessions aren't milestone-numbered — they're
