@@ -1,7 +1,7 @@
 # Collapse the 9 record-field accessor blocks into one connection-aware block
 
-## Status: Phase 1 (core collapse) implemented (`8976f9c`). Phase 2 (variable-type
-## tagging, see bottom) remains a possible future follow-up, not started.
+## Status: Phase 1 (core collapse, `8976f9c`) and Phase 2 (variable-type tagging,
+## `61b3b7b`, see bottom) are both implemented.
 
 ## Context
 
