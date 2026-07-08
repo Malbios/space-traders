@@ -105,6 +105,7 @@ let private GENERIC_ACCESSOR_TYPES: Set<string> =
         "moduleField"
         "mountField"
         "supplyChainField"
+        "recordField"
     ]
 
 /// Compatibility for the 29 one-block-type-per-field accessors the redesign above

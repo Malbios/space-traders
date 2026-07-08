@@ -1,7 +1,7 @@
 import {
     catalogActionBlockTypes,
     catalogInfoBlockTypes,
-    catalogRecordFieldBlockTypes,
+    genericRecordFieldBlockTypes,
     flotillaBlockTypes,
     getCatalogBlockLabel,
 } from "./blocks-catalog";
@@ -122,8 +122,8 @@ export function buildCatalogToolbox(
     const sortedActions = sortByLabel(catalogActionBlockTypes, getCatalogBlockLabel);
     const sortedInfo = sortByLabel(catalogInfoBlockTypes, getCatalogBlockLabel);
     const sortedAccessors = sortByLabel(
-        catalogRecordFieldBlockTypes.concat(dynamicAccessorTypes),
-        (type) => (catalogRecordFieldBlockTypes.includes(type) ? getCatalogBlockLabel(type) : type),
+        genericRecordFieldBlockTypes.concat(dynamicAccessorTypes),
+        (type) => (genericRecordFieldBlockTypes.includes(type) ? getCatalogBlockLabel(type) : type),
     );
     const sortedFlotilla = sortByLabel(flotillaBlockTypes, getCatalogBlockLabel);
     const sortedProgramming = sortByLabel(PROGRAMMING_BLOCK_TYPES, programmingBlockLabel);

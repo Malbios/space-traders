@@ -1,6 +1,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import * as Blockly from "blockly/core";
+import "blockly/blocks";
 import {
     registerCatalogBlocks,
     getCatalogBlockLabel,
@@ -80,6 +81,118 @@ describe("record-field ('Feld aus X') blocks", () => {
             assert.ok(spec.fields.length > 0, `${spec.type}: no fields declared`);
             const names = spec.fields.map((f) => f.name);
             assert.equal(new Set(names).size, names.length, `${spec.type}: duplicate field name within its own spec`);
+        }
+    });
+});
+
+describe("generic connection-aware record field block (recordField)", () => {
+    test("TARGET accepts every known record check", () => {
+        const ws = new Blockly.Workspace();
+        try {
+            const accessor = ws.newBlock("recordField");
+            Blockly.Blocks["recordField"].init.call(accessor);
+
+            const checks = accessor.getInput("TARGET")!.connection!.getCheck();
+            assert.ok(checks, "TARGET has no check at all");
+            for (const spec of RECORD_FIELD_BLOCKS) {
+                assert.ok(checks!.includes(spec.targetCheck), `TARGET doesn't accept ${spec.targetCheck}`);
+            }
+        } finally {
+            ws.dispose();
+        }
+    });
+
+    test("narrows the FIELD dropdown to just the connected block's own shape when TARGET is directly wired", () => {
+        const ws = new Blockly.Workspace();
+        try {
+            const shipInfo = ws.newBlock("getShipInfo");
+            Blockly.Blocks["getShipInfo"].init.call(shipInfo);
+
+            const accessor = ws.newBlock("recordField");
+            Blockly.Blocks["recordField"].init.call(accessor);
+            accessor.getInput("TARGET")!.connection!.connect(shipInfo.outputConnection!);
+
+            const dropdown = accessor.getField("FIELD") as Blockly.FieldDropdown;
+            const optionValues = dropdown.getOptions(false).map((o) => o[1]);
+            const shipSpec = RECORD_FIELD_BLOCKS.find((s) => s.type === "shipField")!;
+            assert.deepEqual(optionValues, shipSpec.fields.map((f) => f.name));
+        } finally {
+            ws.dispose();
+        }
+    });
+
+    test("falls back to the merged field list across all shapes when TARGET has no connection check (e.g. a variable)", () => {
+        // Stock `variables_get` itself would be the realistic stand-in here, but
+        // instantiating one in this headless harness needs Blockly's i18n `Msg`
+        // strings loaded (`RENAME_VARIABLE` etc.), which aren't set up outside the
+        // real app (`blockly-host.ts`'s `applyBlocklyLocale`) — unrelated to the
+        // logic under test. An ad hoc unchecked-output block exercises the exact
+        // same path (`outputConnection.getCheck()` returning `null`) without that
+        // dependency.
+        Blockly.Blocks["__test_unchecked_value__"] = {
+            init: function (this: Blockly.Block) {
+                this.setOutput(true, null);
+            },
+        };
+
+        const ws = new Blockly.Workspace();
+        try {
+            const varBlock = ws.newBlock("__test_unchecked_value__");
+            Blockly.Blocks["__test_unchecked_value__"].init.call(varBlock);
+
+            const accessor = ws.newBlock("recordField");
+            Blockly.Blocks["recordField"].init.call(accessor);
+            accessor.getInput("TARGET")!.connection!.connect(varBlock.outputConnection!);
+
+            const dropdown = accessor.getField("FIELD") as Blockly.FieldDropdown;
+            const options = dropdown.getOptions(false);
+            const optionValues = options.map((o) => o[1]);
+
+            const allDistinctNames = new Set(RECORD_FIELD_BLOCKS.flatMap((s) => s.fields.map((f) => f.name)));
+            assert.equal(optionValues.length, allDistinctNames.size);
+
+            // The "Goods" collision (cargoField's "Waren"/"Goods" vs. marketField's
+            // "Handelswaren"/"Trade goods", both List-typed) must resolve to
+            // cargoField's label, since it's first in RECORD_FIELD_BLOCKS order.
+            const goodsOption = options.find((o) => o[1] === "Goods");
+            assert.ok(goodsOption, "expected a merged \"Goods\" field option");
+            assert.equal(goodsOption![0], "Waren");
+        } finally {
+            ws.dispose();
+        }
+    });
+
+    test("falls back to the merged field list when nothing is connected to TARGET", () => {
+        const ws = new Blockly.Workspace();
+        try {
+            const accessor = ws.newBlock("recordField");
+            Blockly.Blocks["recordField"].init.call(accessor);
+
+            const dropdown = accessor.getField("FIELD") as Blockly.FieldDropdown;
+            const allDistinctNames = new Set(RECORD_FIELD_BLOCKS.flatMap((s) => s.fields.map((f) => f.name)));
+            assert.equal(dropdown.getOptions(false).length, allDistinctNames.size);
+        } finally {
+            ws.dispose();
+        }
+    });
+
+    test("output check follows the currently selected field, for whichever field set is currently showing", () => {
+        const ws = new Blockly.Workspace();
+        try {
+            const shipInfo = ws.newBlock("getShipInfo");
+            Blockly.Blocks["getShipInfo"].init.call(shipInfo);
+
+            const accessor = ws.newBlock("recordField");
+            const def = Blockly.Blocks["recordField"];
+            def.init.call(accessor);
+            accessor.getInput("TARGET")!.connection!.connect(shipInfo.outputConnection!);
+
+            const dropdown = accessor.getField("FIELD") as Blockly.FieldDropdown;
+            dropdown.setValue("Fuel");
+            def.onchange!.call(accessor, {} as Blockly.Events.Abstract);
+            assert.deepEqual(accessor.outputConnection!.getCheck(), ["Number"]);
+        } finally {
+            ws.dispose();
         }
     });
 });

@@ -830,6 +830,33 @@ let ``an accessor block compiles to Accessor over its TARGET input`` () =
             program.instructions
         )
 
+/// The single connection-aware `recordField` block
+/// (docs/generic-accessor-block-plan.md) that generalizes the 21 fixed-shape
+/// `RECORD_FIELD_BLOCKS` types compiles identically to any of them — the compiler
+/// only ever reads the `FIELD` dropdown's value, never branches on which of the
+/// (now 22) `GENERIC_ACCESSOR_TYPES` block types produced it.
+[<Fact>]
+let ``the generic recordField block compiles to Accessor over its TARGET input, same as a fixed-shape accessor`` () =
+    let json =
+        """
+        { "blocks": { "languageVersion": 0, "blocks": [
+            { "type": "variables_set", "id": "b1", "fields": { "VAR": "treibstoff" }, "inputs": {
+                "VALUE": { "block": { "type": "recordField", "id": "b2", "fields": { "FIELD": "Fuel" }, "inputs": {
+                    "TARGET": { "block": { "type": "getShipInfo", "id": "b3" } }
+                } } }
+            } }
+        ] } }
+        """
+
+    match Compiler.compileWorkspace De noCustomBlocks json with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        Assert.Equal<Instruction list>(
+            [ InfoRead("b3", "getShipInfo", Map.empty, "$t1")
+              SetVariable("b1", "treibstoff", Accessor("Fuel", TempRef "$t1")) ],
+            program.instructions
+        )
+
 /// Regression: "Replace per-field accessor blocks with generic field-dropdown
 /// blocks" removed the old one-block-type-per-field accessors (`shipFuel` etc.)
 /// without a migration path, breaking every already-saved program/custom block that

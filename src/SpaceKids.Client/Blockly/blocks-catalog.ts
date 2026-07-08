@@ -672,6 +672,96 @@ export const RECORD_FIELD_BLOCKS: RecordFieldBlockSpec[] = [
     ] },
 ];
 
+/** `RECORD_FIELD_BLOCKS`'s per-shape field lists, indexed by `targetCheck` — the
+ * lookup `registerGenericRecordFieldBlock`'s dropdown uses to narrow to just the
+ * fields for whatever's directly wired into `TARGET`. */
+const FIELD_SET_BY_CHECK: Record<string, RecordFieldSpec[]> = Object.fromEntries(
+    RECORD_FIELD_BLOCKS.map((spec) => [spec.targetCheck, spec.fields]),
+);
+
+/** Every `targetCheck` string `RECORD_FIELD_BLOCKS` declares — the generic block's
+ * own `TARGET` check, so it still refuses genuinely unrelated things (e.g. a plain
+ * `"String"`-checked block) while accepting any known record shape, plus anything
+ * `null`-checked (stock Blockly variable blocks) per Blockly's normal
+ * any-connects-to-checked rule. */
+const RECORD_FIELD_TARGET_CHECKS: string[] = RECORD_FIELD_BLOCKS.map((spec) => spec.targetCheck);
+
+/** Every distinct field name across all `RECORD_FIELD_BLOCKS` shapes, first
+ * occurrence (array order above) winning on a name collision — auditing this found
+ * exactly one live collision: `"Goods"` is `cargoField`'s "Waren"/"Goods" vs.
+ * `marketField`'s "Handelswaren"/"Trade goods" (both `outputCheck: "List"`, so no
+ * type conflict, just a label choice). Used as the generic block's dropdown when
+ * `TARGET`'s connected block's shape can't be resolved — most commonly because it's
+ * a bare `variables_get`, which (like all stock Blockly variable blocks) carries no
+ * connection check at all, so there's no way to know which shape a variable actually
+ * holds (see docs/generic-accessor-block-plan.md). Which shape a variable-held value
+ * really is can't be known once this fallback list is showing anyway, so there's no
+ * more "correct" choice on a collision than first-wins. */
+const ALL_FIELDS_MERGED: RecordFieldSpec[] = (() => {
+    const seenNames = new Set<string>();
+    const merged: RecordFieldSpec[] = [];
+    for (const spec of RECORD_FIELD_BLOCKS) {
+        for (const field of spec.fields) {
+            if (!seenNames.has(field.name)) {
+                seenNames.add(field.name);
+                merged.push(field);
+            }
+        }
+    }
+    return merged;
+})();
+
+/** The field set `recordField`'s `FIELD` dropdown should currently offer: narrowed to
+ * the connected block's own record shape when `TARGET` is directly wired to
+ * something with a recognized check, `ALL_FIELDS_MERGED` otherwise. */
+function fieldSetFor(block: Blockly.Block): RecordFieldSpec[] {
+    const targetBlock = block.getInputTargetBlock("TARGET");
+    const checks = targetBlock?.outputConnection?.getCheck() ?? null;
+    const matchedCheck = checks?.find((c) => FIELD_SET_BY_CHECK[c]);
+    return matchedCheck ? FIELD_SET_BY_CHECK[matchedCheck] : ALL_FIELDS_MERGED;
+}
+
+/**
+ * The single connection-aware "field from record" block that generalizes
+ * `RECORD_FIELD_BLOCKS`'s 21 fixed-shape types (docs/generic-accessor-block-plan.md)
+ * — one block instead of picking the right shape up front. Registered *alongside*
+ * `RECORD_FIELD_BLOCKS`, not replacing it: those stay registered forever for
+ * programs/custom blocks saved before this generalization existed, same lesson
+ * `LEGACY_ACCESSOR_BLOCKS` already establishes. Only the toolbox (`toolbox-de.ts`)
+ * stops offering the old types for new authoring.
+ */
+function registerGenericRecordFieldBlock(): void {
+    Blockly.Blocks["recordField"] = {
+        init: function (this: Blockly.Block) {
+            this.appendValueInput("TARGET")
+                .setCheck(RECORD_FIELD_TARGET_CHECKS)
+                .appendField(t({ de: "Feld", en: "Field" }))
+                .appendField(
+                    new Blockly.FieldDropdown(() => fieldSetFor(this).map((f) => [t(f.label), f.name] as [string, string])),
+                    "FIELD",
+                )
+                .appendField(t({ de: "aus Datensatz", en: "from record" }));
+            this.setOutput(true, null);
+            this.setColour(ACCESSOR_COLOUR);
+            this.setTooltip(
+                t({
+                    de: "Gibt ein Feld eines Datensatzes zurück – die Auswahl passt sich an, was angeschlossen ist.",
+                    en: "Returns a field of a record – the choices adapt to whatever's connected.",
+                }),
+            );
+        },
+        // Same live-recompute reasoning as `registerRecordFieldBlock`'s own
+        // `onchange` (Milestone 13): the output check depends on which field is
+        // currently selected, and here also on which field *set* is currently
+        // showing (narrowed vs. merged), so both must be re-read on every change.
+        onchange: function (this: Blockly.Block) {
+            const selected = this.getFieldValue("FIELD");
+            const match = fieldSetFor(this).find((f) => f.name === selected);
+            this.setOutput(true, match ? match.outputCheck : null);
+        },
+    };
+}
+
 interface LegacyAccessorBlockSpec {
     /** Blockly type identifier — the pre-refactor one-block-per-field name. */
     type: string;
@@ -858,6 +948,7 @@ export function registerCatalogBlocks(): void {
     ACTION_BLOCKS.forEach((spec) => registerBlock(spec, ACTION_COLOUR, false));
     INFO_BLOCKS.forEach((spec) => registerBlock(spec, INFO_COLOUR, true));
     RECORD_FIELD_BLOCKS.forEach((spec) => registerRecordFieldBlock(spec));
+    registerGenericRecordFieldBlock();
     LEGACY_ACCESSOR_BLOCKS.forEach((spec) => registerLegacyAccessorBlock(spec));
 
     Blockly.Blocks["withShip"] = {
@@ -1038,10 +1129,13 @@ const recordFieldBlockLabel = (spec: RecordFieldBlockSpec): LocalizedText => ({
     en: `Field from ${spec.recordLabel.en}`,
 });
 
+const GENERIC_RECORD_FIELD_LABEL: LocalizedText = { de: "Feld aus Datensatz", en: "Field from record" };
+
 const catalogLabelByType: Record<string, LocalizedText> = Object.fromEntries([
     ...ACTION_BLOCKS.map((spec) => [spec.type, spec.label] as const),
     ...INFO_BLOCKS.map((spec) => [spec.type, spec.label] as const),
     ...RECORD_FIELD_BLOCKS.map((spec) => [spec.type, recordFieldBlockLabel(spec)] as const),
+    ["recordField", GENERIC_RECORD_FIELD_LABEL] as const,
     ...Object.entries(FLOTILLA_BLOCK_LABELS),
 ]);
 
@@ -1054,4 +1148,9 @@ export function getCatalogBlockLabel(blockType: string): string {
 export const catalogActionBlockTypes: string[] = ACTION_BLOCKS.map((spec) => spec.type);
 export const catalogInfoBlockTypes: string[] = INFO_BLOCKS.map((spec) => spec.type);
 export const catalogRecordFieldBlockTypes: string[] = RECORD_FIELD_BLOCKS.map((spec) => spec.type);
+/** The single connection-aware accessor block offered in the toolbox going forward
+ * (docs/generic-accessor-block-plan.md) — `catalogRecordFieldBlockTypes`'s 21 fixed
+ * types stay registered and stay exported (still needed by back-compat rendering and
+ * existing tests) but are no longer what `toolbox-de.ts` offers for new authoring. */
+export const genericRecordFieldBlockTypes: string[] = ["recordField"];
 export const flotillaBlockTypes: string[] = ["withShip", "parallel"];
