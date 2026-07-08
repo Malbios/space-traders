@@ -12,6 +12,9 @@ npm-debug.log*
 # SpaceKids.Client.fsproj)
 src/SpaceKids.Client/wwwroot/js/
 
+# Headless TS test bundle output (rebuilt by `npm test`)
+src/SpaceKids.Client/test-dist/
+
 # SQLite
 *.db
 *.db-shm

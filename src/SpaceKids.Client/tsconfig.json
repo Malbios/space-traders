@@ -8,6 +8,7 @@
     "skipLibCheck": true,
     "isolatedModules": true,
     "lib": ["ES2022", "DOM"],
+    "types": ["node"],
     "outDir": "wwwroot/js/.tsbuildinfo-out"
   },
   "include": ["Blockly/**/*.ts"]

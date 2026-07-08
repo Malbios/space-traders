@@ -527,7 +527,10 @@ interface RecordFieldBlockSpec {
  * through `SupplyChainEntry` below) — with this generic shape, adding one is a data
  * entry, not a bespoke block.
  */
-const RECORD_FIELD_BLOCKS: RecordFieldBlockSpec[] = [
+/** Exported (not just kept module-private) so `blocks-catalog.test.ts` can assert
+ * registered block behavior against the same spec data that drives it, rather than
+ * duplicating a second hand-maintained expectation list that could drift. */
+export const RECORD_FIELD_BLOCKS: RecordFieldBlockSpec[] = [
     // Schiff (getShipInfo / getFleetInfo items)
     { type: "shipField", recordLabel: { de: "Schiff", en: "ship" }, targetCheck: "ShipRecord", fields: [
         { name: "Name", label: { de: "Name", en: "Name" }, outputCheck: "String" },
