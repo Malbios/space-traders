@@ -28,7 +28,7 @@ let private blockIdOf (instr: Instruction) : string =
     | Continue bid -> bid
     | ExitShipScope bid -> bid
 
-let rec private findInstructionByBlockId (instructions: Instruction list) (blockId: string) : Instruction option =
+let rec findInstructionByBlockId (instructions: Instruction list) (blockId: string) : Instruction option =
     instructions
     |> List.tryPick (fun instr ->
         if blockIdOf instr = blockId then
@@ -1401,3 +1401,41 @@ let blockIdPerFrame (job: JobState) : (string * string option) list =
     else
         job.stack
         |> List.map (fun frame -> frame.scope, currentInstructionOf job.program frame |> Option.map blockIdOf)
+
+/// A short, kid-facing description of what an instruction does (German-only, same
+/// documented gap as the rest of this module's messages — see `DslError`/`Locale` in
+/// `Types.fs`). Used by the simulation step trace (§14) as a fallback label for the
+/// block currently executing when that block hasn't produced any log text of its own
+/// yet — without this, the trace has nothing to show but the bare Blockly block id,
+/// which is meaningless to a user (found live: a mid-expression type error surfaced
+/// as just `main › u@rrr=qJ(N9k(|$Is5v+` with no way to tell which block that was).
+let describeInstruction (instr: Instruction) : string =
+    match instr with
+    | ApiAction(_, actionType, _) -> $"Aktion: {actionType}"
+    | InfoRead(_, infoType, _, _) -> $"Info: {infoType}"
+    | ShowMessage _ -> "Zeige Nachricht"
+    | Wait _ -> "Warte"
+    | SetVariable(_, name, _) -> $"Setze Variable \"{name}\""
+    | ChangeVariable(_, name, _) -> $"Ändere Variable \"{name}\""
+    | ListSet(_, name, _, _, _) -> $"Setze Listenelement von \"{name}\""
+    | If _ -> "Wenn-Block"
+    | Repeat _ -> "Wiederhole-Block"
+    | WhileUntil _ -> "Solange/Bis-Block"
+    | ForEach _ -> "Für-jedes-Element-Block"
+    | WithShip _ -> "Mit-Schiff-Block"
+    | Parallel _ -> "Parallel-Block"
+    | CallCustomBlock(_, customBlockId, _, _) -> $"Eigener Block \"{customBlockId}\""
+    | Break _ -> "Abbrechen"
+    | Continue _ -> "Weiter"
+    | ExitShipScope _ -> "Verlasse Schiffsbereich"
+
+/// Same lookup `resolveBody`'s helpers use for the main program tree, extended to
+/// also search every custom block's own body — needed here because a failing step's
+/// `blockId` can belong to a called custom block's workspace, not just the caller's.
+let findInstructionAnywhere (program: CompiledProgram) (blockId: string) : Instruction option =
+    match findInstructionByBlockId program.instructions blockId with
+    | Some found -> Some found
+    | None ->
+        program.customBlocks
+        |> Map.toSeq
+        |> Seq.tryPick (fun (_, cb) -> findInstructionByBlockId cb.instructions blockId)

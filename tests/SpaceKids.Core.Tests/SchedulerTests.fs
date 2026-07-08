@@ -1409,3 +1409,29 @@ let ``a call whose body suspends on an ApiAction keeps the caller frame on the s
     match job2.stack with
     | top :: [] -> Assert.Equal(VNumber 1.0, top.locals.["result"])
     | _ -> Assert.Fail("expected exactly one (the main) frame left")
+
+/// Regression test: the simulation step trace (§14) used to show a bare Blockly
+/// block id with no further context whenever the currently-running block hadn't
+/// logged anything yet (e.g. a type error mid-expression, before any action/message
+/// produced log text) — found live as `main › u@rrr=qJ(N9k(|$Is5v+` with nothing
+/// telling the user which block that was. `findInstructionAnywhere`/
+/// `describeInstruction` are what `JobRunner.fs`'s `captureSimulationStep` now falls
+/// back to in that case, so this locks in that both a main-program instruction and
+/// one that only exists inside a *called custom block's* own body (a case the
+/// simpler `findInstructionByBlockId` alone can't resolve, since it only searches
+/// `program.instructions`) can still be described.
+[<Fact>]
+let ``findInstructionAnywhere resolves a block id from a called custom block's own body, and describeInstruction labels it`` () =
+    let orbitThenOne = mkCustomBlock [ ApiAction("ob1", "orbit", Map.empty) ] (Some(Literal(NumberLit 1.0)))
+    let program = mkProgram [ CallCustomBlock("call1", "orbitThenOne", Map.empty, Some "$t1") ]
+    let program = { program with customBlocks = Map [ "orbitThenOne", orbitThenOne ] }
+
+    match Step.findInstructionAnywhere program "ob1" with
+    | Some instr -> Assert.Equal("Aktion: orbit", Step.describeInstruction instr)
+    | None -> Assert.Fail("expected to find the ApiAction nested inside the custom block's body")
+
+    match Step.findInstructionAnywhere program "call1" with
+    | Some instr -> Assert.Equal("Eigener Block \"orbitThenOne\"", Step.describeInstruction instr)
+    | None -> Assert.Fail("expected to find the top-level CallCustomBlock instruction")
+
+    Assert.Equal(None, Step.findInstructionAnywhere program "does-not-exist")

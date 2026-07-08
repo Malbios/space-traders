@@ -1481,7 +1481,13 @@ let private simulationDetail (job: JobState) : string option =
 
 let private captureSimulationStep (job: JobState) : SimulationStep =
     match Step.blockIdPerFrame job |> List.tryHead with
-    | Some(scope, Some blockId) -> { scope = scope; blockId = blockId; detail = job.log |> List.tryHead }
+    | Some(scope, Some blockId) ->
+        let detail =
+            match job.log |> List.tryHead with
+            | Some line -> Some line
+            | None -> Step.findInstructionAnywhere job.program blockId |> Option.map Step.describeInstruction
+
+        { scope = scope; blockId = blockId; detail = detail }
     | Some(scope, None) -> { scope = scope; blockId = ""; detail = simulationDetail job }
     | None -> { scope = "main"; blockId = ""; detail = simulationDetail job }
 
