@@ -752,7 +752,7 @@ function registerGenericRecordFieldBlock(): void {
                     new Blockly.FieldDropdown(() => fieldSetFor(this).map((f) => [t(f.label), f.name] as [string, string])),
                     "FIELD",
                 )
-                .appendField(t({ de: "aus Datensatz", en: "from record" }));
+                .appendField(t({ de: "aus...", en: "from..." }));
             this.setOutput(true, null);
             this.setColour(ACCESSOR_COLOUR);
             this.setTooltip(
@@ -1186,7 +1186,7 @@ const recordFieldBlockLabel = (spec: RecordFieldBlockSpec): LocalizedText => ({
     en: `Field from ${spec.recordLabel.en}`,
 });
 
-const GENERIC_RECORD_FIELD_LABEL: LocalizedText = { de: "Feld aus Datensatz", en: "Field from record" };
+const GENERIC_RECORD_FIELD_LABEL: LocalizedText = { de: "Feld aus...", en: "Field from..." };
 
 const catalogLabelByType: Record<string, LocalizedText> = Object.fromEntries([
     ...ACTION_BLOCKS.map((spec) => [spec.type, spec.label] as const),
