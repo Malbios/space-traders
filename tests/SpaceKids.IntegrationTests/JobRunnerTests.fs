@@ -1911,6 +1911,14 @@ let ``getShipyard resolves the full nested ship-type detail when a ship is docke
             | top :: _ ->
                 match top.locals.["yard"] with
                 | VRecord yard ->
+                    Assert.Equal(VNumber 100.0, yard.["ModificationsFee"])
+
+                    match yard.["Transactions"] with
+                    | VList(VRecord transaction :: _) ->
+                        Assert.Equal(VString "SHIP_MINING_DRONE", transaction.["ShipType"])
+                        Assert.Equal(VNumber 50000.0, transaction.["Price"])
+                    | other -> Assert.Fail($"expected Transactions to be a non-empty VList, got {other}")
+
                     match yard.["Types"] with
                     | VList(VRecord shipType :: _) ->
                         Assert.Equal(VString "SHIP_MINING_DRONE", shipType.["Type"])

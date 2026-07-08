@@ -555,6 +555,17 @@ export const RECORD_FIELD_BLOCKS: RecordFieldBlockSpec[] = [
     { type: "shipyardField", recordLabel: { de: "Werft", en: "shipyard" }, targetCheck: "ShipyardRecord", fields: [
         { name: "Waypoint", label: { de: "Wegpunkt", en: "Waypoint" }, outputCheck: "String" },
         { name: "Types", label: { de: "Schiffstypen", en: "Ship types" }, outputCheck: "List" },
+        { name: "ModificationsFee", label: { de: "Umbaukosten", en: "Modifications fee" }, outputCheck: "Number" },
+        { name: "Transactions", label: { de: "Transaktionen", en: "Transactions" }, outputCheck: "List" },
+    ] },
+    // Transaktion (a Werft's Transaktionen list item)
+    { type: "shipyardTransactionField", recordLabel: { de: "Transaktion", en: "transaction" }, targetCheck: "ShipyardTransactionRecord", fields: [
+        { name: "Waypoint", label: { de: "Wegpunkt", en: "Waypoint" }, outputCheck: "String" },
+        { name: "Ship", label: { de: "Schiff", en: "Ship" }, outputCheck: "String" },
+        { name: "ShipType", label: { de: "Schiffstyp", en: "Ship type" }, outputCheck: "String" },
+        { name: "Price", label: { de: "Preis", en: "Price" }, outputCheck: "Number" },
+        { name: "Agent", label: { de: "Agent", en: "Agent" }, outputCheck: "String" },
+        { name: "Timestamp", label: { de: "Zeitstempel", en: "Timestamp" }, outputCheck: "String" },
     ] },
     // Schiffstyp (a Werft's Schiffstypen list item) — `Type`/`Price` are always
     // present (populated even from the price-free `shipTypes` fallback, §8); the

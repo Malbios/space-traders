@@ -264,7 +264,15 @@ let private miningDroneShipyardEntry: ShipyardShipEntry =
 let private shipyardFixture (waypointSymbol: string) : Shipyard =
     { symbol = waypointSymbol
       shipTypes = [ { ``type`` = "SHIP_MINING_DRONE" } ]
-      ships = if hasShipAt waypointSymbol then [ miningDroneShipyardEntry ] else [] }
+      ships = if hasShipAt waypointSymbol then [ miningDroneShipyardEntry ] else []
+      modificationsFee = 100
+      transactions =
+        [ { waypointSymbol = waypointSymbol
+            shipSymbol = "SHIP_MINING_DRONE"
+            shipType = "SHIP_MINING_DRONE"
+            price = 50000
+            agentSymbol = "FAKE-AGENT"
+            timestamp = "2026-07-06T16:28:13.468Z" } ] }
 
 let private waypoints =
     [ { symbol = headquarters

@@ -319,6 +319,17 @@ let private shipyardMountRecord (m: ShipyardShipMount) : Value =
 let private shipyardCrewRecord (c: ShipyardShipCrew) : Value =
     VRecord(Map.ofList [ "Required", VNumber(float c.required); "Capacity", VNumber(float c.capacity) ])
 
+let private shipyardTransactionRecord (t: ShipyardTransaction) : Value =
+    VRecord(
+        Map.ofList
+            [ "Waypoint", VString t.waypointSymbol
+              "Ship", VString t.shipSymbol
+              "ShipType", VString t.shipType
+              "Price", VNumber(float t.price)
+              "Agent", VString t.agentSymbol
+              "Timestamp", VString t.timestamp ]
+    )
+
 /// The `ships` array's full-detail entry (only ever populated when a ship of yours
 /// is docked there — see `ShipyardShipEntry`'s own doc comment in
 /// `SpaceTraders/Types.fs` for the "field names not yet verified against a live
@@ -766,7 +777,16 @@ let private runInfoRead
                             r.shipTypes
                             |> List.map (fun t -> VRecord(Map.ofList [ "Type", VString t.``type``; "Price", VNumber 0.0 ]))
 
-                    return InfoOk(VRecord(Map.ofList [ "Waypoint", VString waypointSymbol; "Types", VList types ]))
+                    return
+                        InfoOk(
+                            VRecord(
+                                Map.ofList
+                                    [ "Waypoint", VString waypointSymbol
+                                      "Types", VList types
+                                      "ModificationsFee", VNumber(float r.modificationsFee)
+                                      "Transactions", VList(r.transactions |> List.map shipyardTransactionRecord) ]
+                            )
+                        )
                 })
         | "getContracts" ->
             "getContracts",

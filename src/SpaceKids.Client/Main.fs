@@ -925,6 +925,20 @@ type Strings =
       /// frame/reactor/engine — verified present on those three only, never on
       /// modules/mounts, against a real account's shipyard response (2026-07-08).
       componentConditionLine: float * float * int -> string
+      /// A ship type's own `supply`/`activity` (e.g. "HIGH"/"GROWING") — `activity`
+      /// skipped when `None`, same convention as `requirementsLine`.
+      supplyActivityLine: string * string option -> string
+      frameStatsLine: int * int * int -> string
+      reactorStatsLine: int -> string
+      engineStatsLine: int -> string
+      moduleStatsLine: int option * int option -> string
+      mountStatsLine: int option -> string
+      /// A mount's deposit list (survey mounts only) — comma-joined, omitted
+      /// entirely when empty/`None` rather than shown as an empty line.
+      depositsLine: string list -> string
+      modificationsFeeLine: int -> string
+      transactionsHeading: string
+      transactionLine: string * int * System.DateTimeOffset -> string
       pricesHiddenHint: string
       shipNotFound: string -> string
       waypointNotFound: string -> string
@@ -1165,6 +1179,27 @@ let private stringsDe: Strings =
       mountLine = fun (symbol, name) -> $"{name} ({symbol})"
       componentConditionLine =
         fun (condition, integrity, quality) -> $"Zustand: {condition} · Integrität: {integrity} · Qualität: {quality}"
+      supplyActivityLine =
+        fun (supply, activity) ->
+            match activity with
+            | Some a -> $"Angebot: {supply} · Aktivität: {a}"
+            | None -> $"Angebot: {supply}"
+      frameStatsLine =
+        fun (moduleSlots, mountingPoints, fuelCapacity) ->
+            $"Modulplätze: {moduleSlots} · Befestigungspunkte: {mountingPoints} · Treibstoffkapazität: {fuelCapacity}"
+      reactorStatsLine = fun powerOutput -> $"Energieleistung: {powerOutput}"
+      engineStatsLine = fun speed -> $"Geschwindigkeit: {speed}"
+      moduleStatsLine =
+        fun (capacity, range) ->
+            [ capacity |> Option.map (fun v -> $"Kapazität: {v}"); range |> Option.map (fun v -> $"Reichweite: {v}") ]
+            |> List.choose id
+            |> String.concat " · "
+      mountStatsLine = fun strength -> strength |> Option.map (fun v -> $"Stärke: {v}") |> Option.defaultValue ""
+      depositsLine =
+        fun deposits -> if deposits.IsEmpty then "" else $"""Vorkommen: {String.concat ", " deposits}"""
+      modificationsFeeLine = fun fee -> $"Umbaukosten: {fee} Credits"
+      transactionsHeading = "Letzte Transaktionen"
+      transactionLine = fun (shipType, price, timestamp) -> $"{shipType}: {price} Credits ({timestamp.ToLocalTime():g})"
       pricesHiddenHint = "Preise werden nur angezeigt, wenn eines deiner Schiffe hier ist."
       shipNotFound = fun symbol -> $"Schiff {symbol} nicht gefunden."
       waypointNotFound = fun symbol -> $"Wegpunkt {symbol} nicht gefunden."
@@ -1419,6 +1454,27 @@ let private stringsEn: Strings =
       mountLine = fun (symbol, name) -> $"{name} ({symbol})"
       componentConditionLine =
         fun (condition, integrity, quality) -> $"Condition: {condition} · Integrity: {integrity} · Quality: {quality}"
+      supplyActivityLine =
+        fun (supply, activity) ->
+            match activity with
+            | Some a -> $"Supply: {supply} · Activity: {a}"
+            | None -> $"Supply: {supply}"
+      frameStatsLine =
+        fun (moduleSlots, mountingPoints, fuelCapacity) ->
+            $"Module slots: {moduleSlots} · Mounting points: {mountingPoints} · Fuel capacity: {fuelCapacity}"
+      reactorStatsLine = fun powerOutput -> $"Power output: {powerOutput}"
+      engineStatsLine = fun speed -> $"Speed: {speed}"
+      moduleStatsLine =
+        fun (capacity, range) ->
+            [ capacity |> Option.map (fun v -> $"Capacity: {v}"); range |> Option.map (fun v -> $"Range: {v}") ]
+            |> List.choose id
+            |> String.concat " · "
+      mountStatsLine = fun strength -> strength |> Option.map (fun v -> $"Strength: {v}") |> Option.defaultValue ""
+      depositsLine =
+        fun deposits -> if deposits.IsEmpty then "" else $"""Deposits: {String.concat ", " deposits}"""
+      modificationsFeeLine = fun fee -> $"Modifications fee: {fee} credits"
+      transactionsHeading = "Recent transactions"
+      transactionLine = fun (shipType, price, timestamp) -> $"{shipType}: {price} credits ({timestamp.ToLocalTime():g})"
       pricesHiddenHint = "Prices are only shown when one of your ships is here."
       shipNotFound = fun symbol -> $"Ship {symbol} not found."
       waypointNotFound = fun symbol -> $"Waypoint {symbol} not found."
@@ -3174,6 +3230,7 @@ let private viewShipTypeDetail (s: Strings) (entry: ShipyardShipEntry) =
                 entry.name
             }
         if entry.description <> "" then p { entry.description }
+        if entry.supply <> "" then p { s.supplyActivityLine (entry.supply, entry.activity) }
 
         p {
             attr.style "font-weight: bold; margin: 0.25rem 0"
@@ -3181,6 +3238,7 @@ let private viewShipTypeDetail (s: Strings) (entry: ShipyardShipEntry) =
         }
         ul {
             li { entry.frame.name }
+            li { s.frameStatsLine (entry.frame.moduleSlots, entry.frame.mountingPoints, entry.frame.fuelCapacity) }
             li { s.componentConditionLine (entry.frame.condition, entry.frame.integrity, entry.frame.quality) }
             li { s.requirementsLine (entry.frame.requirements.power, entry.frame.requirements.crew, entry.frame.requirements.slots) }
         }
@@ -3190,6 +3248,7 @@ let private viewShipTypeDetail (s: Strings) (entry: ShipyardShipEntry) =
         }
         ul {
             li { entry.reactor.name }
+            li { s.reactorStatsLine entry.reactor.powerOutput }
             li { s.componentConditionLine (entry.reactor.condition, entry.reactor.integrity, entry.reactor.quality) }
             li { s.requirementsLine (entry.reactor.requirements.power, entry.reactor.requirements.crew, entry.reactor.requirements.slots) }
         }
@@ -3199,6 +3258,7 @@ let private viewShipTypeDetail (s: Strings) (entry: ShipyardShipEntry) =
         }
         ul {
             li { entry.engine.name }
+            li { s.engineStatsLine entry.engine.speed }
             li { s.componentConditionLine (entry.engine.condition, entry.engine.integrity, entry.engine.quality) }
             li { s.requirementsLine (entry.engine.requirements.power, entry.engine.requirements.crew, entry.engine.requirements.slots) }
         }
@@ -3207,13 +3267,33 @@ let private viewShipTypeDetail (s: Strings) (entry: ShipyardShipEntry) =
                 attr.style "font-weight: bold; margin: 0.25rem 0"
                 s.modulesHeading
             }
-            ul { for m in entry.modules do li { s.moduleLine (m.symbol, m.name) } }
+            for m in entry.modules do
+                div {
+                    attr.style "margin: 0 0 0.25rem 0.5rem"
+                    p { s.moduleLine (m.symbol, m.name) }
+                    ul {
+                        let stats = s.moduleStatsLine (m.capacity, m.range)
+                        if stats <> "" then li { stats }
+                        li { s.requirementsLine (m.requirements.power, m.requirements.crew, m.requirements.slots) }
+                    }
+                }
         if not entry.mounts.IsEmpty then
             p {
                 attr.style "font-weight: bold; margin: 0.25rem 0"
                 s.mountsHeading
             }
-            ul { for m in entry.mounts do li { s.mountLine (m.symbol, m.name) } }
+            for m in entry.mounts do
+                div {
+                    attr.style "margin: 0 0 0.25rem 0.5rem"
+                    p { s.mountLine (m.symbol, m.name) }
+                    ul {
+                        let strengthLine = s.mountStatsLine m.strength
+                        if strengthLine <> "" then li { strengthLine }
+                        let depositsLine = s.depositsLine (m.deposits |> Option.defaultValue [])
+                        if depositsLine <> "" then li { depositsLine }
+                        li { s.requirementsLine (m.requirements.power, m.requirements.crew, m.requirements.slots) }
+                    }
+                }
         p {
             attr.style "font-weight: bold; margin: 0.25rem 0"
             s.crewHeading
@@ -3235,6 +3315,17 @@ let private viewShipyardCard (s: Strings) (model: Model) dispatch (waypoint: Way
         match model.shipyardsData.TryFind waypoint.symbol with
         | None -> if model.shipyardsDataLoading.Contains waypoint.symbol then p { s.loadingEllipsis }
         | Some shipyard ->
+            p { s.modificationsFeeLine shipyard.modificationsFee }
+            if not shipyard.transactions.IsEmpty then
+                p {
+                    attr.style "font-weight: bold; margin: 0.25rem 0"
+                    s.transactionsHeading
+                }
+                ul {
+                    for t in shipyard.transactions do
+                        li { s.transactionLine (t.shipType, t.price, System.DateTimeOffset.Parse t.timestamp) }
+                }
+
             if not shipyard.ships.IsEmpty then
                 ul {
                     for entry in shipyard.ships do

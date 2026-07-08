@@ -352,15 +352,29 @@ type ShipyardShipEntry =
       mounts: ShipyardShipMount list
       crew: ShipyardShipCrew }
 
+/// One entry of a shipyard's recent purchase history — verified against a real
+/// account's shipyard response (2026-07-08).
+type ShipyardTransaction =
+    { waypointSymbol: string
+      shipSymbol: string
+      shipType: string
+      price: int
+      agentSymbol: string
+      timestamp: string }
+
 /// `GET /systems/{systemSymbol}/waypoints/{waypointSymbol}/shipyard` response —
 /// flat under `data`, same as `Market`; there is no extra `shipyard` nesting
 /// level (a prior version of this type wrongly assumed one, which only ever
 /// looked correct against the fake server's own matching mistake — the real
-/// API's `data` is this record's fields directly).
+/// API's `data` is this record's fields directly). `modificationsFee`/
+/// `transactions` verified present against a real account's response
+/// (2026-07-08), same as `ShipyardShipEntry`'s own detail fields.
 type Shipyard =
     { symbol: string
       shipTypes: ShipyardShipType list
-      ships: ShipyardShipEntry list }
+      ships: ShipyardShipEntry list
+      modificationsFee: int
+      transactions: ShipyardTransaction list }
 
 type StarSystem =
     { symbol: string

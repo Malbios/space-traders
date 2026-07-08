@@ -149,8 +149,13 @@ let fetchWaypointShipyard (client: SpaceTradersClient) (dbPath: string) (token: 
             // an empty array. Plain `System.Text.Json` then binds the F# list
             // constructor parameter to `null`, not `[]` — normalize it here so
             // `shipyard.ships.IsEmpty` downstream never sees a null reference.
+            // `transactions` gets the same defensive treatment — not yet observed
+            // omitted on a real response, but it's the same "plain list, no Option
+            // wrapper" shape that already bit `ships` once.
             let normalized =
-                if isNull (box result.ships) then { result with ships = [] } else result
+                { result with
+                    ships = (if isNull (box result.ships) then [] else result.ships)
+                    transactions = (if isNull (box result.transactions) then [] else result.transactions) }
 
             return Some normalized
         with ex when isNotFound ex ->

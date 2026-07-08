@@ -113,6 +113,7 @@ let private GENERIC_ACCESSOR_TYPES: Set<string> =
         "shipyardMountField"
         "crewField"
         "requirementsField"
+        "shipyardTransactionField"
     ]
 
 /// Compatibility for the 29 one-block-type-per-field accessors the redesign above
