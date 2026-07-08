@@ -8,7 +8,6 @@ import {
     registerSignature,
     registerCustomBlockAccessors,
     readSignature,
-    getSignature,
 } from "./blocks";
 import { registerCatalogBlocks, registerStockBlockChecks } from "./blocks-catalog";
 import { buildCatalogToolbox, type CustomBlockToolboxEntry } from "./toolbox-de";
@@ -75,7 +74,17 @@ interface CustomBlockSyncEntry {
     workspaceJson: string;
 }
 
-function registerCustomBlockFromWorkspaceJson(customBlockId: string, workspaceJson: string): string[] {
+/**
+ * `displayName` is the custom block's persisted `custom_blocks.name` (the workshop
+ * library's rename control) — authoritative over the `BLOCK_NAME` field baked into
+ * `workspaceJson` at the time it was last saved, which only updates when a user opens
+ * this specific block's own workshop and edits that field there. Without this
+ * override, renaming a block from the library list left every place that reads the
+ * registered signature (this toolbox entry, the draggable call-block's own label and
+ * tooltip, its field-accessor blocks) showing the stale name until the block was
+ * separately re-saved.
+ */
+function registerCustomBlockFromWorkspaceJson(customBlockId: string, workspaceJson: string, displayName: string): string[] {
     const tempWs = new Blockly.Workspace();
     try {
         load(tempWs, workspaceJson);
@@ -83,7 +92,7 @@ function registerCustomBlockFromWorkspaceJson(customBlockId: string, workspaceJs
         if (!defBlock) {
             return [];
         }
-        const signature = readSignature(defBlock, customBlockId);
+        const signature = { ...readSignature(defBlock, customBlockId), name: displayName };
         registerSignature(signature);
         return registerCustomBlockAccessors(signature);
     } finally {
@@ -101,15 +110,14 @@ function applyGlobalCustomBlocksToContainer(containerId: string): void {
 }
 
 /** Registers every saved custom block's signature and repopulates "Eigene Blöcke" on all open workspaces. */
-function syncCustomBlocks(json: string): void {
+export function syncCustomBlocks(json: string): void {
     const blocks = JSON.parse(json) as CustomBlockSyncEntry[];
     const toolboxEntries: CustomBlockToolboxEntry[] = [];
     const accessorTypes: string[] = [];
 
     for (const block of blocks) {
-        const newAccessors = registerCustomBlockFromWorkspaceJson(block.id, block.workspaceJson);
-        const signature = getSignature(block.id);
-        toolboxEntries.push({ id: block.id, name: signature?.name ?? block.name });
+        const newAccessors = registerCustomBlockFromWorkspaceJson(block.id, block.workspaceJson, block.name);
+        toolboxEntries.push({ id: block.id, name: block.name });
         for (const type of newAccessors) {
             if (!accessorTypes.includes(type)) {
                 accessorTypes.push(type);
