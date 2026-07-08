@@ -716,8 +716,20 @@ const ALL_FIELDS_MERGED: RecordFieldSpec[] = (() => {
  * something with a recognized check, `ALL_FIELDS_MERGED` otherwise. */
 function fieldSetFor(block: Blockly.Block): RecordFieldSpec[] {
     const targetBlock = block.getInputTargetBlock("TARGET");
-    const checks = targetBlock?.outputConnection?.getCheck() ?? null;
-    const matchedCheck = checks?.find((c) => FIELD_SET_BY_CHECK[c]);
+    const directChecks = targetBlock?.outputConnection?.getCheck() ?? null;
+    let matchedCheck = directChecks?.find((c) => FIELD_SET_BY_CHECK[c]);
+
+    // Phase 2 (docs/generic-accessor-block-plan.md): a bare `variables_get` has no
+    // connection check of its own, but `registerVariableTypeTagging` keeps the
+    // variable's own `type` tagged with whatever record shape it was last assigned
+    // from, so fall back to reading that when the direct check didn't resolve.
+    if (!matchedCheck && targetBlock?.type === "variables_get") {
+        const varType = (targetBlock.getField("VAR") as Blockly.FieldVariable | null)?.getVariable()?.getType();
+        if (varType && FIELD_SET_BY_CHECK[varType]) {
+            matchedCheck = varType;
+        }
+    }
+
     return matchedCheck ? FIELD_SET_BY_CHECK[matchedCheck] : ALL_FIELDS_MERGED;
 }
 
@@ -1113,6 +1125,51 @@ export function registerStockBlockChecks(): void {
         const primitiveChecks = ["String", "Number", "Boolean"];
         this.getInput("A")?.connection?.setCheck(primitiveChecks);
         this.getInput("B")?.connection?.setCheck(primitiveChecks);
+    };
+}
+
+/**
+ * Generic accessor Phase 2 (docs/generic-accessor-block-plan.md): stock Blockly
+ * variables carry no connection check at all, so `recordField`'s dropdown can't
+ * narrow through a variable the way it can through a directly-wired info block —
+ * unless the variable itself is tagged with the record shape it currently holds.
+ * Blockly's variable model already has a native, otherwise-unused `type` field for
+ * exactly this. Patches stock `variables_set`'s `onchange` (it has none by default,
+ * confirmed directly) to keep that tag in sync with whatever's wired into `VALUE`:
+ * stamps a recognized record check onto the variable, clears it back to untyped on a
+ * reassignment to something recognized but NOT a record (a plain literal, a
+ * non-record info block, ...), and leaves it alone when nothing new can be inferred
+ * (`VALUE` disconnected, or wired to another untyped/bare variable) rather than
+ * guess. Since `onchange` fires on every relevant workspace event, not just changes
+ * to this exact block, this also retroactively (re)tags variables the first time an
+ * already-saved program is opened after this ships — not just newly-authored
+ * assignments. This only ever narrows `recordField`'s dropdown as a convenience; it
+ * never changes what compiles or runs (`Accessor(field, target)` stays purely
+ * name-keyed at runtime, same as `GENERIC_ACCESSOR_TYPES` already establishes) — a
+ * variable genuinely reused for two different record shapes at different points in
+ * one program is a known, accepted limitation (the tag is one value per variable,
+ * not per assignment site), not something this is meant to solve. Idempotent
+ * (patches the stock `init`/adds `onchange` once, safe to call once at seam init).
+ */
+export function registerVariableTypeTagging(): void {
+    const originalVariablesSet = Blockly.Blocks["variables_set"].init;
+    Blockly.Blocks["variables_set"].init = function (this: Blockly.Block) {
+        originalVariablesSet.call(this);
+    };
+    Blockly.Blocks["variables_set"].onchange = function (this: Blockly.Block) {
+        const varModel = (this.getField("VAR") as Blockly.FieldVariable | null)?.getVariable();
+        if (!varModel) {
+            return;
+        }
+
+        const valueCheck = this.getInputTargetBlock("VALUE")?.outputConnection?.getCheck() ?? null;
+        const matchedRecordCheck = valueCheck?.find((c) => FIELD_SET_BY_CHECK[c]);
+
+        if (matchedRecordCheck && varModel.getType() !== matchedRecordCheck) {
+            this.workspace.getVariableMap().changeVariableType(varModel, matchedRecordCheck);
+        } else if (valueCheck && !matchedRecordCheck && varModel.getType() !== "") {
+            this.workspace.getVariableMap().changeVariableType(varModel, "");
+        }
     };
 }
 

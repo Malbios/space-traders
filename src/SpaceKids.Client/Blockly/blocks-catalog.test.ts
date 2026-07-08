@@ -2,8 +2,10 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import * as Blockly from "blockly/core";
 import "blockly/blocks";
+import { applyBlocklyLocale } from "./i18n-locale";
 import {
     registerCatalogBlocks,
+    registerVariableTypeTagging,
     getCatalogBlockLabel,
     catalogActionBlockTypes,
     catalogInfoBlockTypes,
@@ -14,7 +16,14 @@ import {
 // Headless (no SVG/browser) — see esbuild.test.config.mjs for how `blockly/core`
 // resolves to Blockly's own `core-node.js` entry under Node, which self-initializes
 // jsdom. `new Blockly.Workspace()` (not `WorkspaceSvg`) never touches rendering.
+// `applyBlocklyLocale` is needed before any real `variables_set`/`variables_get`
+// block is instantiated — their stock `VAR` field's `dropdownCreate` reads
+// `Blockly.Msg.RENAME_VARIABLE`/`DELETE_VARIABLE`, which are unset without it and
+// crash with a bare `Cannot read properties of undefined (reading 'replace')`
+// (found live while writing the Phase 2 variable-type-tagging tests below).
+applyBlocklyLocale("de");
 registerCatalogBlocks();
+registerVariableTypeTagging();
 
 test("no block type name collides across action/info/record-field catalogs", () => {
     const allTypes = [...catalogActionBlockTypes, ...catalogInfoBlockTypes, ...catalogRecordFieldBlockTypes];
@@ -191,6 +200,139 @@ describe("generic connection-aware record field block (recordField)", () => {
             dropdown.setValue("Fuel");
             def.onchange!.call(accessor, {} as Blockly.Events.Abstract);
             assert.deepEqual(accessor.outputConnection!.getCheck(), ["Number"]);
+        } finally {
+            ws.dispose();
+        }
+    });
+});
+
+describe("variable type tagging (Phase 2: narrowing recordField through a variable)", () => {
+    function makeShipInfoBlock(ws: Blockly.Workspace): Blockly.Block {
+        const b = ws.newBlock("getShipInfo");
+        Blockly.Blocks["getShipInfo"].init.call(b);
+        return b;
+    }
+
+    function makeMarketBlock(ws: Blockly.Workspace): Blockly.Block {
+        const b = ws.newBlock("getMarket");
+        Blockly.Blocks["getMarket"].init.call(b);
+        return b;
+    }
+
+    function makeVariablesSet(ws: Blockly.Workspace, varName: string) {
+        const varModel = ws.getVariableMap().createVariable(varName);
+        const block = ws.newBlock("variables_set");
+        (block.getField("VAR") as Blockly.FieldVariable).setValue(varModel.getId());
+        return { block, varModel };
+    }
+
+    function makeVariablesGet(ws: Blockly.Workspace, varModel: ReturnType<Blockly.VariableMap["createVariable"]>): Blockly.Block {
+        const block = ws.newBlock("variables_get");
+        (block.getField("VAR") as Blockly.FieldVariable).setValue(varModel.getId());
+        return block;
+    }
+
+    function fireOnchange(block: Blockly.Block): void {
+        Blockly.Blocks["variables_set"].onchange!.call(block, {} as Blockly.Events.Abstract);
+    }
+
+    test("tags a variable's type when assigned from a known record shape, narrowing recordField reading it", () => {
+        const ws = new Blockly.Workspace();
+        try {
+            const { block: setBlock, varModel } = makeVariablesSet(ws, "schiff");
+            const shipInfo = makeShipInfoBlock(ws);
+            setBlock.getInput("VALUE")!.connection!.connect(shipInfo.outputConnection!);
+            fireOnchange(setBlock);
+
+            assert.equal(varModel.getType(), "ShipRecord");
+
+            const getBlock = makeVariablesGet(ws, varModel);
+            const accessor = ws.newBlock("recordField");
+            Blockly.Blocks["recordField"].init.call(accessor);
+            accessor.getInput("TARGET")!.connection!.connect(getBlock.outputConnection!);
+
+            const dropdown = accessor.getField("FIELD") as Blockly.FieldDropdown;
+            const shipSpec = RECORD_FIELD_BLOCKS.find((s) => s.type === "shipField")!;
+            assert.deepEqual(
+                dropdown.getOptions(false).map((o) => o[1]),
+                shipSpec.fields.map((f) => f.name),
+            );
+        } finally {
+            ws.dispose();
+        }
+    });
+
+    test("clears the tag when reassigned to a plain literal, falling recordField back to the merged list", () => {
+        const ws = new Blockly.Workspace();
+        try {
+            const { block: setBlock, varModel } = makeVariablesSet(ws, "schiff");
+            const shipInfo = makeShipInfoBlock(ws);
+            setBlock.getInput("VALUE")!.connection!.connect(shipInfo.outputConnection!);
+            fireOnchange(setBlock);
+            assert.equal(varModel.getType(), "ShipRecord");
+
+            setBlock.getInput("VALUE")!.connection!.disconnect();
+            const text = ws.newBlock("text");
+            setBlock.getInput("VALUE")!.connection!.connect(text.outputConnection!);
+            fireOnchange(setBlock);
+
+            assert.equal(varModel.getType(), "");
+
+            const getBlock = makeVariablesGet(ws, varModel);
+            const accessor = ws.newBlock("recordField");
+            Blockly.Blocks["recordField"].init.call(accessor);
+            accessor.getInput("TARGET")!.connection!.connect(getBlock.outputConnection!);
+
+            const dropdown = accessor.getField("FIELD") as Blockly.FieldDropdown;
+            const allDistinctNames = new Set(RECORD_FIELD_BLOCKS.flatMap((s) => s.fields.map((f) => f.name)));
+            assert.equal(dropdown.getOptions(false).length, allDistinctNames.size);
+        } finally {
+            ws.dispose();
+        }
+    });
+
+    test("updates the tag when reassigned to a different known record shape", () => {
+        const ws = new Blockly.Workspace();
+        try {
+            const { block: setBlock, varModel } = makeVariablesSet(ws, "sache");
+            const shipInfo = makeShipInfoBlock(ws);
+            setBlock.getInput("VALUE")!.connection!.connect(shipInfo.outputConnection!);
+            fireOnchange(setBlock);
+            assert.equal(varModel.getType(), "ShipRecord");
+
+            setBlock.getInput("VALUE")!.connection!.disconnect();
+            const market = makeMarketBlock(ws);
+            setBlock.getInput("VALUE")!.connection!.connect(market.outputConnection!);
+            fireOnchange(setBlock);
+
+            assert.equal(varModel.getType(), "MarketRecord");
+        } finally {
+            ws.dispose();
+        }
+    });
+
+    test("leaves the tag untouched when VALUE is disconnected or wired to another bare variable (ambiguous, not a clear reassignment)", () => {
+        const ws = new Blockly.Workspace();
+        try {
+            const { block: setBlock, varModel } = makeVariablesSet(ws, "schiff");
+            const shipInfo = makeShipInfoBlock(ws);
+            setBlock.getInput("VALUE")!.connection!.connect(shipInfo.outputConnection!);
+            fireOnchange(setBlock);
+            assert.equal(varModel.getType(), "ShipRecord");
+
+            setBlock.getInput("VALUE")!.connection!.disconnect();
+            fireOnchange(setBlock);
+            assert.equal(varModel.getType(), "ShipRecord", "disconnecting VALUE should not clobber a known tag");
+
+            const other = ws.getVariableMap().createVariable("anderes");
+            const otherGet = makeVariablesGet(ws, other);
+            setBlock.getInput("VALUE")!.connection!.connect(otherGet.outputConnection!);
+            fireOnchange(setBlock);
+            assert.equal(
+                varModel.getType(),
+                "ShipRecord",
+                "wiring through another bare (untyped) variable is ambiguous, not a clear reassignment",
+            );
         } finally {
             ws.dispose();
         }

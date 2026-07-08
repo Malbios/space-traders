@@ -9,7 +9,7 @@ import {
     registerCustomBlockAccessors,
     readSignature,
 } from "./blocks";
-import { registerCatalogBlocks, registerStockBlockChecks } from "./blocks-catalog";
+import { registerCatalogBlocks, registerStockBlockChecks, registerVariableTypeTagging } from "./blocks-catalog";
 import { buildCatalogToolbox, type CustomBlockToolboxEntry } from "./toolbox-de";
 import { serializeWorkspace as serialize, loadWorkspace as load } from "./workspace-serialization";
 import { Locale, setCurrentLocale } from "./locale-state";
@@ -26,6 +26,7 @@ registerDefinitionShellBlock();
 registerCallerBlock();
 registerCatalogBlocks();
 registerStockBlockChecks();
+registerVariableTypeTagging();
 
 /** A minimal self-contained dark theme (§ Settings tab dark mode) — defined here
  * rather than pulling in the separate `@blockly/theme-dark` package for a
