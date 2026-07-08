@@ -28,7 +28,7 @@ src/
                                  every input/output carries a `.setCheck` type
                                  since Milestone 13/Part B
       toolbox-de.ts               buildCatalogToolbox — program vs Blockwerkstatt
-                                 toolboxes differ (see docs/07-custom-block-toolbox-persistence.md)
+                                 toolboxes differ (see docs/07-july-2026-session.md)
     Main.fs                  Elmish app — Milestone 0/2/3 work all on one non-routed
                                page (Blockly editor + mutator workshop + SpaceTraders
                                dashboard). Real routing/dashboards come with the DSL

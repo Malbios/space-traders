@@ -166,22 +166,25 @@
 
 ## Changed this session
 
-**July 2026 — custom block toolbox + persistence seeding + no-op save** (`5bdc63e`,
-`19c36de`, `d4a138e`). Full domain write-up in
-`docs/07-custom-block-toolbox-persistence.md`. Summary:
+**July 2026 session** (`e217ffc` … `d4a138e`). Full domain write-up in
+`docs/07-july-2026-session.md` (the first doc pass only captured the last three commits
+after context compaction). Highlights:
 
-- Program workspaces no longer show the **"Eigener Block"** definition category —
-  only the Blockwerkstatt workshop does (`buildCatalogToolbox`'s
-  `includeDefinitionCategory`, gated by `blockly-workshop-spike` in
-  `blockly-host.ts`). **"Eigene Blöcke"** (saved callers) stays on both.
-- **"Eigene Blöcke"** repopulates from SQLite on load via new `spaceKids.syncCustomBlocks`
-  (`Main.fs` `syncCustomBlockToolbox` after `CustomBlocksLoaded`) — fixes empty toolbox
-  after remount/reload when callers were previously only injected on workshop save.
-- Saving unchanged workshop JSON no longer appends a `custom_block_versions` row
-  (`saveVersionIfChanged`, remoting early exit before compile). Test:
-  `saveVersionIfChanged keeps the version when workshop JSON is unchanged`.
-- `AGENTS.md` now requires full `dotnet test SpaceKids.slnx` (or at least build)
-  before handoff when Server/remoting/cross-project code changes.
+- **Programmieren** split into **Programme** + **Eigene Blöcke** sub-tabs; Blockly
+  lazy-inits when a sub-tab becomes visible (`ensureWorkspaceReady`).
+- Ship-required programs diagnosed via `Validator.findShipRequirementAtStart` with
+  bilingual errors on start/simulate; `purchaseShip` alone does not require a ship.
+- `dotnet test` isolated from live `spacekids.db` (Directory.Build.props + TestDbGuard +
+  `Database.defaultDbPath` testhost guard).
+- Map markers stay constant screen size when zooming; galaxy map zooms to 64× with
+  adaptive node budget.
+- New accessor `waypointSystemField` (**System aus Wegpunkt**).
+- **Simuliere Ausführung** is now real server-side DSL simulation (`JobRunner.simulateProgram`,
+  ephemeral `__sim__` jobs) — the old client `simulateRun` in `blockly-host.ts` is gone.
+- Blockwerkstatt blank-canvas fixes (`remountIfDomLost`, resize after sub-tab open).
+- Custom-block save compiles accessor RETURN chains correctly; toolbox split; persistence
+  seeding via `syncCustomBlocks`; no-op save skips version bump.
+- `AGENTS.md` requires full-solution build/test before handoff on cross-project changes.
 
 ---
 
