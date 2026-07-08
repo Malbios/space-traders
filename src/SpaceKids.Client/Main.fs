@@ -312,6 +312,8 @@ type Tab =
     | ContractsTab
     | FactionsTab
     | AgentsTab
+    | MarketsTab
+    | ShipyardsTab
     | SettingsTab
 
 type ProgramSubTab =
@@ -363,12 +365,10 @@ type Model =
         watchedJobId: string option
         watchedFrames: (string * string option) list
         /// Entity inspector (visual-map feature): the currently open detail
-        /// panel, if any, and any lazily-loaded market/shipyard data for
-        /// whichever waypoint is open (cleared whenever a *different* entity is
-        /// opened, so stale data never bleeds into a new panel).
+        /// panel, if any (cleared whenever a *different* entity is opened).
+        /// Market/shipyard data moved to the dedicated Markets/Shipyards tabs
+        /// below — the inspector itself no longer shows it.
         inspecting: InspectedEntity option
-        waypointMarket: Market option
-        waypointShipyard: Shipyard option
         /// Visual system map: bumped every second by a self-rescheduling
         /// `MapTick` (matching `WatchTick`'s own pattern) purely to force a
         /// re-render, so an in-transit ship's interpolated position stays
@@ -457,6 +457,26 @@ type Model =
         simulationLog: string list
         simulationSteps: SimulationStepDto list
         simulationPlaybackIndex: int option
+        /// Markets tab: selected system, its MARKETPLACE-trait waypoints, and
+        /// per-waypoint market data (auto-loaded on select, keyed by waypoint
+        /// symbol so a system with several marketplaces can show all of them
+        /// at once — unlike the old single-waypoint inspector state above).
+        marketsSelectedSystem: string option
+        marketsWaypoints: Waypoint list
+        marketsWaypointsLoading: bool
+        marketsWaypointsError: string option
+        marketsData: Map<string, Market>
+        marketsDataLoading: Set<string>
+        marketsFilterText: string
+        /// Shipyards tab: same shape as the Markets tab above, against
+        /// SHIPYARD-trait waypoints.
+        shipyardsSelectedSystem: string option
+        shipyardsWaypoints: Waypoint list
+        shipyardsWaypointsLoading: bool
+        shipyardsWaypointsError: string option
+        shipyardsData: Map<string, Shipyard>
+        shipyardsDataLoading: Set<string>
+        shipyardsFilterText: string
     }
 
 let private terminalPilotStatuses = [ "Completed"; "Failed"; "Cancelled" ]
@@ -532,8 +552,6 @@ let initModel =
         watchedJobId = None
         watchedFrames = []
         inspecting = None
-        waypointMarket = None
-        waypointShipyard = None
         mapTickCount = 0
         mapZoom = 1.0
         mapPanX = 0.0
@@ -575,6 +593,20 @@ let initModel =
         simulationLog = []
         simulationSteps = []
         simulationPlaybackIndex = None
+        marketsSelectedSystem = None
+        marketsWaypoints = []
+        marketsWaypointsLoading = false
+        marketsWaypointsError = None
+        marketsData = Map.empty
+        marketsDataLoading = Set.empty
+        marketsFilterText = ""
+        shipyardsSelectedSystem = None
+        shipyardsWaypoints = []
+        shipyardsWaypointsLoading = false
+        shipyardsWaypointsError = None
+        shipyardsData = Map.empty
+        shipyardsDataLoading = Set.empty
+        shipyardsFilterText = ""
     }
 
 type Message =
@@ -653,12 +685,22 @@ type Message =
     | InspectShip of string
     | InspectWaypoint of string
     | CloseInspector
-    | LoadWaypointMarket of string
-    /// `waypointSymbol` is the one this response was requested for — same
-    /// stale-response guard as `WatchStatusLoaded`, keyed by waypoint instead of job.
-    | WaypointMarketLoaded of waypointSymbol: string * Market option
-    | LoadWaypointShipyard of string
-    | WaypointShipyardLoaded of waypointSymbol: string * Shipyard option
+    /// Markets tab: selecting a system loads its waypoints, then auto-loads
+    /// market data for every MARKETPLACE-trait one not already cached.
+    | SelectMarketsSystem of systemSymbol: string
+    | MarketsSystemWaypointsLoaded of systemSymbol: string * Result<Waypoint list, string>
+    /// Also used for the per-waypoint manual refresh button, regardless of
+    /// whether `marketsData` already has an entry for it.
+    | LoadMarketData of waypointSymbol: string
+    | MarketDataLoaded of waypointSymbol: string * Market option
+    | SetMarketsFilter of string
+    /// Shipyards tab: mirrors the Markets tab messages above exactly, against
+    /// SHIPYARD-trait waypoints.
+    | SelectShipyardsSystem of systemSymbol: string
+    | ShipyardsSystemWaypointsLoaded of systemSymbol: string * Result<Waypoint list, string>
+    | LoadShipyardData of waypointSymbol: string
+    | ShipyardDataLoaded of waypointSymbol: string * Shipyard option
+    | SetShipyardsFilter of string
     | MapTick
     | MapWheel of deltaY: float
     | MapDragStart
@@ -935,7 +977,13 @@ type Strings =
       tabGalaxie: string
       tabFactions: string
       tabAgents: string
+      tabMarkets: string
+      tabShipyards: string
       tabSettings: string
+      selectSystemHint: string
+      systemFilterPlaceholder: string
+      noMarketsInSystem: string
+      noShipyardsInSystem: string
       factionsHeading: string
       refreshFactions: string
       factionHeadquartersLine: string -> string
@@ -1161,7 +1209,13 @@ let private stringsDe: Strings =
       tabGalaxie = "Galaxie"
       tabFactions = "Fraktionen"
       tabAgents = "Agenten"
+      tabMarkets = "Märkte"
+      tabShipyards = "Werften"
       tabSettings = "Einstellungen"
+      selectSystemHint = "Klicke ein Sternensystem in der Liste an, um Details zu sehen."
+      systemFilterPlaceholder = "Sternensystem suchen..."
+      noMarketsInSystem = "Kein Marktplatz in diesem System bekannt."
+      noShipyardsInSystem = "Keine Werft in diesem System bekannt."
       factionsHeading = "Fraktionen"
       refreshFactions = "Fraktionen aktualisieren"
       factionHeadquartersLine = fun hq -> $"Hauptquartier: {hq}"
@@ -1385,7 +1439,13 @@ let private stringsEn: Strings =
       tabGalaxie = "Galaxy"
       tabFactions = "Factions"
       tabAgents = "Agents"
+      tabMarkets = "Markets"
+      tabShipyards = "Shipyards"
       tabSettings = "Settings"
+      selectSystemHint = "Click a star system in the list to see its details."
+      systemFilterPlaceholder = "Search star systems..."
+      noMarketsInSystem = "No known marketplace in this system."
+      noShipyardsInSystem = "No known shipyard in this system."
       factionsHeading = "Factions"
       refreshFactions = "Refresh factions"
       factionHeadquartersLine = fun hq -> $"Headquarters: {hq}"
@@ -2071,39 +2131,98 @@ let update
 
         { model with watchedFrames = frames }, Cmd.batch [ programHighlightCmd; workshopHighlightCmd; nextTickCmd ]
 
-    | InspectShip shipSymbol ->
+    | InspectShip shipSymbol -> { model with inspecting = Some(InspectedShip shipSymbol) }, Cmd.none
+    | InspectWaypoint waypointSymbol -> { model with inspecting = Some(InspectedWaypoint waypointSymbol) }, Cmd.none
+    | CloseInspector -> { model with inspecting = None }, Cmd.none
+
+    | SelectMarketsSystem systemSymbol ->
         { model with
-            inspecting = Some(InspectedShip shipSymbol)
-            waypointMarket = None
-            waypointShipyard = None },
-        Cmd.none
-    | InspectWaypoint waypointSymbol ->
+            marketsSelectedSystem = Some systemSymbol
+            marketsWaypoints = []
+            marketsWaypointsLoading = true
+            marketsWaypointsError = None },
+        Cmd.OfAsync.either
+            (fun () -> agentRemote.loadSystemWaypoints systemSymbol)
+            ()
+            (fun result -> MarketsSystemWaypointsLoaded(systemSymbol, result))
+            (fun ex -> MarketsSystemWaypointsLoaded(systemSymbol, Error ex.Message))
+    | MarketsSystemWaypointsLoaded(systemSymbol, _) when model.marketsSelectedSystem <> Some systemSymbol ->
+        // Stale response for a system the player has since stopped viewing.
+        model, Cmd.none
+    | MarketsSystemWaypointsLoaded(_, Ok waypoints) ->
+        let marketplaces = waypoints |> List.filter (fun w -> w.traits |> List.exists (fun t -> t.symbol = "MARKETPLACE"))
+
+        let loadCmds =
+            marketplaces
+            |> List.filter (fun w -> not (model.marketsData.ContainsKey w.symbol))
+            |> List.map (fun w -> Cmd.ofMsg (LoadMarketData w.symbol))
+
         { model with
-            inspecting = Some(InspectedWaypoint waypointSymbol)
-            waypointMarket = None
-            waypointShipyard = None },
-        Cmd.none
-    | CloseInspector ->
-        { model with inspecting = None; waypointMarket = None; waypointShipyard = None }, Cmd.none
-    | LoadWaypointMarket waypointSymbol ->
-        model,
+            marketsWaypoints = marketplaces
+            marketsWaypointsLoading = false
+            marketsWaypointsError = None },
+        Cmd.batch loadCmds
+    | MarketsSystemWaypointsLoaded(_, Error message) ->
+        { model with marketsWaypointsLoading = false; marketsWaypointsError = Some message }, Cmd.none
+    | LoadMarketData waypointSymbol ->
+        { model with marketsDataLoading = model.marketsDataLoading.Add waypointSymbol },
         Cmd.OfAsync.perform
             (fun () -> agentRemote.getWaypointMarket waypointSymbol)
             ()
-            (fun market -> WaypointMarketLoaded(waypointSymbol, market))
-    | WaypointMarketLoaded(requestedSymbol, _) when model.inspecting <> Some(InspectedWaypoint requestedSymbol) ->
-        // Stale response for a waypoint the player has since stopped inspecting.
+            (fun market -> MarketDataLoaded(waypointSymbol, market))
+    | MarketDataLoaded(waypointSymbol, market) ->
+        { model with
+            marketsDataLoading = model.marketsDataLoading.Remove waypointSymbol
+            marketsData =
+                match market with
+                | Some m -> model.marketsData.Add(waypointSymbol, m)
+                | None -> model.marketsData },
+        Cmd.none
+    | SetMarketsFilter text -> { model with marketsFilterText = text }, Cmd.none
+
+    | SelectShipyardsSystem systemSymbol ->
+        { model with
+            shipyardsSelectedSystem = Some systemSymbol
+            shipyardsWaypoints = []
+            shipyardsWaypointsLoading = true
+            shipyardsWaypointsError = None },
+        Cmd.OfAsync.either
+            (fun () -> agentRemote.loadSystemWaypoints systemSymbol)
+            ()
+            (fun result -> ShipyardsSystemWaypointsLoaded(systemSymbol, result))
+            (fun ex -> ShipyardsSystemWaypointsLoaded(systemSymbol, Error ex.Message))
+    | ShipyardsSystemWaypointsLoaded(systemSymbol, _) when model.shipyardsSelectedSystem <> Some systemSymbol ->
         model, Cmd.none
-    | WaypointMarketLoaded(_, market) -> { model with waypointMarket = market }, Cmd.none
-    | LoadWaypointShipyard waypointSymbol ->
-        model,
+    | ShipyardsSystemWaypointsLoaded(_, Ok waypoints) ->
+        let shipyards = waypoints |> List.filter (fun w -> w.traits |> List.exists (fun t -> t.symbol = "SHIPYARD"))
+
+        let loadCmds =
+            shipyards
+            |> List.filter (fun w -> not (model.shipyardsData.ContainsKey w.symbol))
+            |> List.map (fun w -> Cmd.ofMsg (LoadShipyardData w.symbol))
+
+        { model with
+            shipyardsWaypoints = shipyards
+            shipyardsWaypointsLoading = false
+            shipyardsWaypointsError = None },
+        Cmd.batch loadCmds
+    | ShipyardsSystemWaypointsLoaded(_, Error message) ->
+        { model with shipyardsWaypointsLoading = false; shipyardsWaypointsError = Some message }, Cmd.none
+    | LoadShipyardData waypointSymbol ->
+        { model with shipyardsDataLoading = model.shipyardsDataLoading.Add waypointSymbol },
         Cmd.OfAsync.perform
             (fun () -> agentRemote.getWaypointShipyard waypointSymbol)
             ()
-            (fun shipyard -> WaypointShipyardLoaded(waypointSymbol, shipyard))
-    | WaypointShipyardLoaded(requestedSymbol, _) when model.inspecting <> Some(InspectedWaypoint requestedSymbol) ->
-        model, Cmd.none
-    | WaypointShipyardLoaded(_, shipyard) -> { model with waypointShipyard = shipyard }, Cmd.none
+            (fun shipyard -> ShipyardDataLoaded(waypointSymbol, shipyard))
+    | ShipyardDataLoaded(waypointSymbol, shipyard) ->
+        { model with
+            shipyardsDataLoading = model.shipyardsDataLoading.Remove waypointSymbol
+            shipyardsData =
+                match shipyard with
+                | Some s -> model.shipyardsData.Add(waypointSymbol, s)
+                | None -> model.shipyardsData },
+        Cmd.none
+    | SetShipyardsFilter text -> { model with shipyardsFilterText = text }, Cmd.none
 
     | MapTick ->
         let count = model.mapTickCount + 1
@@ -2354,7 +2473,10 @@ let update
                     Some(LoadPublicAgents)
                 else
                     None
-                if tab = GalaxieTab && model.dashboard.IsSome then Some LoadGalaxyCatalog else None
+                if (tab = GalaxieTab || tab = MarketsTab || tab = ShipyardsTab) && model.dashboard.IsSome then
+                    Some LoadGalaxyCatalog
+                else
+                    None
                 if tab = ContractsTab && model.dashboard.IsSome then Some RefreshDashboard else None ]
             |> List.choose id
             |> List.map Cmd.ofMsg
@@ -2425,8 +2547,6 @@ let update
                 systemWaypointsLoading = true
                 systemWaypointsError = None
                 inspecting = None
-                waypointMarket = None
-                waypointShipyard = None
                 mapZoom = 1.0
                 mapPanX = 0.0
                 mapPanY = 0.0 },
@@ -2527,12 +2647,13 @@ let private viewShipInspector (s: Strings) (ship: Ship) dispatch =
     }
 
 /// Entity inspector (visual-map feature): unlike `Ship`, `Waypoint` is thin on
-/// its own (§'s "waypoint traits" addition) — traits, ships currently here (from
-/// `state.ships`, not the waypoint itself), and lazily-loaded market/shipyard
-/// data (gated on the matching trait) fill in "all the details."
-let private viewWaypointInspector (strings: Strings) (waypoint: Waypoint) (state: DashboardState) model dispatch =
+/// its own (§'s "waypoint traits" addition) — traits and ships currently here
+/// (from `state.ships`, not the waypoint itself) fill in "all the details."
+/// Market/shipyard data moved to the dedicated Markets/Shipyards tabs — see
+/// `viewMarkets`/`viewShipyards` below, which reuse the same trade-goods/
+/// priced-vs-fallback rendering this used to have inline.
+let private viewWaypointInspector (strings: Strings) (waypoint: Waypoint) (state: DashboardState) dispatch =
     let shipsHere = state.ships |> List.filter (fun sh -> sh.nav.waypointSymbol = waypoint.symbol)
-    let hasTrait symbol = waypoint.traits |> List.exists (fun t -> t.symbol = symbol)
 
     div {
         attr.style "border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem; margin: 0.5rem 0"
@@ -2561,44 +2682,6 @@ let private viewWaypointInspector (strings: Strings) (waypoint: Waypoint) (state
                         ship.symbol
                     }
             }
-
-        if hasTrait "MARKETPLACE" then
-            h4 { strings.marketHeading }
-            match model.waypointMarket with
-            | None -> button { on.click (fun _ -> dispatch (LoadWaypointMarket waypoint.symbol)); strings.loadMarket }
-            | Some market ->
-                match market.tradeGoods with
-                | Some tradeGoods when not tradeGoods.IsEmpty ->
-                    ul {
-                        for good in tradeGoods do
-                            li { strings.tradeGoodLine (good.symbol, good.purchasePrice, good.sellPrice) }
-                    }
-                | _ ->
-                    // The real API only includes priced `tradeGoods` when one of the
-                    // player's own ships is at this market — fall back to the
-                    // always-visible export/import/exchange names (no price) instead
-                    // of silently showing nothing.
-                    let names = market.exports @ market.imports @ market.exchange
-
-                    if not names.IsEmpty then
-                        p { strings.pricesHiddenHint }
-                        ul { for good in names do li { strings.exportLine good.name } }
-
-        if hasTrait "SHIPYARD" then
-            h4 { strings.shipyardHeading }
-            match model.waypointShipyard with
-            | None -> button { on.click (fun _ -> dispatch (LoadWaypointShipyard waypoint.symbol)); strings.loadShipyard }
-            | Some shipyard ->
-                if not shipyard.ships.IsEmpty then
-                    ul {
-                        for entry in shipyard.ships do
-                            li { strings.shipyardTypeLine (entry.``type``, entry.purchasePrice) }
-                    }
-                elif not shipyard.shipTypes.IsEmpty then
-                    // Same reasoning as the market fallback above: priced `ships` only
-                    // shows up when one of the player's own ships is docked here.
-                    p { strings.pricesHiddenHint }
-                    ul { for t in shipyard.shipTypes do li { strings.shipTypeNameLine t.``type`` } }
     }
 
 let private viewInspector (state: DashboardState) model dispatch =
@@ -2612,7 +2695,7 @@ let private viewInspector (state: DashboardState) model dispatch =
         | None -> div { s.shipNotFound shipSymbol }
     | Some(InspectedWaypoint waypointSymbol) ->
         match state.waypoints |> List.tryFind (fun w -> w.symbol = waypointSymbol) with
-        | Some waypoint -> viewWaypointInspector s waypoint state model dispatch
+        | Some waypoint -> viewWaypointInspector s waypoint state dispatch
         | None -> div { s.waypointNotFound waypointSymbol }
 
 // --- Visual system map (§9's "later idea," Milestone 10-adjacent) ------------------
@@ -2865,6 +2948,172 @@ let private viewSystemMap (s: Strings) (model: Model) (state: DashboardState) di
             attr.style "font-size: 0.8em; padding: 0.2em 0.6em; margin-top: 0.3rem"
             on.click (fun _ -> dispatch ResetMapView)
             s.resetMapView
+        }
+    }
+
+/// Markets/Shipyards tabs: which known systems currently have one of the
+/// player's own ships in them — drives the `(*)` marker on the system list.
+let internal systemsWithShips (ships: Ship list) : Set<string> =
+    ships |> List.map (fun sh -> sh.nav.systemSymbol) |> Set.ofList
+
+/// Shared left column for the Markets/Shipyards tabs: a text-filtered,
+/// ships-first-sorted list of every known system, `(*)`-marked where the
+/// player has a ship. `onSelect` dispatches whichever tab's own
+/// `SelectMarketsSystem`/`SelectShipyardsSystem` message.
+let private viewSystemPickerColumn
+    (state: DashboardState)
+    (selectedSystem: string option)
+    (filterText: string)
+    (onFilterChange: string -> Message)
+    (onSelect: string -> Message)
+    (placeholder: string)
+    dispatch
+    =
+    let shipSystems = systemsWithShips state.ships
+    let filterLower = filterText.ToLowerInvariant()
+
+    let filteredSystems =
+        state.systems
+        |> List.filter (fun sys -> filterLower = "" || sys.symbol.ToLowerInvariant().Contains(filterLower))
+        |> List.sortBy (fun sys -> not (shipSystems.Contains sys.symbol), sys.symbol)
+
+    div {
+        attr.style "flex: 0 0 auto; min-width: 220px; max-height: 480px; overflow-y: auto"
+        input {
+            attr.``type`` "text"
+            attr.placeholder placeholder
+            attr.value filterText
+            on.change (fun e -> dispatch (onFilterChange (string e.Value)))
+        }
+        ul {
+            for sys in filteredSystems do
+                let marker = if shipSystems.Contains sys.symbol then " (*)" else ""
+                let selected = selectedSystem = Some sys.symbol
+
+                li {
+                    attr.style (
+                        "cursor: pointer; text-decoration: underline"
+                        + (if selected then "; font-weight: bold" else "")
+                    )
+                    on.click (fun _ -> dispatch (onSelect sys.symbol))
+                    $"{sys.symbol}{marker}"
+                }
+        }
+    }
+
+/// Market/shipyard waypoint cards used to live inline in `viewWaypointInspector`
+/// (one waypoint at a time); this is that same trade-goods/priced-vs-fallback
+/// rendering, reused per waypoint across a whole system for the Markets tab.
+let private viewMarketCard (s: Strings) (model: Model) dispatch (waypoint: Waypoint) =
+    div {
+        attr.style "border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem; margin: 0.5rem 0"
+        h4 { waypoint.symbol }
+        button {
+            attr.style "font-size: 0.8em; padding: 0.2em 0.6em"
+            attr.disabled (model.marketsDataLoading.Contains waypoint.symbol)
+            on.click (fun _ -> dispatch (LoadMarketData waypoint.symbol))
+            s.loadMarket
+        }
+
+        match model.marketsData.TryFind waypoint.symbol with
+        | None -> if model.marketsDataLoading.Contains waypoint.symbol then p { s.loadingEllipsis }
+        | Some market ->
+            match market.tradeGoods with
+            | Some tradeGoods when not tradeGoods.IsEmpty ->
+                ul {
+                    for good in tradeGoods do
+                        li { s.tradeGoodLine (good.symbol, good.purchasePrice, good.sellPrice) }
+                }
+            | _ ->
+                // The real API only includes priced `tradeGoods` when one of the
+                // player's own ships is at this market — fall back to the
+                // always-visible export/import/exchange names (no price) instead
+                // of silently showing nothing (same reasoning the inspector used to
+                // apply inline, before market rendering moved to this tab).
+                let names = market.exports @ market.imports @ market.exchange
+
+                if not names.IsEmpty then
+                    p { s.pricesHiddenHint }
+                    ul { for good in names do li { s.exportLine good.name } }
+    }
+
+let private viewShipyardCard (s: Strings) (model: Model) dispatch (waypoint: Waypoint) =
+    div {
+        attr.style "border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem; margin: 0.5rem 0"
+        h4 { waypoint.symbol }
+        button {
+            attr.style "font-size: 0.8em; padding: 0.2em 0.6em"
+            attr.disabled (model.shipyardsDataLoading.Contains waypoint.symbol)
+            on.click (fun _ -> dispatch (LoadShipyardData waypoint.symbol))
+            s.loadShipyard
+        }
+
+        match model.shipyardsData.TryFind waypoint.symbol with
+        | None -> if model.shipyardsDataLoading.Contains waypoint.symbol then p { s.loadingEllipsis }
+        | Some shipyard ->
+            if not shipyard.ships.IsEmpty then
+                ul {
+                    for entry in shipyard.ships do
+                        li { s.shipyardTypeLine (entry.``type``, entry.purchasePrice) }
+                }
+            elif not shipyard.shipTypes.IsEmpty then
+                p { s.pricesHiddenHint }
+                ul { for t in shipyard.shipTypes do li { s.shipTypeNameLine t.``type`` } }
+    }
+
+let private viewMarkets (s: Strings) (model: Model) (state: DashboardState) dispatch =
+    div {
+        attr.style "display: flex; gap: 1rem; align-items: flex-start; flex-wrap: nowrap; overflow-x: auto"
+        viewSystemPickerColumn
+            state
+            model.marketsSelectedSystem
+            model.marketsFilterText
+            SetMarketsFilter
+            SelectMarketsSystem
+            s.systemFilterPlaceholder
+            dispatch
+        div {
+            attr.style "flex: 1 1 auto; min-width: 280px"
+            match model.marketsSelectedSystem with
+            | None -> p { s.selectSystemHint }
+            | Some systemSymbol ->
+                h3 { systemSymbol }
+                if model.marketsWaypointsLoading then p { s.loadingEllipsis }
+                match model.marketsWaypointsError with
+                | Some err -> p { s.errorPrefix err }
+                | None -> ()
+                if not model.marketsWaypointsLoading && model.marketsWaypoints.IsEmpty && model.marketsWaypointsError.IsNone then
+                    p { s.noMarketsInSystem }
+                for waypoint in model.marketsWaypoints do
+                    viewMarketCard s model dispatch waypoint
+        }
+    }
+
+let private viewShipyards (s: Strings) (model: Model) (state: DashboardState) dispatch =
+    div {
+        attr.style "display: flex; gap: 1rem; align-items: flex-start; flex-wrap: nowrap; overflow-x: auto"
+        viewSystemPickerColumn
+            state
+            model.shipyardsSelectedSystem
+            model.shipyardsFilterText
+            SetShipyardsFilter
+            SelectShipyardsSystem
+            s.systemFilterPlaceholder
+            dispatch
+        div {
+            attr.style "flex: 1 1 auto; min-width: 280px"
+            match model.shipyardsSelectedSystem with
+            | None -> p { s.selectSystemHint }
+            | Some systemSymbol ->
+                h3 { systemSymbol }
+                if model.shipyardsWaypointsLoading then p { s.loadingEllipsis }
+                match model.shipyardsWaypointsError with
+                | Some err -> p { s.errorPrefix err }
+                | None -> ()
+                if not model.shipyardsWaypointsLoading && model.shipyardsWaypoints.IsEmpty && model.shipyardsWaypointsError.IsNone then
+                    p { s.noShipyardsInSystem }
+                for waypoint in model.shipyardsWaypoints do
+                    viewShipyardCard s model dispatch waypoint
         }
     }
 
@@ -3374,6 +3623,8 @@ let view model dispatch =
             tabButton model dispatch ContractsTab s.tabContracts
             tabButton model dispatch FactionsTab s.tabFactions
             tabButton model dispatch AgentsTab s.tabAgents
+            tabButton model dispatch MarketsTab s.tabMarkets
+            tabButton model dispatch ShipyardsTab s.tabShipyards
             tabButton model dispatch SettingsTab s.tabSettings
         }
 
@@ -3517,6 +3768,20 @@ let view model dispatch =
             match model.dashboard with
             | None -> p { s.loginInSettingsHint }
             | Some _ -> viewAgents s model dispatch
+        }
+
+        div {
+            attr.style (tabStyle model MarketsTab)
+            match model.dashboard with
+            | None -> p { s.loginInSettingsHint }
+            | Some state -> viewMarkets s model state dispatch
+        }
+
+        div {
+            attr.style (tabStyle model ShipyardsTab)
+            match model.dashboard with
+            | None -> p { s.loginInSettingsHint }
+            | Some state -> viewShipyards s model state dispatch
         }
 
         div {

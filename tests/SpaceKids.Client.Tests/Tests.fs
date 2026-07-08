@@ -213,3 +213,31 @@ let ``pickGalaxyMapNodeAt chooses the nearest system within the hit radius`` () 
     let near = nodes |> List.find (fun n -> n.system.symbol = "NEAR")
     let picked = pickGalaxyMapNodeAt nodes near.sx near.sy 8.0
     Assert.Equal(Some "NEAR", picked)
+
+let private shipInSystem (symbol: string) (systemSymbol: string) : Ship =
+    { dockedShip "X1-TEST-A1" with
+        symbol = symbol
+        nav = { (dockedShip "X1-TEST-A1").nav with systemSymbol = systemSymbol } }
+
+[<Fact>]
+let ``systemsWithShips is empty for an empty fleet`` () =
+    Assert.Empty(systemsWithShips [])
+
+[<Fact>]
+let ``systemsWithShips returns the one system a single ship is in`` () =
+    let ships = [ shipInSystem "SHIP-1" "X1-ALPHA" ]
+    Assert.Equal<Set<string>>(Set.ofList [ "X1-ALPHA" ], systemsWithShips ships)
+
+[<Fact>]
+let ``systemsWithShips dedupes multiple ships in the same system`` () =
+    let ships = [ shipInSystem "SHIP-1" "X1-ALPHA"; shipInSystem "SHIP-2" "X1-ALPHA" ]
+    Assert.Equal<Set<string>>(Set.ofList [ "X1-ALPHA" ], systemsWithShips ships)
+
+[<Fact>]
+let ``systemsWithShips returns every distinct system across a spread-out fleet`` () =
+    let ships =
+        [ shipInSystem "SHIP-1" "X1-ALPHA"
+          shipInSystem "SHIP-2" "X1-BETA"
+          shipInSystem "SHIP-3" "X1-ALPHA" ]
+
+    Assert.Equal<Set<string>>(Set.ofList [ "X1-ALPHA"; "X1-BETA" ], systemsWithShips ships)
