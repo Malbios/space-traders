@@ -830,6 +830,34 @@ let ``an accessor block compiles to Accessor over its TARGET input`` () =
             program.instructions
         )
 
+/// Regression: "Replace per-field accessor blocks with generic field-dropdown
+/// blocks" removed the old one-block-type-per-field accessors (`shipFuel` etc.)
+/// without a migration path, breaking every already-saved program/custom block that
+/// used one (discovered live: a real saved program's workspace failed to render
+/// entirely, since Blockly errors on an unrecognized block type). `Compiler.fs`'s
+/// `LEGACY_ACCESSOR_FIELD_NAMES` restores compilation for these old block types.
+[<Fact>]
+let ``a legacy pre-refactor accessor block (shipFuel) still compiles to Accessor over its TARGET input`` () =
+    let json =
+        """
+        { "blocks": { "languageVersion": 0, "blocks": [
+            { "type": "variables_set", "id": "b1", "fields": { "VAR": "treibstoff" }, "inputs": {
+                "VALUE": { "block": { "type": "shipFuel", "id": "b2", "inputs": {
+                    "TARGET": { "block": { "type": "getShipInfo", "id": "b3" } }
+                } } }
+            } }
+        ] } }
+        """
+
+    match Compiler.compileWorkspace De noCustomBlocks json with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        Assert.Equal<Instruction list>(
+            [ InfoRead("b3", "getShipInfo", Map.empty, "$t1")
+              SetVariable("b1", "treibstoff", Accessor("Fuel", TempRef "$t1")) ],
+            program.instructions
+        )
+
 [<Fact>]
 let ``agentField compiles to Accessor over a field name read from its own FIELD dropdown`` () =
     let json =

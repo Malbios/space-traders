@@ -107,6 +107,49 @@ let private GENERIC_ACCESSOR_TYPES: Set<string> =
         "supplyChainField"
     ]
 
+/// Compatibility for the 29 one-block-type-per-field accessors the redesign above
+/// replaced (§ commit "Replace per-field accessor blocks with generic field-dropdown
+/// blocks") — a program/custom block saved *before* that redesign has these old block
+/// types baked into its stored workspace JSON forever, and this compiler parses that
+/// raw JSON directly (`BlocklyJson.parseWorkspace`), independent of whatever the
+/// client currently renders. Unlike `GENERIC_ACCESSOR_TYPES`, the field name isn't
+/// read from a `FIELD` dropdown (these blocks never had one) — it's implied by the
+/// block's own type, hence a direct type-to-field map. Mirrors `blocks-catalog.ts`'s
+/// `LEGACY_ACCESSOR_BLOCKS` (kept in sync manually, same as `GENERIC_ACCESSOR_TYPES`
+/// already was).
+let private LEGACY_ACCESSOR_FIELD_NAMES: Map<string, string> =
+    Map [
+        "shipName", "Name"
+        "shipWaypoint", "Waypoint"
+        "shipStatus", "Status"
+        "shipFuel", "Fuel"
+        "shipCargoUnits", "CargoUnits"
+        "shipCargoCapacity", "CargoCapacity"
+        "cargoUnits", "Units"
+        "cargoCapacity", "Capacity"
+        "cargoGoods", "Goods"
+        "goodName", "Name"
+        "goodUnits", "Units"
+        "shipyardWaypoint", "Waypoint"
+        "shipyardTypes", "Types"
+        "shipyardTypeName", "Type"
+        "shipyardTypePrice", "Price"
+        "marketWaypoint", "Waypoint"
+        "marketGoods", "Goods"
+        "tradeGoodName", "Name"
+        "tradeGoodBuyPrice", "BuyPrice"
+        "tradeGoodSellPrice", "SellPrice"
+        "contractId", "Id"
+        "contractType", "Type"
+        "contractAccepted", "Accepted"
+        "contractFulfilled", "Fulfilled"
+        "waypointSymbolField", "Symbol"
+        "waypointTypeField", "Type"
+        "waypointSystemField", "System"
+        "waypointHasShipyard", "HasShipyard"
+        "waypointHasMarket", "HasMarket"
+    ]
+
 type private CompileState =
     { mutable tempCounter: int
       errors: ResizeArray<DslError>
@@ -253,6 +296,8 @@ let rec private compileExpr (state: CompileState) (hoisted: ResizeArray<Instruct
     | t when GENERIC_ACCESSOR_TYPES.Contains t ->
         let fieldName = fieldString block "FIELD" |> Option.defaultValue ""
         Accessor(fieldName, compileInput state hoisted block "TARGET")
+    | t when LEGACY_ACCESSOR_FIELD_NAMES.ContainsKey t ->
+        Accessor(LEGACY_ACCESSOR_FIELD_NAMES.[t], compileInput state hoisted block "TARGET")
     | "sk_build_record" ->
         let fieldNames = recordFieldNames block
         let fields = fieldNames |> List.mapi (fun i name -> name, compileInput state hoisted block $"FIELD_{i}")
@@ -393,6 +438,7 @@ and private compileStatement (state: CompileState) (block: RawBlock) : Instructi
     match block.blockType with
     | t when INFO_BLOCKS.ContainsKey t -> valueOnlyStatement ()
     | t when GENERIC_ACCESSOR_TYPES.Contains t -> valueOnlyStatement ()
+    | t when LEGACY_ACCESSOR_FIELD_NAMES.ContainsKey t -> valueOnlyStatement ()
     | t when t.StartsWith("accessor_") -> valueOnlyStatement ()
     | _ ->
         let instr =

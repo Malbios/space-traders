@@ -672,6 +672,60 @@ export const RECORD_FIELD_BLOCKS: RecordFieldBlockSpec[] = [
     ] },
 ];
 
+interface LegacyAccessorBlockSpec {
+    /** Blockly type identifier — the pre-refactor one-block-per-field name. */
+    type: string;
+    label: LocalizedText;
+    tooltip: LocalizedText;
+    targetCheck: string;
+    outputCheck: string;
+}
+
+/**
+ * Compatibility shims for the 29 one-block-type-per-field accessors that existed
+ * before "Replace per-field accessor blocks with generic field-dropdown blocks"
+ * collapsed them into `RECORD_FIELD_BLOCKS`'s FIELD-dropdown blocks. Not added to the
+ * toolbox — nobody should drag a fresh one of these in — but still registered with
+ * Blockly so a program or custom block saved *before* that refactor still
+ * deserializes and renders instead of throwing "Invalid block definition" and
+ * silently rendering as an empty workspace (discovered when exactly that happened to
+ * real saved programs the same day the refactor landed). `Compiler.fs`'s
+ * `LEGACY_ACCESSOR_FIELD_NAMES` mirrors this list (kept in sync manually, same as
+ * `GENERIC_ACCESSOR_TYPES` already was) so these old blocks still compile, not just
+ * render.
+ */
+const LEGACY_ACCESSOR_BLOCKS: LegacyAccessorBlockSpec[] = [
+    { type: "shipName", label: { de: "Name aus Schiff", en: "Name from ship" }, tooltip: { de: "Gibt den Namen eines Schiffs zurück.", en: "Returns a ship's name." }, targetCheck: "ShipRecord", outputCheck: "String" },
+    { type: "shipWaypoint", label: { de: "Wegpunkt aus Schiff", en: "Waypoint from ship" }, tooltip: { de: "Gibt den aktuellen Wegpunkt eines Schiffs zurück.", en: "Returns a ship's current waypoint." }, targetCheck: "ShipRecord", outputCheck: "String" },
+    { type: "shipStatus", label: { de: "Status aus Schiff", en: "Status from ship" }, tooltip: { de: "Gibt den Status eines Schiffs zurück.", en: "Returns a ship's status." }, targetCheck: "ShipRecord", outputCheck: "String" },
+    { type: "shipFuel", label: { de: "Treibstoff aus Schiff", en: "Fuel from ship" }, tooltip: { de: "Gibt den Treibstoffstand eines Schiffs zurück.", en: "Returns a ship's fuel level." }, targetCheck: "ShipRecord", outputCheck: "Number" },
+    { type: "shipCargoUnits", label: { de: "Frachteinheiten aus Schiff", en: "Cargo units from ship" }, tooltip: { de: "Gibt die belegten Frachteinheiten eines Schiffs zurück.", en: "Returns a ship's used cargo units." }, targetCheck: "ShipRecord", outputCheck: "Number" },
+    { type: "shipCargoCapacity", label: { de: "Frachtkapazität aus Schiff", en: "Cargo capacity from ship" }, tooltip: { de: "Gibt die Frachtkapazität eines Schiffs zurück.", en: "Returns a ship's cargo capacity." }, targetCheck: "ShipRecord", outputCheck: "Number" },
+    { type: "cargoUnits", label: { de: "Einheiten aus Fracht", en: "Units from cargo" }, tooltip: { de: "Gibt die belegten Einheiten einer Fracht zurück.", en: "Returns the used units of a cargo." }, targetCheck: "CargoRecord", outputCheck: "Number" },
+    { type: "cargoCapacity", label: { de: "Kapazität aus Fracht", en: "Capacity from cargo" }, tooltip: { de: "Gibt die Kapazität einer Fracht zurück.", en: "Returns the capacity of a cargo." }, targetCheck: "CargoRecord", outputCheck: "Number" },
+    { type: "cargoGoods", label: { de: "Waren aus Fracht", en: "Goods from cargo" }, tooltip: { de: "Gibt die Liste der Waren einer Fracht zurück.", en: "Returns the list of goods in a cargo." }, targetCheck: "CargoRecord", outputCheck: "List" },
+    { type: "goodName", label: { de: "Name aus Ware", en: "Name from good" }, tooltip: { de: "Gibt den Namen einer Ware zurück.", en: "Returns a good's name." }, targetCheck: "GoodRecord", outputCheck: "String" },
+    { type: "goodUnits", label: { de: "Einheiten aus Ware", en: "Units from good" }, tooltip: { de: "Gibt die Einheiten einer Ware zurück.", en: "Returns a good's units." }, targetCheck: "GoodRecord", outputCheck: "Number" },
+    { type: "shipyardWaypoint", label: { de: "Wegpunkt aus Werft", en: "Waypoint from shipyard" }, tooltip: { de: "Gibt den Wegpunkt einer Werft zurück.", en: "Returns a shipyard's waypoint." }, targetCheck: "ShipyardRecord", outputCheck: "String" },
+    { type: "shipyardTypes", label: { de: "Schiffstypen aus Werft", en: "Ship types from shipyard" }, tooltip: { de: "Gibt die Liste der Schiffstypen einer Werft zurück.", en: "Returns the list of ship types at a shipyard." }, targetCheck: "ShipyardRecord", outputCheck: "List" },
+    { type: "shipyardTypeName", label: { de: "Typ aus Schiffstyp", en: "Type from ship type" }, tooltip: { de: "Gibt die Typbezeichnung eines Schiffstyps zurück.", en: "Returns a ship type's designation." }, targetCheck: "ShipyardTypeRecord", outputCheck: "String" },
+    { type: "shipyardTypePrice", label: { de: "Preis aus Schiffstyp", en: "Price from ship type" }, tooltip: { de: "Gibt den Preis eines Schiffstyps zurück.", en: "Returns a ship type's price." }, targetCheck: "ShipyardTypeRecord", outputCheck: "Number" },
+    { type: "marketWaypoint", label: { de: "Wegpunkt aus Markt", en: "Waypoint from market" }, tooltip: { de: "Gibt den Wegpunkt eines Marktes zurück.", en: "Returns a market's waypoint." }, targetCheck: "MarketRecord", outputCheck: "String" },
+    { type: "marketGoods", label: { de: "Handelswaren aus Markt", en: "Trade goods from market" }, tooltip: { de: "Gibt die Liste der Handelswaren eines Marktes zurück.", en: "Returns the list of trade goods at a market." }, targetCheck: "MarketRecord", outputCheck: "List" },
+    { type: "tradeGoodName", label: { de: "Name aus Handelsware", en: "Name from trade good" }, tooltip: { de: "Gibt den Namen einer Handelsware zurück.", en: "Returns a trade good's name." }, targetCheck: "TradeGoodRecord", outputCheck: "String" },
+    { type: "tradeGoodBuyPrice", label: { de: "Kaufpreis aus Handelsware", en: "Buy price from trade good" }, tooltip: { de: "Gibt den Kaufpreis einer Handelsware zurück.", en: "Returns a trade good's buy price." }, targetCheck: "TradeGoodRecord", outputCheck: "Number" },
+    { type: "tradeGoodSellPrice", label: { de: "Verkaufspreis aus Handelsware", en: "Sell price from trade good" }, tooltip: { de: "Gibt den Verkaufspreis einer Handelsware zurück.", en: "Returns a trade good's sell price." }, targetCheck: "TradeGoodRecord", outputCheck: "Number" },
+    { type: "contractId", label: { de: "Id aus Auftrag", en: "Id from contract" }, tooltip: { de: "Gibt die Id eines Auftrags zurück.", en: "Returns a contract's id." }, targetCheck: "ContractRecord", outputCheck: "String" },
+    { type: "contractType", label: { de: "Typ aus Auftrag", en: "Type from contract" }, tooltip: { de: "Gibt den Typ eines Auftrags zurück.", en: "Returns a contract's type." }, targetCheck: "ContractRecord", outputCheck: "String" },
+    { type: "contractAccepted", label: { de: "Angenommen aus Auftrag", en: "Accepted from contract" }, tooltip: { de: "Gibt zurück, ob ein Auftrag angenommen wurde.", en: "Returns whether a contract was accepted." }, targetCheck: "ContractRecord", outputCheck: "Boolean" },
+    { type: "contractFulfilled", label: { de: "Erfüllt aus Auftrag", en: "Fulfilled from contract" }, tooltip: { de: "Gibt zurück, ob ein Auftrag erfüllt wurde.", en: "Returns whether a contract was fulfilled." }, targetCheck: "ContractRecord", outputCheck: "Boolean" },
+    { type: "waypointSymbolField", label: { de: "Symbol aus Wegpunkt", en: "Symbol from waypoint" }, tooltip: { de: "Gibt das Symbol eines Wegpunkts zurück.", en: "Returns a waypoint's symbol." }, targetCheck: "WaypointRecord", outputCheck: "String" },
+    { type: "waypointTypeField", label: { de: "Typ aus Wegpunkt", en: "Type from waypoint" }, tooltip: { de: "Gibt den Typ eines Wegpunkts zurück.", en: "Returns a waypoint's type." }, targetCheck: "WaypointRecord", outputCheck: "String" },
+    { type: "waypointSystemField", label: { de: "System aus Wegpunkt", en: "System from waypoint" }, tooltip: { de: "Gibt das Sternensystem eines Wegpunkts zurück.", en: "Returns a waypoint's star system." }, targetCheck: "WaypointRecord", outputCheck: "String" },
+    { type: "waypointHasShipyard", label: { de: "Hat Werft aus Wegpunkt", en: "Has shipyard from waypoint" }, tooltip: { de: "Gibt zurück, ob ein Wegpunkt eine Werft hat.", en: "Returns whether a waypoint has a shipyard." }, targetCheck: "WaypointRecord", outputCheck: "Boolean" },
+    { type: "waypointHasMarket", label: { de: "Hat Markt aus Wegpunkt", en: "Has market from waypoint" }, tooltip: { de: "Gibt zurück, ob ein Wegpunkt einen Markt hat.", en: "Returns whether a waypoint has a market." }, targetCheck: "WaypointRecord", outputCheck: "Boolean" },
+];
+
 const ACTION_COLOUR = 160;
 const INFO_COLOUR = 230;
 const ACCESSOR_COLOUR = 65;
@@ -787,11 +841,24 @@ export function registerDynamicAccessorBlock(blockType: string, label: string, t
     };
 }
 
+/** Registers one `LEGACY_ACCESSOR_BLOCKS` compatibility shim — same fixed-label shape the pre-refactor per-field accessor blocks used, kept static (no live locale re-read) since these only ever need to render an already-saved block, never be freshly authored. */
+function registerLegacyAccessorBlock(spec: LegacyAccessorBlockSpec): void {
+    Blockly.Blocks[spec.type] = {
+        init: function (this: Blockly.Block) {
+            this.appendValueInput("TARGET").setCheck(spec.targetCheck).appendField(t(spec.label));
+            this.setOutput(true, spec.outputCheck);
+            this.setColour(ACCESSOR_COLOUR);
+            this.setTooltip(t(spec.tooltip));
+        },
+    };
+}
+
 /** Registers all SpaceTraders action/information blocks (§6/§7) plus the §8 accessor blocks (Milestone 9/Part B). Idempotent — safe to call once at seam init, same as the other register* functions in blocks.ts. */
 export function registerCatalogBlocks(): void {
     ACTION_BLOCKS.forEach((spec) => registerBlock(spec, ACTION_COLOUR, false));
     INFO_BLOCKS.forEach((spec) => registerBlock(spec, INFO_COLOUR, true));
     RECORD_FIELD_BLOCKS.forEach((spec) => registerRecordFieldBlock(spec));
+    LEGACY_ACCESSOR_BLOCKS.forEach((spec) => registerLegacyAccessorBlock(spec));
 
     Blockly.Blocks["withShip"] = {
         init: function (this: Blockly.Block) {
