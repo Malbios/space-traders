@@ -225,18 +225,27 @@ let private miningDroneShipyardEntry: ShipyardShipEntry =
           moduleSlots = 3
           mountingPoints = 2
           fuelCapacity = 0
-          requirements = { power = Some 1; crew = Some 0; slots = None } }
+          condition = 1.0
+          integrity = 1.0
+          quality = 1
+          requirements = { power = Some 1; crew = Some -4; slots = None } }
       reactor =
         { symbol = "REACTOR_SOLAR_I"
           name = "Solar Reactor I"
           description = "A basic solar power reactor."
           powerOutput = 3
-          requirements = { power = None; crew = Some 0; slots = Some 0 } }
+          condition = 1.0
+          integrity = 1.0
+          quality = 3
+          requirements = { power = None; crew = Some 3; slots = Some 0 } }
       engine =
         { symbol = "ENGINE_IMPULSE_DRIVE_I"
           name = "Impulse Drive I"
           description = "A basic low-energy engine."
           speed = 3
+          condition = 1.0
+          integrity = 1.0
+          quality = 1
           requirements = { power = Some 1; crew = Some 0; slots = None } }
       modules = []
       mounts =
@@ -245,7 +254,11 @@ let private miningDroneShipyardEntry: ShipyardShipEntry =
             description = "A basic mining laser."
             strength = Some 3
             deposits = None
-            requirements = { power = Some 1; crew = Some 0; slots = None } } ]
+            requirements = { power = Some 1; crew = Some 1; slots = None } } ]
+      // Matches a real account's response verbatim (2026-07-08): -4 (frame) + 3
+      // (reactor) + 0 (engine) + 1 (mount) = 0, this ship's actual crew.required —
+      // a fixture with an inconsistent sum would be a worse regression guard for
+      // "per-component crew is a signed contribution, not a standalone requirement".
       crew = { required = 0; capacity = 0 } }
 
 let private shipyardFixture (waypointSymbol: string) : Shipyard =

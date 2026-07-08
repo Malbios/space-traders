@@ -271,6 +271,10 @@ type ShipComponentRequirements =
       crew: int option
       slots: int option }
 
+/// Verified against a real account's shipyard response (2026-07-08): `condition`/
+/// `integrity` come back as whole numbers in that sample (`1`), but real
+/// SpaceTraders semantics are a 0-1 fractional percentage — modeled as `float` so
+/// either shape deserializes correctly. `quality` is an integer tier.
 type ShipyardShipFrame =
     { symbol: string
       name: string
@@ -278,6 +282,9 @@ type ShipyardShipFrame =
       moduleSlots: int
       mountingPoints: int
       fuelCapacity: int
+      condition: float
+      integrity: float
+      quality: int
       requirements: ShipComponentRequirements }
 
 type ShipyardShipReactor =
@@ -285,6 +292,9 @@ type ShipyardShipReactor =
       name: string
       description: string
       powerOutput: int
+      condition: float
+      integrity: float
+      quality: int
       requirements: ShipComponentRequirements }
 
 type ShipyardShipEngine =
@@ -292,6 +302,9 @@ type ShipyardShipEngine =
       name: string
       description: string
       speed: int
+      condition: float
+      integrity: float
+      quality: int
       requirements: ShipComponentRequirements }
 
 type ShipyardShipModule =

@@ -1921,9 +1921,20 @@ let ``getShipyard resolves the full nested ship-type detail when a ship is docke
                         | VRecord frame ->
                             Assert.Equal(VString "FRAME_DRONE", frame.["Symbol"])
                             Assert.Equal(VNumber 3.0, frame.["ModuleSlots"])
+                            Assert.Equal(VNumber 1.0, frame.["Condition"])
+                            Assert.Equal(VNumber 1.0, frame.["Integrity"])
+                            Assert.Equal(VNumber 1.0, frame.["Quality"])
 
                             match frame.["Requirements"] with
-                            | VRecord requirements -> Assert.Equal(VNumber 1.0, requirements.["Power"])
+                            | VRecord requirements ->
+                                Assert.Equal(VNumber 1.0, requirements.["Power"])
+                                // A component's crew requirement is a signed
+                                // *contribution* to the ship's total, not a
+                                // standalone figure — an automated/unmanned frame
+                                // like this one can legitimately be negative
+                                // (verified against a real account's response,
+                                // 2026-07-08).
+                                Assert.Equal(VNumber -4.0, requirements.["Crew"])
                             | other -> Assert.Fail($"expected Frame.Requirements to be a VRecord, got {other}")
                         | other -> Assert.Fail($"expected Types[0].Frame to be a VRecord, got {other}")
 

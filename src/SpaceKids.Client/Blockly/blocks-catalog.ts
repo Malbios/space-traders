@@ -582,6 +582,9 @@ export const RECORD_FIELD_BLOCKS: RecordFieldBlockSpec[] = [
         { name: "ModuleSlots", label: { de: "Modulplätze", en: "Module slots" }, outputCheck: "Number" },
         { name: "MountingPoints", label: { de: "Befestigungspunkte", en: "Mounting points" }, outputCheck: "Number" },
         { name: "FuelCapacity", label: { de: "Treibstoffkapazität", en: "Fuel capacity" }, outputCheck: "Number" },
+        { name: "Condition", label: { de: "Zustand", en: "Condition" }, outputCheck: "Number" },
+        { name: "Integrity", label: { de: "Integrität", en: "Integrity" }, outputCheck: "Number" },
+        { name: "Quality", label: { de: "Qualität", en: "Quality" }, outputCheck: "Number" },
         { name: "Requirements", label: { de: "Anforderungen", en: "Requirements" }, outputCheck: "RequirementsRecord" },
     ] },
     // Reaktor (a Schiffstyp's Reactor)
@@ -590,6 +593,9 @@ export const RECORD_FIELD_BLOCKS: RecordFieldBlockSpec[] = [
         { name: "Name", label: { de: "Name", en: "Name" }, outputCheck: "String" },
         { name: "Description", label: { de: "Beschreibung", en: "Description" }, outputCheck: "String" },
         { name: "PowerOutput", label: { de: "Energieleistung", en: "Power output" }, outputCheck: "Number" },
+        { name: "Condition", label: { de: "Zustand", en: "Condition" }, outputCheck: "Number" },
+        { name: "Integrity", label: { de: "Integrität", en: "Integrity" }, outputCheck: "Number" },
+        { name: "Quality", label: { de: "Qualität", en: "Quality" }, outputCheck: "Number" },
         { name: "Requirements", label: { de: "Anforderungen", en: "Requirements" }, outputCheck: "RequirementsRecord" },
     ] },
     // Antrieb (a Schiffstyp's Engine)
@@ -598,6 +604,9 @@ export const RECORD_FIELD_BLOCKS: RecordFieldBlockSpec[] = [
         { name: "Name", label: { de: "Name", en: "Name" }, outputCheck: "String" },
         { name: "Description", label: { de: "Beschreibung", en: "Description" }, outputCheck: "String" },
         { name: "Speed", label: { de: "Geschwindigkeit", en: "Speed" }, outputCheck: "Number" },
+        { name: "Condition", label: { de: "Zustand", en: "Condition" }, outputCheck: "Number" },
+        { name: "Integrity", label: { de: "Integrität", en: "Integrity" }, outputCheck: "Number" },
+        { name: "Quality", label: { de: "Qualität", en: "Quality" }, outputCheck: "Number" },
         { name: "Requirements", label: { de: "Anforderungen", en: "Requirements" }, outputCheck: "RequirementsRecord" },
     ] },
     // Modul (a Schiffstyp's Module list item — distinct from `moduleField`, which

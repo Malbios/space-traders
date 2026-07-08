@@ -262,6 +262,9 @@ let private shipyardFrameRecord (f: ShipyardShipFrame) : Value =
               "ModuleSlots", VNumber(float f.moduleSlots)
               "MountingPoints", VNumber(float f.mountingPoints)
               "FuelCapacity", VNumber(float f.fuelCapacity)
+              "Condition", VNumber f.condition
+              "Integrity", VNumber f.integrity
+              "Quality", VNumber(float f.quality)
               "Requirements", requirementsRecord f.requirements ]
     )
 
@@ -272,6 +275,9 @@ let private shipyardReactorRecord (r: ShipyardShipReactor) : Value =
               "Name", VString r.name
               "Description", VString r.description
               "PowerOutput", VNumber(float r.powerOutput)
+              "Condition", VNumber r.condition
+              "Integrity", VNumber r.integrity
+              "Quality", VNumber(float r.quality)
               "Requirements", requirementsRecord r.requirements ]
     )
 
@@ -282,6 +288,9 @@ let private shipyardEngineRecord (e: ShipyardShipEngine) : Value =
               "Name", VString e.name
               "Description", VString e.description
               "Speed", VNumber(float e.speed)
+              "Condition", VNumber e.condition
+              "Integrity", VNumber e.integrity
+              "Quality", VNumber(float e.quality)
               "Requirements", requirementsRecord e.requirements ]
     )
 

@@ -921,6 +921,10 @@ type Strings =
       crewLine: int * int -> string
       moduleLine: string * string -> string
       mountLine: string * string -> string
+      /// Condition/integrity (0-1 fractional) and quality (integer tier) for a
+      /// frame/reactor/engine — verified present on those three only, never on
+      /// modules/mounts, against a real account's shipyard response (2026-07-08).
+      componentConditionLine: float * float * int -> string
       pricesHiddenHint: string
       shipNotFound: string -> string
       waypointNotFound: string -> string
@@ -1147,13 +1151,20 @@ let private stringsDe: Strings =
       requirementsLine =
         fun (power, crew, slots) ->
             [ power |> Option.map (fun v -> $"Energie: {v}")
-              crew |> Option.map (fun v -> $"Besatzung: {v}")
+              // "Besatzungsbeitrag" (contribution), not "Besatzung" (requirement) —
+              // this can be negative (an automated/unmanned component offsetting
+              // crew needed elsewhere), verified against a real account's response
+              // (2026-07-08) where a drone frame's -4 summed with its other
+              // components to the ship's actual (non-negative) crew.required.
+              crew |> Option.map (fun v -> $"Besatzungsbeitrag: {v}")
               slots |> Option.map (fun v -> $"Plätze: {v}") ]
             |> List.choose id
             |> String.concat " · "
       crewLine = fun (required, capacity) -> $"Benötigt: {required} / Kapazität: {capacity}"
       moduleLine = fun (symbol, name) -> $"{name} ({symbol})"
       mountLine = fun (symbol, name) -> $"{name} ({symbol})"
+      componentConditionLine =
+        fun (condition, integrity, quality) -> $"Zustand: {condition} · Integrität: {integrity} · Qualität: {quality}"
       pricesHiddenHint = "Preise werden nur angezeigt, wenn eines deiner Schiffe hier ist."
       shipNotFound = fun symbol -> $"Schiff {symbol} nicht gefunden."
       waypointNotFound = fun symbol -> $"Wegpunkt {symbol} nicht gefunden."
@@ -1399,13 +1410,15 @@ let private stringsEn: Strings =
       requirementsLine =
         fun (power, crew, slots) ->
             [ power |> Option.map (fun v -> $"Power: {v}")
-              crew |> Option.map (fun v -> $"Crew: {v}")
+              crew |> Option.map (fun v -> $"Crew contribution: {v}")
               slots |> Option.map (fun v -> $"Slots: {v}") ]
             |> List.choose id
             |> String.concat " · "
       crewLine = fun (required, capacity) -> $"Required: {required} / Capacity: {capacity}"
       moduleLine = fun (symbol, name) -> $"{name} ({symbol})"
       mountLine = fun (symbol, name) -> $"{name} ({symbol})"
+      componentConditionLine =
+        fun (condition, integrity, quality) -> $"Condition: {condition} · Integrity: {integrity} · Quality: {quality}"
       pricesHiddenHint = "Prices are only shown when one of your ships is here."
       shipNotFound = fun symbol -> $"Ship {symbol} not found."
       waypointNotFound = fun symbol -> $"Waypoint {symbol} not found."
@@ -3168,6 +3181,7 @@ let private viewShipTypeDetail (s: Strings) (entry: ShipyardShipEntry) =
         }
         ul {
             li { entry.frame.name }
+            li { s.componentConditionLine (entry.frame.condition, entry.frame.integrity, entry.frame.quality) }
             li { s.requirementsLine (entry.frame.requirements.power, entry.frame.requirements.crew, entry.frame.requirements.slots) }
         }
         p {
@@ -3176,6 +3190,7 @@ let private viewShipTypeDetail (s: Strings) (entry: ShipyardShipEntry) =
         }
         ul {
             li { entry.reactor.name }
+            li { s.componentConditionLine (entry.reactor.condition, entry.reactor.integrity, entry.reactor.quality) }
             li { s.requirementsLine (entry.reactor.requirements.power, entry.reactor.requirements.crew, entry.reactor.requirements.slots) }
         }
         p {
@@ -3184,6 +3199,7 @@ let private viewShipTypeDetail (s: Strings) (entry: ShipyardShipEntry) =
         }
         ul {
             li { entry.engine.name }
+            li { s.componentConditionLine (entry.engine.condition, entry.engine.integrity, entry.engine.quality) }
             li { s.requirementsLine (entry.engine.requirements.power, entry.engine.requirements.crew, entry.engine.requirements.slots) }
         }
         if not entry.modules.IsEmpty then
