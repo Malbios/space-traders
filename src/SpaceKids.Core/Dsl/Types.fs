@@ -98,7 +98,7 @@ type CustomBlockSignature =
       /// C) — `None` for a plain-value or void output. Field order matches
       /// declaration order in the mutator, mirrored by the client's dynamically
       /// generated `accessor_<id>_<field>` blocks (kept in sync manually, same as
-      /// the fixed §8 `ACCESSOR_BLOCKS` table).
+      /// the fixed §8 `GENERIC_ACCESSOR_TYPES` set).
       outputFields: string list option }
 
 /// A custom block's definition, as looked up from storage (§9's `custom_blocks`/

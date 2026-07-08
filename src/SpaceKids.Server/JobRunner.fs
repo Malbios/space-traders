@@ -179,12 +179,19 @@ let private jumpGateRecord (g: JumpGate) : Value =
               "Connections", VList(g.connections |> List.map VString) ]
     )
 
+/// `UnitsRequired`/`UnitsFulfilled`, not the bare `Required`/`Fulfilled` names — the
+/// DSL's record fields are a flat, cross-record namespace keyed by name only
+/// (`Validator.fs`'s `exprKind`), and `Auftrag.Fulfilled` is already a Boolean
+/// (contract fulfilled y/n); this field is a Number (units fulfilled so far). Using
+/// the bare name would silently misclassify one or the other. Mirrors
+/// `SpaceKids.SpaceTraders.Types.fs`'s own `ContractDeliverGood.unitsRequired`/
+/// `unitsFulfilled` naming.
 let private constructionMaterialRecord (m: ConstructionMaterial) : Value =
     VRecord(
         Map.ofList
             [ "TradeSymbol", VString m.tradeSymbol
-              "Required", VNumber(float m.required)
-              "Fulfilled", VNumber(float m.fulfilled) ]
+              "UnitsRequired", VNumber(float m.required)
+              "UnitsFulfilled", VNumber(float m.fulfilled) ]
     )
 
 let private constructionRecord (c: Construction) : Value =

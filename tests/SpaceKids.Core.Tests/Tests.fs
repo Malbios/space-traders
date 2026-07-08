@@ -697,7 +697,7 @@ let ``validate rejects an accessor number passed where a custom block expects a 
         | _ -> None
 
     let argInputs =
-        """"Schiff": { "block": { "type": "shipFuel", "id": "fuel1", "inputs": {
+        """"Schiff": { "block": { "type": "shipField", "id": "fuel1", "fields": { "FIELD": "Fuel" }, "inputs": {
             "TARGET": { "block": { "type": "sk_build_record", "id": "rec1", "extraState": { "fields": [] } } }
         } } }"""
 
@@ -751,9 +751,9 @@ let ``a custom block RETURN chain with waypointSystemField compiles on save`` ()
         { "blocks": { "languageVersion": 0, "blocks": [
             { "type": "sk_custom_block_def", "id": "def1", "fields": { "BLOCK_NAME": "System vom Schiff" },
               "inputs": {
-                "RETURN": { "block": { "type": "waypointSystemField", "id": "ws1", "inputs": {
+                "RETURN": { "block": { "type": "waypointField", "id": "ws1", "fields": { "FIELD": "System" }, "inputs": {
                     "TARGET": { "block": { "type": "getWaypoint", "id": "gw1", "inputs": {
-                        "WAYPOINT_SYMBOL": { "block": { "type": "shipWaypoint", "id": "sw1", "inputs": {
+                        "WAYPOINT_SYMBOL": { "block": { "type": "shipField", "id": "sw1", "fields": { "FIELD": "Waypoint" }, "inputs": {
                             "TARGET": { "block": { "type": "getShipInfo", "id": "si1" } }
                         } } }
                     } } }
@@ -785,7 +785,7 @@ let ``waypointSystemField compiles to Accessor over System`` () =
         """
         { "blocks": { "languageVersion": 0, "blocks": [
             { "type": "variables_set", "id": "b1", "fields": { "VAR": "system" }, "inputs": {
-                "VALUE": { "block": { "type": "waypointSystemField", "id": "b2", "inputs": {
+                "VALUE": { "block": { "type": "waypointField", "id": "b2", "fields": { "FIELD": "System" }, "inputs": {
                     "TARGET": { "block": { "type": "getWaypoint", "id": "b3", "inputs": {
                         "WAYPOINT_SYMBOL": { "block": """ + textBlock "b4" "X1-TEST-A1" + """ }
                     } } }
@@ -814,7 +814,7 @@ let ``an accessor block compiles to Accessor over its TARGET input`` () =
         """
         { "blocks": { "languageVersion": 0, "blocks": [
             { "type": "variables_set", "id": "b1", "fields": { "VAR": "treibstoff" }, "inputs": {
-                "VALUE": { "block": { "type": "shipFuel", "id": "b2", "inputs": {
+                "VALUE": { "block": { "type": "shipField", "id": "b2", "fields": { "FIELD": "Fuel" }, "inputs": {
                     "TARGET": { "block": { "type": "getShipInfo", "id": "b3" } }
                 } } }
             } }
@@ -829,6 +829,89 @@ let ``an accessor block compiles to Accessor over its TARGET input`` () =
               SetVariable("b1", "treibstoff", Accessor("Fuel", TempRef "$t1")) ],
             program.instructions
         )
+
+[<Fact>]
+let ``agentField compiles to Accessor over a field name read from its own FIELD dropdown`` () =
+    let json =
+        """
+        { "blocks": { "languageVersion": 0, "blocks": [
+            { "type": "variables_set", "id": "b1", "fields": { "VAR": "credits" }, "inputs": {
+                "VALUE": { "block": { "type": "agentField", "id": "b2", "fields": { "FIELD": "Credits" }, "inputs": {
+                    "TARGET": { "block": { "type": "getMyAgent", "id": "b3" } }
+                } } }
+            } }
+        ] } }
+        """
+
+    match Compiler.compileWorkspace De noCustomBlocks json with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        Assert.Equal<Instruction list>(
+            [ InfoRead("b3", "getMyAgent", Map.empty, "$t1")
+              SetVariable("b1", "credits", Accessor("Credits", TempRef "$t1")) ],
+            program.instructions
+        )
+
+[<Fact>]
+let ``constructionMaterialField reads the renamed UnitsFulfilled field, distinct from contract's boolean Fulfilled`` () =
+    let json =
+        """
+        { "blocks": { "languageVersion": 0, "blocks": [
+            { "type": "variables_set", "id": "b1", "fields": { "VAR": "done" }, "inputs": {
+                "VALUE": { "block": { "type": "constructionMaterialField", "id": "b2", "fields": { "FIELD": "UnitsFulfilled" }, "inputs": {
+                    "TARGET": { "block": { "type": "variables_get", "id": "b3", "fields": { "VAR": "material" } } }
+                } } }
+            } }
+        ] } }
+        """
+
+    match Compiler.compileWorkspace De noCustomBlocks json with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        Assert.Equal<Instruction list>(
+            [ SetVariable("b1", "done", Accessor("UnitsFulfilled", VariableRef "material")) ],
+            program.instructions
+        )
+
+    // Distinct from Auftrag.Fulfilled (Boolean) — Eval resolves each correctly by
+    // whatever VRecord it's actually pointed at, proving the rename avoided the
+    // cross-record field-name collision the redesign would otherwise have introduced.
+    let locals =
+        Map.ofList
+            [ "material", VRecord(Map.ofList [ "UnitsFulfilled", VNumber 3.0 ])
+              "contract", VRecord(Map.ofList [ "Fulfilled", VBool true ]) ]
+
+    Assert.Equal(VNumber 3.0, Eval.eval locals (Accessor("UnitsFulfilled", VariableRef "material")))
+    Assert.Equal(VBool true, Eval.eval locals (Accessor("Fulfilled", VariableRef "contract")))
+
+[<Fact>]
+let ``validate treats the renamed UnitsFulfilled as numeric without corrupting contractFulfilled's boolean check`` () =
+    let blockDef: CustomBlockDefinition =
+        { id = "needs-number"
+          signature = { inputs = [ { name = "Anzahl"; inputType = "Anzahl" } ]; output = None; outputFields = None }
+          workspaceJson = simpleWaitBody }
+
+    let lookup =
+        function
+        | "needs-number" -> Some blockDef
+        | _ -> None
+
+    let argInputs =
+        """"Anzahl": { "block": { "type": "constructionMaterialField", "id": "cm1", "fields": { "FIELD": "UnitsFulfilled" }, "inputs": {
+            "TARGET": { "block": { "type": "sk_build_record", "id": "rec1", "extraState": { "fields": [] } } }
+        } } }"""
+
+    let json =
+        """{ "blocks": { "languageVersion": 0, "blocks": [ """
+        + customBlockCallJson "call1" "needs-number" argInputs
+        + """ ] } }"""
+
+    match Compiler.compileWorkspace De lookup json with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        // A numeric-kind accessor passed where a number is expected: no type mismatch.
+        let errors = Validator.validate De program
+        Assert.DoesNotContain(errors, fun e -> e.message.Contains("falschen Typ"))
 
 [<Fact>]
 let ``Eval Accessor resolves a known field from a VRecord`` () =

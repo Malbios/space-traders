@@ -256,10 +256,12 @@ let private stringInputTypeLabels = set [ "Schiff"; "Ship"; "Wegpunkt"; "Waypoin
 let private listInputTypeLabels = set [ "Liste"; "List" ]
 
 let private numericRecordFields =
-    set [ "Fuel"; "CargoUnits"; "CargoCapacity"; "Units"; "Price"; "BuyPrice"; "SellPrice" ]
+    set [ "Fuel"; "CargoUnits"; "CargoCapacity"; "Units"; "Price"; "BuyPrice"; "SellPrice"
+          "Credits"; "ShipCount"; "X"; "Y"; "Reputation"; "TotalSeconds"; "RemainingSeconds"
+          "TotalPrice"; "UnitsRequired"; "UnitsFulfilled" ]
 
-let private boolRecordFields = set [ "Accepted"; "Fulfilled"; "HasShipyard"; "HasMarket" ]
-let private listRecordFields = set [ "Goods"; "Types" ]
+let private boolRecordFields = set [ "Accepted"; "Fulfilled"; "HasShipyard"; "HasMarket"; "IsRecruiting"; "IsComplete" ]
+let private listRecordFields = set [ "Goods"; "Types"; "Connections"; "Materials" ]
 
 type private ExprKind =
     | StringKind

@@ -74,44 +74,37 @@ let private INFO_BLOCKS: Map<string, (string * string) list> =
         "getMyFactions", []
     ]
 
-/// Blockly-block-type -> §8 record field name, for the accessor blocks (Milestone
-/// 9/Part B) — mirrors `blocks-catalog.ts`'s `accessorFieldNames` export (kept in
-/// sync manually; both are exhaustively listed in docs/04-block-catalog.md).
-/// Milestone 12 (bilingual support): these are canonical English keys, not display
-/// text — the runtime `VRecord` contract must not be coupled to whichever language
-/// an accessor block's own *label* happens to render in (that's a separate,
-/// locale-keyed string in `blocks-catalog.ts`).
-let private ACCESSOR_BLOCKS: Map<string, string> =
-    Map.ofList [
-        "shipName", "Name"
-        "shipWaypoint", "Waypoint"
-        "shipStatus", "Status"
-        "shipFuel", "Fuel"
-        "shipCargoUnits", "CargoUnits"
-        "shipCargoCapacity", "CargoCapacity"
-        "cargoUnits", "Units"
-        "cargoCapacity", "Capacity"
-        "cargoGoods", "Goods"
-        "goodName", "Name"
-        "goodUnits", "Units"
-        "shipyardWaypoint", "Waypoint"
-        "shipyardTypes", "Types"
-        "shipyardTypeName", "Type"
-        "shipyardTypePrice", "Price"
-        "marketWaypoint", "Waypoint"
-        "marketGoods", "Goods"
-        "tradeGoodName", "Name"
-        "tradeGoodBuyPrice", "BuyPrice"
-        "tradeGoodSellPrice", "SellPrice"
-        "contractId", "Id"
-        "contractType", "Type"
-        "contractAccepted", "Accepted"
-        "contractFulfilled", "Fulfilled"
-        "waypointSymbolField", "Symbol"
-        "waypointTypeField", "Type"
-        "waypointSystemField", "System"
-        "waypointHasShipyard", "HasShipyard"
-        "waypointHasMarket", "HasMarket"
+/// Generic "field from X" accessor block types (post-roadmap redesign, replacing the
+/// old one-block-type-per-field scheme) — one block per §8 record shape, each with a
+/// `FIELD` dropdown whose value *is* the canonical field name directly, so no
+/// type-keyed lookup table is needed (see the compileExpr/valueOnlyStatement match
+/// arms below). Mirrors `blocks-catalog.ts`'s `RECORD_FIELD_BLOCKS`/
+/// `catalogRecordFieldBlockTypes` (kept in sync manually; both are exhaustively
+/// listed in docs/04-block-catalog.md).
+let private GENERIC_ACCESSOR_TYPES: Set<string> =
+    set [
+        "shipField"
+        "cargoField"
+        "goodField"
+        "shipyardField"
+        "shipyardTypeField"
+        "marketField"
+        "tradeGoodField"
+        "contractField"
+        "waypointField"
+        "agentField"
+        "systemField"
+        "factionField"
+        "factionReputationField"
+        "jumpGateField"
+        "constructionField"
+        "constructionMaterialField"
+        "navField"
+        "cooldownField"
+        "priceField"
+        "moduleField"
+        "mountField"
+        "supplyChainField"
     ]
 
 type private CompileState =
@@ -257,15 +250,17 @@ let rec private compileExpr (state: CompileState) (hoisted: ResizeArray<Instruct
         let temp = newTemp state
         hoisted.Add(InfoRead(block.id, t, args, temp))
         TempRef temp
-    | t when ACCESSOR_BLOCKS.ContainsKey t -> Accessor(ACCESSOR_BLOCKS.[t], compileInput state hoisted block "TARGET")
+    | t when GENERIC_ACCESSOR_TYPES.Contains t ->
+        let fieldName = fieldString block "FIELD" |> Option.defaultValue ""
+        Accessor(fieldName, compileInput state hoisted block "TARGET")
     | "sk_build_record" ->
         let fieldNames = recordFieldNames block
         let fields = fieldNames |> List.mapi (fun i name -> name, compileInput state hoisted block $"FIELD_{i}")
         RecordLiteral fields
     // Milestone 9/Part C — one dynamic accessor block per custom-block structured
     // output field (`accessor_<customBlockId>_<field>`), generated client-side rather
-    // than declared in the static `ACCESSOR_BLOCKS` table above. The field name is
-    // always the block type's own suffix, so no separate lookup table is needed.
+    // than declared in the static `GENERIC_ACCESSOR_TYPES` set above. The field name
+    // is always the block type's own suffix, so no separate lookup table is needed.
     | t when t.StartsWith("accessor_") ->
         match t.LastIndexOf('_') with
         | idx when idx > "accessor_".Length - 1 ->
@@ -397,7 +392,7 @@ and private compileStatement (state: CompileState) (block: RawBlock) : Instructi
 
     match block.blockType with
     | t when INFO_BLOCKS.ContainsKey t -> valueOnlyStatement ()
-    | t when ACCESSOR_BLOCKS.ContainsKey t -> valueOnlyStatement ()
+    | t when GENERIC_ACCESSOR_TYPES.Contains t -> valueOnlyStatement ()
     | t when t.StartsWith("accessor_") -> valueOnlyStatement ()
     | _ ->
         let instr =

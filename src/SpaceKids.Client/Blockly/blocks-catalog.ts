@@ -493,70 +493,180 @@ const INFO_BLOCKS: CatalogBlockSpec[] = [
     },
 ];
 
-interface AccessorBlockSpec {
-    /** Blockly type identifier — kept English per §7. */
-    type: string;
+interface RecordFieldSpec {
+    /** The DSL record field this reads (§8) — a canonical English key, decoupled from
+     * display language (Milestone 12), matching `SpaceKids.Server.JobRunner`'s
+     * info-read conversion into the `VRecord`. Also the dropdown option's *value*
+     * (its display text is `label`, translated separately). */
+    name: string;
     label: LocalizedText;
-    tooltip: LocalizedText;
-    /** The DSL record field this pulls out (§8) — a canonical English key, decoupled
-     * from display language (Milestone 12) — matches
-     * `SpaceKids.Server.JobRunner`'s info-read conversion into the `VRecord`. */
-    fieldName: string;
-    /** Milestone 13: check type for the `TARGET` input — the record shape this
-     * accessor reads from (e.g. `"ShipRecord"`), so e.g. a `Markt`-shaped record
-     * can't be plugged into a `shipFuel` accessor. */
-    targetCheck: string;
-    /** Milestone 13: check type for this accessor's own output value. */
+    /** Milestone 13: check type this field produces — the block's own output check
+     * is recomputed live to this whenever the dropdown selection changes. */
     outputCheck: string;
 }
 
+interface RecordFieldBlockSpec {
+    /** Blockly type identifier — kept English per §7. */
+    type: string;
+    /** Used in the block's own "Feld aus X"/"Field from X" label prefix. */
+    recordLabel: LocalizedText;
+    /** Milestone 13: check type for the `TARGET` input — the record shape this block
+     * reads from (e.g. `"ShipRecord"`), so e.g. a `Markt`-shaped record can't be
+     * plugged into a `shipField` block. */
+    targetCheck: string;
+    fields: RecordFieldSpec[];
+}
+
 /**
- * One accessor block per reachable field of every §8 "friendly structured record"
- * (Schiff/Fracht/Ware/Werft/Schiffstyp/Markt/Handelsware/Auftrag/Wegpunkt) — a value
- * block taking the record as its one input ("TARGET") and returning the named field.
- * Milestone 9/Part B: the record types themselves have no other way to reach their
- * fields from a program (§8: "without turning every API response into a complicated
- * object tree" — but the fields must still be reachable one at a time).
+ * One generic "field from X" block per §8/post-roadmap "friendly structured record"
+ * shape — a value block taking the record as its one input ("TARGET") plus a `FIELD`
+ * dropdown selecting which field to return, replacing the old one-Blockly-type-per-
+ * field scheme (29 block types collapsed into these 9, discoverability was the
+ * problem — see docs/decisions.md). Extended in the same redesign to cover the
+ * newer record shapes that previously had no field access at all (`AgentRecord`
+ * through `SupplyChainEntry` below) — with this generic shape, adding one is a data
+ * entry, not a bespoke block.
  */
-const ACCESSOR_BLOCKS: AccessorBlockSpec[] = [
+const RECORD_FIELD_BLOCKS: RecordFieldBlockSpec[] = [
     // Schiff (getShipInfo / getFleetInfo items)
-    { type: "shipName", label: { de: "Name aus Schiff", en: "Name from ship" }, tooltip: { de: "Gibt den Namen eines Schiffs zurück.", en: "Returns a ship's name." }, fieldName: "Name", targetCheck: "ShipRecord", outputCheck: "String" },
-    { type: "shipWaypoint", label: { de: "Wegpunkt aus Schiff", en: "Waypoint from ship" }, tooltip: { de: "Gibt den aktuellen Wegpunkt eines Schiffs zurück.", en: "Returns a ship's current waypoint." }, fieldName: "Waypoint", targetCheck: "ShipRecord", outputCheck: "String" },
-    { type: "shipStatus", label: { de: "Status aus Schiff", en: "Status from ship" }, tooltip: { de: "Gibt den Status eines Schiffs zurück.", en: "Returns a ship's status." }, fieldName: "Status", targetCheck: "ShipRecord", outputCheck: "String" },
-    { type: "shipFuel", label: { de: "Treibstoff aus Schiff", en: "Fuel from ship" }, tooltip: { de: "Gibt den Treibstoffstand eines Schiffs zurück.", en: "Returns a ship's fuel level." }, fieldName: "Fuel", targetCheck: "ShipRecord", outputCheck: "Number" },
-    { type: "shipCargoUnits", label: { de: "Frachteinheiten aus Schiff", en: "Cargo units from ship" }, tooltip: { de: "Gibt die belegten Frachteinheiten eines Schiffs zurück.", en: "Returns a ship's used cargo units." }, fieldName: "CargoUnits", targetCheck: "ShipRecord", outputCheck: "Number" },
-    { type: "shipCargoCapacity", label: { de: "Frachtkapazität aus Schiff", en: "Cargo capacity from ship" }, tooltip: { de: "Gibt die Frachtkapazität eines Schiffs zurück.", en: "Returns a ship's cargo capacity." }, fieldName: "CargoCapacity", targetCheck: "ShipRecord", outputCheck: "Number" },
+    { type: "shipField", recordLabel: { de: "Schiff", en: "ship" }, targetCheck: "ShipRecord", fields: [
+        { name: "Name", label: { de: "Name", en: "Name" }, outputCheck: "String" },
+        { name: "Waypoint", label: { de: "Wegpunkt", en: "Waypoint" }, outputCheck: "String" },
+        { name: "Status", label: { de: "Status", en: "Status" }, outputCheck: "String" },
+        { name: "Fuel", label: { de: "Treibstoff", en: "Fuel" }, outputCheck: "Number" },
+        { name: "CargoUnits", label: { de: "Frachteinheiten", en: "Cargo units" }, outputCheck: "Number" },
+        { name: "CargoCapacity", label: { de: "Frachtkapazität", en: "Cargo capacity" }, outputCheck: "Number" },
+    ] },
     // Fracht (getCargo)
-    { type: "cargoUnits", label: { de: "Einheiten aus Fracht", en: "Units from cargo" }, tooltip: { de: "Gibt die belegten Einheiten einer Fracht zurück.", en: "Returns the used units of a cargo." }, fieldName: "Units", targetCheck: "CargoRecord", outputCheck: "Number" },
-    { type: "cargoCapacity", label: { de: "Kapazität aus Fracht", en: "Capacity from cargo" }, tooltip: { de: "Gibt die Kapazität einer Fracht zurück.", en: "Returns the capacity of a cargo." }, fieldName: "Capacity", targetCheck: "CargoRecord", outputCheck: "Number" },
-    { type: "cargoGoods", label: { de: "Waren aus Fracht", en: "Goods from cargo" }, tooltip: { de: "Gibt die Liste der Waren einer Fracht zurück.", en: "Returns the list of goods in a cargo." }, fieldName: "Goods", targetCheck: "CargoRecord", outputCheck: "List" },
+    { type: "cargoField", recordLabel: { de: "Fracht", en: "cargo" }, targetCheck: "CargoRecord", fields: [
+        { name: "Units", label: { de: "Einheiten", en: "Units" }, outputCheck: "Number" },
+        { name: "Capacity", label: { de: "Kapazität", en: "Capacity" }, outputCheck: "Number" },
+        { name: "Goods", label: { de: "Waren", en: "Goods" }, outputCheck: "List" },
+    ] },
     // Ware (a Fracht's Waren list item)
-    { type: "goodName", label: { de: "Name aus Ware", en: "Name from good" }, tooltip: { de: "Gibt den Namen einer Ware zurück.", en: "Returns a good's name." }, fieldName: "Name", targetCheck: "GoodRecord", outputCheck: "String" },
-    { type: "goodUnits", label: { de: "Einheiten aus Ware", en: "Units from good" }, tooltip: { de: "Gibt die Einheiten einer Ware zurück.", en: "Returns a good's units." }, fieldName: "Units", targetCheck: "GoodRecord", outputCheck: "Number" },
+    { type: "goodField", recordLabel: { de: "Ware", en: "good" }, targetCheck: "GoodRecord", fields: [
+        { name: "Name", label: { de: "Name", en: "Name" }, outputCheck: "String" },
+        { name: "Units", label: { de: "Einheiten", en: "Units" }, outputCheck: "Number" },
+    ] },
     // Werft (getShipyard)
-    { type: "shipyardWaypoint", label: { de: "Wegpunkt aus Werft", en: "Waypoint from shipyard" }, tooltip: { de: "Gibt den Wegpunkt einer Werft zurück.", en: "Returns a shipyard's waypoint." }, fieldName: "Waypoint", targetCheck: "ShipyardRecord", outputCheck: "String" },
-    { type: "shipyardTypes", label: { de: "Schiffstypen aus Werft", en: "Ship types from shipyard" }, tooltip: { de: "Gibt die Liste der Schiffstypen einer Werft zurück.", en: "Returns the list of ship types at a shipyard." }, fieldName: "Types", targetCheck: "ShipyardRecord", outputCheck: "List" },
+    { type: "shipyardField", recordLabel: { de: "Werft", en: "shipyard" }, targetCheck: "ShipyardRecord", fields: [
+        { name: "Waypoint", label: { de: "Wegpunkt", en: "Waypoint" }, outputCheck: "String" },
+        { name: "Types", label: { de: "Schiffstypen", en: "Ship types" }, outputCheck: "List" },
+    ] },
     // Schiffstyp (a Werft's Schiffstypen list item)
-    { type: "shipyardTypeName", label: { de: "Typ aus Schiffstyp", en: "Type from ship type" }, tooltip: { de: "Gibt die Typbezeichnung eines Schiffstyps zurück.", en: "Returns a ship type's designation." }, fieldName: "Type", targetCheck: "ShipyardTypeRecord", outputCheck: "String" },
-    { type: "shipyardTypePrice", label: { de: "Preis aus Schiffstyp", en: "Price from ship type" }, tooltip: { de: "Gibt den Preis eines Schiffstyps zurück.", en: "Returns a ship type's price." }, fieldName: "Price", targetCheck: "ShipyardTypeRecord", outputCheck: "Number" },
+    { type: "shipyardTypeField", recordLabel: { de: "Schiffstyp", en: "ship type" }, targetCheck: "ShipyardTypeRecord", fields: [
+        { name: "Type", label: { de: "Typ", en: "Type" }, outputCheck: "String" },
+        { name: "Price", label: { de: "Preis", en: "Price" }, outputCheck: "Number" },
+    ] },
     // Markt (getMarket)
-    { type: "marketWaypoint", label: { de: "Wegpunkt aus Markt", en: "Waypoint from market" }, tooltip: { de: "Gibt den Wegpunkt eines Marktes zurück.", en: "Returns a market's waypoint." }, fieldName: "Waypoint", targetCheck: "MarketRecord", outputCheck: "String" },
-    { type: "marketGoods", label: { de: "Handelswaren aus Markt", en: "Trade goods from market" }, tooltip: { de: "Gibt die Liste der Handelswaren eines Marktes zurück.", en: "Returns the list of trade goods at a market." }, fieldName: "Goods", targetCheck: "MarketRecord", outputCheck: "List" },
+    { type: "marketField", recordLabel: { de: "Markt", en: "market" }, targetCheck: "MarketRecord", fields: [
+        { name: "Waypoint", label: { de: "Wegpunkt", en: "Waypoint" }, outputCheck: "String" },
+        { name: "Goods", label: { de: "Handelswaren", en: "Trade goods" }, outputCheck: "List" },
+    ] },
     // Handelsware (a Markt's Handelswaren list item)
-    { type: "tradeGoodName", label: { de: "Name aus Handelsware", en: "Name from trade good" }, tooltip: { de: "Gibt den Namen einer Handelsware zurück.", en: "Returns a trade good's name." }, fieldName: "Name", targetCheck: "TradeGoodRecord", outputCheck: "String" },
-    { type: "tradeGoodBuyPrice", label: { de: "Kaufpreis aus Handelsware", en: "Buy price from trade good" }, tooltip: { de: "Gibt den Kaufpreis einer Handelsware zurück.", en: "Returns a trade good's buy price." }, fieldName: "BuyPrice", targetCheck: "TradeGoodRecord", outputCheck: "Number" },
-    { type: "tradeGoodSellPrice", label: { de: "Verkaufspreis aus Handelsware", en: "Sell price from trade good" }, tooltip: { de: "Gibt den Verkaufspreis einer Handelsware zurück.", en: "Returns a trade good's sell price." }, fieldName: "SellPrice", targetCheck: "TradeGoodRecord", outputCheck: "Number" },
+    { type: "tradeGoodField", recordLabel: { de: "Handelsware", en: "trade good" }, targetCheck: "TradeGoodRecord", fields: [
+        { name: "Name", label: { de: "Name", en: "Name" }, outputCheck: "String" },
+        { name: "BuyPrice", label: { de: "Kaufpreis", en: "Buy price" }, outputCheck: "Number" },
+        { name: "SellPrice", label: { de: "Verkaufspreis", en: "Sell price" }, outputCheck: "Number" },
+    ] },
     // Auftrag (getContracts items)
-    { type: "contractId", label: { de: "Id aus Auftrag", en: "Id from contract" }, tooltip: { de: "Gibt die Id eines Auftrags zurück.", en: "Returns a contract's id." }, fieldName: "Id", targetCheck: "ContractRecord", outputCheck: "String" },
-    { type: "contractType", label: { de: "Typ aus Auftrag", en: "Type from contract" }, tooltip: { de: "Gibt den Typ eines Auftrags zurück.", en: "Returns a contract's type." }, fieldName: "Type", targetCheck: "ContractRecord", outputCheck: "String" },
-    { type: "contractAccepted", label: { de: "Angenommen aus Auftrag", en: "Accepted from contract" }, tooltip: { de: "Gibt zurück, ob ein Auftrag angenommen wurde.", en: "Returns whether a contract was accepted." }, fieldName: "Accepted", targetCheck: "ContractRecord", outputCheck: "Boolean" },
-    { type: "contractFulfilled", label: { de: "Erfüllt aus Auftrag", en: "Fulfilled from contract" }, tooltip: { de: "Gibt zurück, ob ein Auftrag erfüllt wurde.", en: "Returns whether a contract was fulfilled." }, fieldName: "Fulfilled", targetCheck: "ContractRecord", outputCheck: "Boolean" },
-    // Wegpunkt (getWaypoints items)
-    { type: "waypointSymbolField", label: { de: "Symbol aus Wegpunkt", en: "Symbol from waypoint" }, tooltip: { de: "Gibt das Symbol eines Wegpunkts zurück.", en: "Returns a waypoint's symbol." }, fieldName: "Symbol", targetCheck: "WaypointRecord", outputCheck: "String" },
-    { type: "waypointTypeField", label: { de: "Typ aus Wegpunkt", en: "Type from waypoint" }, tooltip: { de: "Gibt den Typ eines Wegpunkts zurück.", en: "Returns a waypoint's type." }, fieldName: "Type", targetCheck: "WaypointRecord", outputCheck: "String" },
-    { type: "waypointSystemField", label: { de: "System aus Wegpunkt", en: "System from waypoint" }, tooltip: { de: "Gibt das Sternensystem eines Wegpunkts zurück.", en: "Returns a waypoint's star system." }, fieldName: "System", targetCheck: "WaypointRecord", outputCheck: "String" },
-    { type: "waypointHasShipyard", label: { de: "Hat Werft aus Wegpunkt", en: "Has shipyard from waypoint" }, tooltip: { de: "Gibt zurück, ob ein Wegpunkt eine Werft hat.", en: "Returns whether a waypoint has a shipyard." }, fieldName: "HasShipyard", targetCheck: "WaypointRecord", outputCheck: "Boolean" },
-    { type: "waypointHasMarket", label: { de: "Hat Markt aus Wegpunkt", en: "Has market from waypoint" }, tooltip: { de: "Gibt zurück, ob ein Wegpunkt einen Markt hat.", en: "Returns whether a waypoint has a market." }, fieldName: "HasMarket", targetCheck: "WaypointRecord", outputCheck: "Boolean" },
+    { type: "contractField", recordLabel: { de: "Auftrag", en: "contract" }, targetCheck: "ContractRecord", fields: [
+        { name: "Id", label: { de: "Id", en: "Id" }, outputCheck: "String" },
+        { name: "Type", label: { de: "Typ", en: "Type" }, outputCheck: "String" },
+        { name: "Accepted", label: { de: "Angenommen", en: "Accepted" }, outputCheck: "Boolean" },
+        { name: "Fulfilled", label: { de: "Erfüllt", en: "Fulfilled" }, outputCheck: "Boolean" },
+    ] },
+    // Wegpunkt (getWaypoints / getWaypoint)
+    { type: "waypointField", recordLabel: { de: "Wegpunkt", en: "waypoint" }, targetCheck: "WaypointRecord", fields: [
+        { name: "Symbol", label: { de: "Symbol", en: "Symbol" }, outputCheck: "String" },
+        { name: "Type", label: { de: "Typ", en: "Type" }, outputCheck: "String" },
+        { name: "System", label: { de: "System", en: "System" }, outputCheck: "String" },
+        { name: "HasShipyard", label: { de: "Hat Werft", en: "Has shipyard" }, outputCheck: "Boolean" },
+        { name: "HasMarket", label: { de: "Hat Markt", en: "Has market" }, outputCheck: "Boolean" },
+    ] },
+    // Agent (getMyAgent / getPublicAgent / getPublicAgents items)
+    { type: "agentField", recordLabel: { de: "Agent", en: "agent" }, targetCheck: "AgentRecord", fields: [
+        { name: "Symbol", label: { de: "Symbol", en: "Symbol" }, outputCheck: "String" },
+        { name: "Headquarters", label: { de: "Hauptquartier", en: "Headquarters" }, outputCheck: "String" },
+        { name: "Credits", label: { de: "Credits", en: "Credits" }, outputCheck: "Number" },
+        { name: "StartingFaction", label: { de: "Startfraktion", en: "Starting faction" }, outputCheck: "String" },
+        { name: "ShipCount", label: { de: "Schiffsanzahl", en: "Ship count" }, outputCheck: "Number" },
+    ] },
+    // Sternensystem (getSystem / getSystems items)
+    { type: "systemField", recordLabel: { de: "Sternensystem", en: "star system" }, targetCheck: "SystemRecord", fields: [
+        { name: "Symbol", label: { de: "Symbol", en: "Symbol" }, outputCheck: "String" },
+        { name: "Sector", label: { de: "Sektor", en: "Sector" }, outputCheck: "String" },
+        { name: "Type", label: { de: "Typ", en: "Type" }, outputCheck: "String" },
+        { name: "X", label: { de: "X", en: "X" }, outputCheck: "Number" },
+        { name: "Y", label: { de: "Y", en: "Y" }, outputCheck: "Number" },
+        { name: "Name", label: { de: "Name", en: "Name" }, outputCheck: "String" },
+        { name: "Constellation", label: { de: "Konstellation", en: "Constellation" }, outputCheck: "String" },
+    ] },
+    // Fraktion (getFaction / getFactions items)
+    { type: "factionField", recordLabel: { de: "Fraktion", en: "faction" }, targetCheck: "FactionRecord", fields: [
+        { name: "Symbol", label: { de: "Symbol", en: "Symbol" }, outputCheck: "String" },
+        { name: "Name", label: { de: "Name", en: "Name" }, outputCheck: "String" },
+        { name: "Description", label: { de: "Beschreibung", en: "Description" }, outputCheck: "String" },
+        { name: "Headquarters", label: { de: "Hauptquartier", en: "Headquarters" }, outputCheck: "String" },
+        { name: "IsRecruiting", label: { de: "Rekrutiert", en: "Recruiting" }, outputCheck: "Boolean" },
+    ] },
+    // Fraktionsruf (getMyFactions items)
+    { type: "factionReputationField", recordLabel: { de: "Fraktionsruf", en: "faction reputation" }, targetCheck: "FactionReputationRecord", fields: [
+        { name: "Symbol", label: { de: "Symbol", en: "Symbol" }, outputCheck: "String" },
+        { name: "Reputation", label: { de: "Ruf", en: "Reputation" }, outputCheck: "Number" },
+    ] },
+    // Sprungtor (getJumpGate)
+    { type: "jumpGateField", recordLabel: { de: "Sprungtor", en: "jump gate" }, targetCheck: "JumpGateRecord", fields: [
+        { name: "Symbol", label: { de: "Symbol", en: "Symbol" }, outputCheck: "String" },
+        { name: "Connections", label: { de: "Verbindungen", en: "Connections" }, outputCheck: "List" },
+    ] },
+    // Bauplatz (getConstruction)
+    { type: "constructionField", recordLabel: { de: "Bauplatz", en: "construction site" }, targetCheck: "ConstructionRecord", fields: [
+        { name: "Symbol", label: { de: "Symbol", en: "Symbol" }, outputCheck: "String" },
+        { name: "IsComplete", label: { de: "Fertig", en: "Complete" }, outputCheck: "Boolean" },
+        { name: "Materials", label: { de: "Materialien", en: "Materials" }, outputCheck: "List" },
+    ] },
+    // Baumaterial (a Bauplatz's Materialien list item)
+    { type: "constructionMaterialField", recordLabel: { de: "Baumaterial", en: "construction material" }, targetCheck: "ConstructionMaterialRecord", fields: [
+        { name: "TradeSymbol", label: { de: "Ware", en: "Good" }, outputCheck: "String" },
+        { name: "UnitsRequired", label: { de: "Benötigt", en: "Required" }, outputCheck: "Number" },
+        { name: "UnitsFulfilled", label: { de: "Erfüllt", en: "Fulfilled" }, outputCheck: "Number" },
+    ] },
+    // Navigation (getNav)
+    { type: "navField", recordLabel: { de: "Navigation", en: "navigation" }, targetCheck: "NavRecord", fields: [
+        { name: "Waypoint", label: { de: "Wegpunkt", en: "Waypoint" }, outputCheck: "String" },
+        { name: "System", label: { de: "System", en: "System" }, outputCheck: "String" },
+        { name: "Status", label: { de: "Status", en: "Status" }, outputCheck: "String" },
+        { name: "FlightMode", label: { de: "Flugmodus", en: "Flight mode" }, outputCheck: "String" },
+    ] },
+    // Abklingzeit (getCooldown)
+    { type: "cooldownField", recordLabel: { de: "Abklingzeit", en: "cooldown" }, targetCheck: "CooldownRecord", fields: [
+        { name: "Ship", label: { de: "Schiff", en: "Ship" }, outputCheck: "String" },
+        { name: "TotalSeconds", label: { de: "Gesamtsekunden", en: "Total seconds" }, outputCheck: "Number" },
+        { name: "RemainingSeconds", label: { de: "Restsekunden", en: "Remaining seconds" }, outputCheck: "Number" },
+        { name: "Expiration", label: { de: "Ablauf", en: "Expiration" }, outputCheck: "String" },
+    ] },
+    // Preis (getRepairCost / getScrapValue)
+    { type: "priceField", recordLabel: { de: "Preis", en: "price" }, targetCheck: "PriceRecord", fields: [
+        { name: "Waypoint", label: { de: "Wegpunkt", en: "Waypoint" }, outputCheck: "String" },
+        { name: "Ship", label: { de: "Schiff", en: "Ship" }, outputCheck: "String" },
+        { name: "TotalPrice", label: { de: "Gesamtpreis", en: "Total price" }, outputCheck: "Number" },
+    ] },
+    // Modul (getShipModules items)
+    { type: "moduleField", recordLabel: { de: "Modul", en: "module" }, targetCheck: "ModuleRecord", fields: [
+        { name: "Symbol", label: { de: "Symbol", en: "Symbol" }, outputCheck: "String" },
+        { name: "Name", label: { de: "Name", en: "Name" }, outputCheck: "String" },
+    ] },
+    // Aufsatz (getShipMounts items)
+    { type: "mountField", recordLabel: { de: "Aufsatz", en: "mount" }, targetCheck: "MountRecord", fields: [
+        { name: "Symbol", label: { de: "Symbol", en: "Symbol" }, outputCheck: "String" },
+        { name: "Name", label: { de: "Name", en: "Name" }, outputCheck: "String" },
+    ] },
+    // Lieferkette (getSupplyChain items)
+    { type: "supplyChainField", recordLabel: { de: "Lieferkette", en: "supply chain" }, targetCheck: "SupplyChainRecord", fields: [
+        { name: "Export", label: { de: "Export", en: "Export" }, outputCheck: "String" },
+        { name: "Import", label: { de: "Import", en: "Import" }, outputCheck: "String" },
+    ] },
 ];
 
 const ACTION_COLOUR = 160;
@@ -618,16 +728,36 @@ function registerBlock(spec: CatalogBlockSpec, colour: number, asValue: boolean)
     };
 }
 
-/** Catalog accessor blocks read `currentLocale` live in their own `init()` — unlike
- * `registerDynamicAccessorBlock` below (custom-block accessors), whose label is
- * child-authored free text, not fixed catalog vocabulary, and stays locale-independent. */
-function registerAccessorBlock(spec: AccessorBlockSpec): void {
+/** Catalog record-field blocks read `currentLocale` live in their own `init()` —
+ * unlike `registerDynamicAccessorBlock` below (custom-block accessors), whose label
+ * is child-authored free text, not fixed catalog vocabulary, and stays
+ * locale-independent. The `FIELD` dropdown's options are rebuilt on every open (a
+ * function, not a static array) so a language switch relabels them too, same
+ * reasoning as `sk_param_get`'s dropdown in `blocks.ts`. */
+function registerRecordFieldBlock(spec: RecordFieldBlockSpec): void {
     Blockly.Blocks[spec.type] = {
         init: function (this: Blockly.Block) {
-            this.appendValueInput("TARGET").setCheck(spec.targetCheck).appendField(t(spec.label));
-            this.setOutput(true, spec.outputCheck);
+            this.appendValueInput("TARGET")
+                .setCheck(spec.targetCheck)
+                .appendField(t({ de: "Feld", en: "Field" }))
+                .appendField(new Blockly.FieldDropdown(() => spec.fields.map((f) => [t(f.label), f.name] as [string, string])), "FIELD")
+                .appendField(`${t({ de: "aus", en: "from" })} ${t(spec.recordLabel)}`);
+            this.setOutput(true, spec.fields[0]?.outputCheck ?? null);
             this.setColour(ACCESSOR_COLOUR);
-            this.setTooltip(t(spec.tooltip));
+            this.setTooltip(
+                t({
+                    de: `Gibt ein Feld eines "${t(spec.recordLabel)}"-Datensatzes zurück.`,
+                    en: `Returns a field of a "${t(spec.recordLabel)}" record.`,
+                }),
+            );
+        },
+        // Milestone 13: the output's check type depends on *which* field is
+        // currently selected, so it's recomputed on every change rather than set
+        // once in `init()` — same pattern as `sk_param_get`'s own `onchange`.
+        onchange: function (this: Blockly.Block) {
+            const selected = this.getFieldValue("FIELD");
+            const match = spec.fields.find((f) => f.name === selected);
+            this.setOutput(true, match ? match.outputCheck : null);
         },
     };
 }
@@ -638,7 +768,7 @@ function registerAccessorBlock(spec: AccessorBlockSpec): void {
  * per-custom-block structured-output accessors (`accessor_<customBlockId>_<field>`),
  * which are generated dynamically per block rather than declared statically here.
  * Takes a plain string label/tooltip (child-authored field names, out of scope for
- * Milestone 12's bilingual support), unlike the fixed catalog's own `registerAccessorBlock`.
+ * Milestone 12's bilingual support), unlike the fixed catalog's own `registerRecordFieldBlock`.
  * `targetCheck` (Milestone 13) ties the accessor to its owning custom block's own
  * synthetic record-check type (`"CustomRecord_<customBlockId>"`) — `null` (untyped)
  * for the fixed catalog case's default, though every real call site now passes one.
@@ -658,7 +788,7 @@ export function registerDynamicAccessorBlock(blockType: string, label: string, t
 export function registerCatalogBlocks(): void {
     ACTION_BLOCKS.forEach((spec) => registerBlock(spec, ACTION_COLOUR, false));
     INFO_BLOCKS.forEach((spec) => registerBlock(spec, INFO_COLOUR, true));
-    ACCESSOR_BLOCKS.forEach((spec) => registerAccessorBlock(spec));
+    RECORD_FIELD_BLOCKS.forEach((spec) => registerRecordFieldBlock(spec));
 
     Blockly.Blocks["withShip"] = {
         init: function (this: Blockly.Block) {
@@ -830,10 +960,18 @@ const FLOTILLA_BLOCK_LABELS: Record<string, LocalizedText> = {
     parallel: { de: "parallel", en: "parallel" },
 };
 
+/** "Feld aus X"/"Field from X" — the same prefix text `registerRecordFieldBlock`
+ * renders, reconstructed here for the toolbox sorter (which needs a label per block
+ * type without instantiating the block). */
+const recordFieldBlockLabel = (spec: RecordFieldBlockSpec): LocalizedText => ({
+    de: `Feld aus ${spec.recordLabel.de}`,
+    en: `Field from ${spec.recordLabel.en}`,
+});
+
 const catalogLabelByType: Record<string, LocalizedText> = Object.fromEntries([
     ...ACTION_BLOCKS.map((spec) => [spec.type, spec.label] as const),
     ...INFO_BLOCKS.map((spec) => [spec.type, spec.label] as const),
-    ...ACCESSOR_BLOCKS.map((spec) => [spec.type, spec.label] as const),
+    ...RECORD_FIELD_BLOCKS.map((spec) => [spec.type, recordFieldBlockLabel(spec)] as const),
     ...Object.entries(FLOTILLA_BLOCK_LABELS),
 ]);
 
@@ -845,9 +983,5 @@ export function getCatalogBlockLabel(blockType: string): string {
 
 export const catalogActionBlockTypes: string[] = ACTION_BLOCKS.map((spec) => spec.type);
 export const catalogInfoBlockTypes: string[] = INFO_BLOCKS.map((spec) => spec.type);
-export const catalogAccessorBlockTypes: string[] = ACCESSOR_BLOCKS.map((spec) => spec.type);
+export const catalogRecordFieldBlockTypes: string[] = RECORD_FIELD_BLOCKS.map((spec) => spec.type);
 export const flotillaBlockTypes: string[] = ["withShip", "parallel"];
-/** Block type -> DSL record field name, consumed by `Compiler.fs`'s `ACCESSOR_BLOCKS` table (kept in sync manually — see docs/04-block-catalog.md). */
-export const accessorFieldNames: Record<string, string> = Object.fromEntries(
-    ACCESSOR_BLOCKS.map((spec) => [spec.type, spec.fieldName]),
-);

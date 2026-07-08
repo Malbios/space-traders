@@ -1519,3 +1519,68 @@ waypoints/markets) and for `fetchSystemsCached` (asserting a second call within 
 TTL doesn't issue a second `GET /systems` request, counted via `request_queue_events`).
 `SpaceKids.Core.Tests`/`SpaceKids.IntegrationTests` gained scheduler/JobRunner cases
 for `supplyConstruction`, `patchShipNav`, and `scrapShip`. 243 tests total, all green.
+
+## Post-roadmap: generic "field from X" accessor blocks replace one-type-per-field
+
+User feedback: reading one field off a record took two blocks, but there was one
+dedicated Blockly block *type* per field (29 of them across the 9 §8 record shapes,
+e.g. `shipWaypoint`, `shipFuel`, `shipName`) — noisy to scan in the toolbox. Discussed
+alternatives (collapsing fetch+select into one block, path-strings, etc.); settled on
+keeping the two-block shape (fetch, then pick-a-field) but collapsing every field of
+one record into a single generic block with a `FIELD` dropdown — same block count, far
+fewer block *types*.
+
+**Confirmed before building: the existing "fetch once, reuse via a variable" pattern
+already works and needed no changes.** `TARGET` is a generic value socket; `variables_get`
+has no output check in Blockly (an untyped/"any" block connects to any typed input) and
+compiles to a plain `Expr.VariableRef`, which `Eval.fs` resolves to whatever was stored
+— including a `VRecord`. So `Setze Variable` → `getShipInfo`, then later
+`Hole Variable` → `Feld aus Schiff`, already worked before this change and needed no
+new plumbing — confirmed by reading `Compiler.fs`'s `variables_get`/`variables_set`
+compilation and `blocks-catalog.ts`'s own comment on unchecked blocks connecting fine
+either way, before writing any code.
+
+**Scope grew to close a real, separate limitation in the same pass.** The ~13 newer
+record shapes added in the API-coverage batch above (`AgentRecord`, `SystemRecord`,
+`FactionRecord`, `ConstructionRecord`, `JumpGateRecord`, `NavRecord`, `CooldownRecord`,
+`PriceRecord`, plus `Modul`/`Aufsatz`/`Lieferkette`/`Baumaterial`/`Fraktionsruf` list
+items) had *no* field access at all — flagged as a known limitation when that batch
+shipped. With the generic dropdown pattern, adding one is a small data-table entry
+(field list + kinds), not a bespoke block, so all ~22 record shapes were covered in
+this one pass rather than building 13 more one-off blocks first and redoing them later.
+
+**Old block types removed outright, not kept alongside the new ones.** This app has no
+real migration story yet (an established precedent — e.g. custom-block `typeLabel`
+changes aren't retroactively migrated either); an already-saved program using an old
+accessor type just needs rebuilding with the new one. User confirmed this explicitly
+rather than defaulting to a dual-maintenance compromise.
+
+**A real field-name collision was caught during design, before any code was written.**
+The DSL's record fields are a flat, cross-record namespace keyed by name only
+(`Validator.fs`'s `exprKind` classifies an `Accessor(field, _)` purely by the `field`
+string via `numericRecordFields`/`boolRecordFields`/`listRecordFields` sets — it has no
+notion of which record shape the field came from). `Auftrag.Fulfilled` is `Boolean`
+(contract fulfilled y/n); the new `Baumaterial` (construction material) record's
+`Fulfilled` field (`JobRunner.fs`'s `constructionMaterialRecord`) is a *Number* (units
+fulfilled so far). Adding both to the same flat kind-checking sets would have silently
+misclassified one of them (whichever set the `match` checked first would always win —
+in this codebase's case, `Fulfilled` would have been forced into `NumberKind`
+everywhere, corrupting `contractFulfilled`'s existing boolean validation). Fixed by
+renaming `Baumaterial`'s DSL-facing fields to `UnitsRequired`/`UnitsFulfilled`
+(`JobRunner.fs`), mirroring `SpaceKids.SpaceTraders.Types.fs`'s own
+`ContractDeliverGood.unitsRequired`/`unitsFulfilled` naming — a small, targeted fix,
+not a redesign of the flat-namespace approach itself (still the right call for a DSL
+that deliberately avoids nested object trees, per §8's own instruction).
+
+**Verification:** `SpaceKids.Core.Tests` — the 4 existing tests referencing an old
+accessor block type in hand-built workspace JSON were rewritten to the new
+`{ "type": "shipField", "fields": { "FIELD": "Fuel" } }` shape; added coverage for a
+previously-inaccessible new record (`agentField` → `Credits`) and a dedicated test
+proving the `UnitsFulfilled` rename validates as numeric without corrupting
+`contractFulfilled`'s boolean check. 250 tests total, all green. `npm run
+typecheck`-equivalent (`tsc --noEmit`) clean on `blocks-catalog.ts`. Live-verified:
+a fresh "Feld aus Schiff" block's dropdown lists all 6 ship fields, the output check
+updates live when switching dropdown options (a mismatched connection still refuses,
+per Milestone 13/Part B's existing typed-socket behavior), and a
+`Setze Variable → Hole Variable → Feld aus Schiff` chain compiles and runs correctly
+against the fake API.

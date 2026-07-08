@@ -367,136 +367,74 @@ rejects a `Break`/`Continue` used outside any loop (a server-side backstop for a
 stored/hand-crafted program — Blockly's own `controls_flow_in_loop_check` extension
 already guards this client-side).
 
-## Datensätze und Zugriffsblöcke (records and accessor blocks, §8, Milestone 9/Part B)
+## Datensätze und Zugriffsblöcke (records and field-accessor blocks, §8)
 
-The 9 information blocks above return one of the "friendly structured records" below
-(kept flat per §8's own instruction), never a raw nested API response. A record's
-fields are only reachable through the matching accessor block — a value block with one
-input (`TARGET`, the record) and no other inputs.
+Every information block returns one of the "friendly structured records" below (kept
+flat per §8's own instruction), never a raw nested API response. A record's fields are
+reachable through **one generic "field from X" block per record shape** — a value
+block with a `TARGET` input (the record) and a `FIELD` dropdown listing that shape's
+own fields, e.g. "Feld [Treibstoff ▾] aus Schiff [ship record]". This replaced an
+earlier one-Blockly-type-per-field scheme (29 block types across only the first 9
+record shapes) that got noisy to scan in the toolbox — see `docs/decisions.md` for the
+redesign rationale, including a real field-name collision (`Auftrag.Fulfilled` is
+Boolean, `Baumaterial`'s equivalent field is a Number) caught and fixed by renaming the
+latter to `UnitsRequired`/`UnitsFulfilled`.
 
-```txt
-Schiff (getShipInfo, one item of getFleetInfo's list)
-  Name, Waypoint, Status, Fuel, CargoUnits, CargoCapacity
+All 22 blocks share colour 65, live in the "Zugriffe" toolbox category, and read their
+own `TARGET` connection check (e.g. `"ShipRecord"`) from the matching info block's
+output check — a list-returning info block (`getPublicAgents`, `getShipModules`, ...)
+needs a `for`-loop first to get an individual item before one of these can read a
+field from it, exactly like `Ware`/`Schiffstyp`/`Handelsware` already required.
 
-Fracht (getCargo)
-  Units, Capacity, Goods (Liste von Ware)
-
-Ware (one item of Fracht's Goods list)
-  Name, Units
-
-Werft (getShipyard)
-  Waypoint, Types (Liste von Schiffstyp)
-
-Schiffstyp (one item of Werft's Types list)
-  Type, Price
-
-Markt (getMarket)
-  Waypoint, Goods (Liste von Handelsware)
-
-Handelsware (one item of Markt's Goods list)
-  Name, BuyPrice, SellPrice
-
-Auftrag (one item of getContracts' list)
-  Id, Type, Accepted, Fulfilled
-
-Wegpunkt (one item of getWaypoints' list)
-  Symbol, Type, System, HasShipyard, HasMarket
-```
-
-Accessor blocks (Blockly type -> German label -> record field, all colour 65,
-"Zugriffe" toolbox category). The record field names are canonical English keys
-(Milestone 12/bilingual support decoupled the runtime `VRecord` contract from
-display language — the field is never itself shown to the player, only the
-accessor block's own German/English label is):
+Field names are canonical English keys (Milestone 12/bilingual support decoupled the
+runtime `VRecord` contract from display language — the field is never itself shown to
+the player, only the dropdown option's own German/English label is):
 
 ```txt
-shipName             Name aus Schiff              -> Schiff.Name
-shipWaypoint         Wegpunkt aus Schiff           -> Schiff.Waypoint
-shipStatus           Status aus Schiff             -> Schiff.Status
-shipFuel             Treibstoff aus Schiff         -> Schiff.Fuel
-shipCargoUnits       Frachteinheiten aus Schiff    -> Schiff.CargoUnits
-shipCargoCapacity    Frachtkapazität aus Schiff    -> Schiff.CargoCapacity
-cargoUnits           Einheiten aus Fracht          -> Fracht.Units
-cargoCapacity        Kapazität aus Fracht          -> Fracht.Capacity
-cargoGoods           Waren aus Fracht              -> Fracht.Goods
-goodName             Name aus Ware                 -> Ware.Name
-goodUnits            Einheiten aus Ware            -> Ware.Units
-shipyardWaypoint     Wegpunkt aus Werft            -> Werft.Waypoint
-shipyardTypes        Schiffstypen aus Werft        -> Werft.Types
-shipyardTypeName     Typ aus Schiffstyp            -> Schiffstyp.Type
-shipyardTypePrice    Preis aus Schiffstyp          -> Schiffstyp.Price
-marketWaypoint       Wegpunkt aus Markt            -> Markt.Waypoint
-marketGoods          Handelswaren aus Markt        -> Markt.Goods
-tradeGoodName        Name aus Handelsware          -> Handelsware.Name
-tradeGoodBuyPrice    Kaufpreis aus Handelsware     -> Handelsware.BuyPrice
-tradeGoodSellPrice   Verkaufspreis aus Handelsware -> Handelsware.SellPrice
-contractId           Id aus Auftrag                -> Auftrag.Id
-contractType         Typ aus Auftrag               -> Auftrag.Type
-contractAccepted     Angenommen aus Auftrag        -> Auftrag.Accepted
-contractFulfilled    Erfüllt aus Auftrag           -> Auftrag.Fulfilled
-waypointSymbolField  Symbol aus Wegpunkt           -> Wegpunkt.Symbol
-waypointTypeField    Typ aus Wegpunkt              -> Wegpunkt.Type
-waypointSystemField  System aus Wegpunkt           -> Wegpunkt.System
-waypointHasShipyard  Hat Werft aus Wegpunkt        -> Wegpunkt.HasShipyard
-waypointHasMarket    Hat Markt aus Wegpunkt        -> Wegpunkt.HasMarket
+Blockly type                Record (German / English)     TARGET check                 Fields (dropdown option -> canonical key)
+shipField                   Schiff / ship                  ShipRecord                   Name, Wegpunkt->Waypoint, Status, Treibstoff->Fuel,
+                                                                                          Frachteinheiten->CargoUnits, Frachtkapazität->CargoCapacity
+cargoField                  Fracht / cargo                 CargoRecord                  Einheiten->Units, Kapazität->Capacity, Waren->Goods (List)
+goodField                   Ware / good                    GoodRecord                   Name, Einheiten->Units
+shipyardField                Werft / shipyard               ShipyardRecord               Wegpunkt->Waypoint, Schiffstypen->Types (List)
+shipyardTypeField            Schiffstyp / ship type          ShipyardTypeRecord           Typ->Type, Preis->Price
+marketField                  Markt / market                  MarketRecord                 Wegpunkt->Waypoint, Handelswaren->Goods (List)
+tradeGoodField                Handelsware / trade good         TradeGoodRecord               Name, Kaufpreis->BuyPrice, Verkaufspreis->SellPrice
+contractField                 Auftrag / contract               ContractRecord                Id, Typ->Type, Angenommen->Accepted (Bool), Erfüllt->Fulfilled (Bool)
+waypointField                 Wegpunkt / waypoint              WaypointRecord                Symbol, Typ->Type, System, Hat Werft->HasShipyard (Bool),
+                                                                                          Hat Markt->HasMarket (Bool)
+agentField                    Agent / agent                    AgentRecord                   Symbol, Hauptquartier->Headquarters, Credits (Number),
+                                                                                          Startfraktion->StartingFaction, Schiffsanzahl->ShipCount (Number)
+systemField                   Sternensystem / star system      SystemRecord                  Symbol, Sektor->Sector, Typ->Type, X (Number), Y (Number),
+                                                                                          Name, Konstellation->Constellation
+factionField                  Fraktion / faction                FactionRecord                 Symbol, Name, Beschreibung->Description,
+                                                                                          Hauptquartier->Headquarters, Rekrutiert->IsRecruiting (Bool)
+factionReputationField        Fraktionsruf / faction reputation FactionReputationRecord       Symbol, Ruf->Reputation (Number)
+jumpGateField                  Sprungtor / jump gate             JumpGateRecord                Symbol, Verbindungen->Connections (List)
+constructionField              Bauplatz / construction site      ConstructionRecord            Symbol, Fertig->IsComplete (Bool), Materialien->Materials (List)
+constructionMaterialField      Baumaterial / construction material ConstructionMaterialRecord  Ware->TradeSymbol, Benötigt->UnitsRequired (Number),
+                                                                                          Erfüllt->UnitsFulfilled (Number) — see collision note above
+navField                       Navigation / navigation            NavRecord                     Wegpunkt->Waypoint, System, Status, Flugmodus->FlightMode
+cooldownField                  Abklingzeit / cooldown             CooldownRecord                Schiff->Ship, Gesamtsekunden->TotalSeconds (Number),
+                                                                                          Restsekunden->RemainingSeconds (Number), Ablauf->Expiration
+priceField                     Preis / price                      PriceRecord                   Wegpunkt->Waypoint, Schiff->Ship, Gesamtpreis->TotalPrice (Number)
+moduleField                    Modul / module                     ModuleRecord                  Symbol, Name
+mountField                     Aufsatz / mount                    MountRecord                   Symbol, Name
+supplyChainField               Lieferkette / supply chain          SupplyChainRecord             Export, Import
 ```
 
-### Weitere Datensätze (full API coverage, post-roadmap, no accessor blocks yet)
+Every field defaults to `String` output unless noted `(Number)`/`(Bool)`/`(List)`
+above — matches `Validator.fs`'s `numericRecordFields`/`boolRecordFields`/
+`listRecordFields` sets, which classify by field name for its heuristic argument-type
+checking. `Markt.Goods`'s and `Werft.Types`'s price fields are only populated by the
+real API when a ship is present at that waypoint — otherwise both fall back to a price
+of 0 (documented simplification, same class as "market is always headquarters").
 
-Built by `JobRunner.fs`'s record builders (`agentRecord`/`systemRecord`/`factionRecord`/
-`factionReputationRecord`/`jumpGateRecord`/`constructionRecord`/`constructionMaterialRecord`/
-`navRecord`/`cooldownRecord`/`priceRecord`/`moduleList`/`mountList`/`supplyChainList`) for
-the info blocks above — same canonical-English-key convention as §8's static records, just
-not yet reachable field-by-field from the DSL (see the limitation note above).
-
-```txt
-AgentRecord (getMyAgent, getPublicAgent, one item of getPublicAgents' list)
-  Symbol, Headquarters, Credits, StartingFaction, ShipCount
-
-SystemRecord (getSystem, one item of getSystems' list)
-  Symbol, Sector, Type, X, Y, Name, Constellation
-
-FactionRecord (getFaction, one item of getFactions' list)
-  Symbol, Name, Description, Headquarters, IsRecruiting
-
-Fraktionsruf / FactionReputation (one item of getMyFactions' list)
-  Symbol, Reputation
-
-Sprungtor / JumpGateRecord (getJumpGate)
-  Symbol, Connections (Liste von Text)
-
-Bauplatz / ConstructionRecord (getConstruction)
-  Symbol, IsComplete, Materials (Liste von Baumaterial)
-
-Baumaterial / ConstructionMaterial (one item of Bauplatz's Materials list)
-  TradeSymbol, Required, Fulfilled
-
-Navigation / NavRecord (getNav)
-  Waypoint, System, Status, FlightMode
-
-Abklingzeit / CooldownRecord (getCooldown)
-  Ship, TotalSeconds, RemainingSeconds, Expiration
-
-Preis / PriceRecord (getRepairCost, getScrapValue)
-  Waypoint, Ship, TotalPrice
-
-Modul (one item of getShipModules' list)
-  Symbol, Name
-
-Aufsatz (one item of getShipMounts' list)
-  Symbol, Name
-
-Lieferkette (one item of getSupplyChain's list)
-  Export, Import
-```
-
-Registered in `blocks-catalog.ts`'s `ACCESSOR_BLOCKS` array (also exported as
-`accessorFieldNames` for reference) and compiled by `Compiler.fs`'s own
-`ACCESSOR_BLOCKS: Map<string, string>` — the two tables are kept in sync manually;
-this doc is the source of truth for both. `Markt.Goods`'s and `Werft.Types`'s price
-fields are only populated by the real API when a ship is present at that waypoint —
-otherwise both fall back to a price of 0 (documented simplification, same class as
-"market is always headquarters").
+Registered in `blocks-catalog.ts`'s `RECORD_FIELD_BLOCKS` array (each entry's `FIELD`
+dropdown value *is* the canonical key directly) and read by `Compiler.fs`'s
+`GENERIC_ACCESSOR_TYPES` set + `fieldString block "FIELD"` — no type-keyed lookup
+table exists anymore (the dropdown's own selected value supplies the field name), so
+this doc is the sole source of truth for the field lists themselves.
 
 ## Custom-block structured outputs (§9, Milestone 9/Part C)
 
@@ -504,15 +442,17 @@ A different, player-authored counterpart to the table above: a custom block's ow
 definition can plug an `sk_build_record` block into its `RETURN` socket instead of a
 plain value. `sk_build_record` has its own mutator (add/remove named field rows,
 each a value-input socket) and compiles to `Expr.RecordLiteral of (string * Expr)
-list` — evaluated by `Eval.eval` into the same `VRecord` the 9 static records above
-use, so the existing `Accessor` evaluation needs no changes.
+list` — evaluated by `Eval.eval` into the same `VRecord` the records above use, so
+the existing `Accessor` evaluation needs no changes.
 
 For each field name declared on a custom block's `sk_build_record`, the client
-dynamically registers one accessor block type, `accessor_<customBlockId>_<field>`,
-reusing the exact `TARGET`-input/`asValue: true` shape the static accessor blocks
-above use. Unlike the static table, these aren't hand-catalogued here — they're
-generated at runtime (`registerCustomBlockAccessors` in `blocks.ts`,
-`publishCustomBlockSignature` in `blockly-host.ts`) whenever a custom block's
-signature is published to another workspace's toolbox, and compiled by `Compiler.fs`
-via a dynamic match arm (`t when t.StartsWith("accessor_")`) rather than the static
-`ACCESSOR_BLOCKS` map — there's no fixed list to keep in sync for these.
+dynamically registers one accessor block type, `accessor_<customBlockId>_<field>` —
+still one block *type* per field (unlike the generic dropdown blocks above), since
+these are child-authored field names discovered at runtime, not a small fixed set
+worth collapsing into a dropdown. Reuses the exact `TARGET`-input/`asValue: true`
+shape the generic record-field blocks above use. Generated at runtime
+(`registerCustomBlockAccessors` in `blocks.ts`, `publishCustomBlockSignature` in
+`blockly-host.ts`) whenever a custom block's signature is published to another
+workspace's toolbox, and compiled by `Compiler.fs` via a dynamic match arm
+(`t when t.StartsWith("accessor_")`) rather than the fixed
+`GENERIC_ACCESSOR_TYPES` set — there's no fixed list to keep in sync for these.
