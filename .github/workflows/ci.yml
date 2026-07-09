@@ -28,3 +28,16 @@ jobs:
 
       - name: Test
         run: dotnet test SpaceKids.slnx --configuration Release --no-build
+
+      # blockly-host.ts (the sole owner of every real Blockly WorkspaceSvg on the
+      # page) has no coverage in the Node-only Client test suite above — jsdom can't
+      # do real SVG injection/layout. This drives the built bundle in a real headless
+      # browser instead. Root package.json owns the Playwright dependency used here.
+      - name: Install root Node dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Test Blockly seam (real browser)
+        run: npm run test:blockly-host

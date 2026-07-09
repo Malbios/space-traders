@@ -1584,3 +1584,37 @@ updates live when switching dropdown options (a mismatched connection still refu
 per Milestone 13/Part B's existing typed-socket behavior), and a
 `Setze Variable → Hole Variable → Feld aus Schiff` chain compiles and runs correctly
 against the fake API.
+
+## Post-roadmap: automated browser test for the Blockly seam (`blockly-host.ts`)
+
+`blockly-host.ts` — the sole owner of every real `Blockly.WorkspaceSvg` on the page —
+had never had automated coverage. The Client's Node-only test suite
+(`esbuild.test.config.mjs`) resolves `blockly/core` to Blockly's headless
+`core-node.js` entry, which self-initializes jsdom just far enough for
+`Blockly.Workspace` (fine for `blocks.ts`/`blocks-catalog.ts`, which only register
+block *definitions*) but never exposes `WorkspaceSvg`/`Blockly.inject` — real SVG
+rendering/layout needs `getBBox`/`getScreenCTM`, which jsdom's default environment
+doesn't implement. This had previously been written off as needing new test
+infrastructure for a single file, and was verified by build/inspection instead.
+
+**Fixed by reusing this project's existing Playwright infrastructure, aimed at a much
+smaller target than `scripts/verify-flotilla.mjs`.** `scripts/test-blockly-host.mjs`
+serves a minimal static HTML shell + the built `wwwroot/js/blockly-host.js` artifact
+from a throwaway local HTTP server (a real `http://` origin, not `page.setContent`'s
+opaque `about:blank` — Chromium denies `localStorage` access on an opaque origin,
+which `getTheme`/`setTheme` touch eagerly), then drives `window.spaceKids.*` in a
+real headless browser: `initWorkspace` actually injects a `.blocklySvg`,
+`loadWorkspace`/`serializeWorkspace` round-trips a block, `setLocale` re-renders
+without losing state, `destroyWorkspace` removes the SVG, and two independent
+containers (a program workspace + the workshop) coexist. No .NET server or Blazor
+page is needed — the bundle is self-contained.
+
+**Wired into CI**, not left as a manually-run script — `npm run test:blockly-host`
+(root `package.json`) rebuilds the Client bundle then runs the browser check;
+`.github/workflows/ci.yml` installs Playwright's Chromium and runs it after
+`dotnet test`. This is the only way the seam gets exercised automatically going
+forward.
+
+**Verification:** confirmed the check genuinely fails on a real break — commented out
+`workspaces.set(containerId, ws)` in `initWorkspace`, rebuilt, watched every
+assertion fail with clear errors, reverted, rebuilt, watched it go green again.
