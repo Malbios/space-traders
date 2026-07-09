@@ -148,9 +148,6 @@ docs/
                                addition) — consumed by the toolbox build and the DSL
                                compiler/validator
   06-localization.md          German/English terminology glossary (Milestone 12)
-  flotilla-plan.md            Multi-ship program feature (mitSchiff/parallel) —
-                               shipped; design rationale lives here, shipping details
-                               in docs/decisions.md
   (other docs listed in plan.md §17 are created as their milestones start)
 ```
 
@@ -301,8 +298,8 @@ structure. See `plan.md` §19 for what each milestone covers.
 - **Post-roadmap: Flotilla (`mitSchiff`/`parallel` multi-ship programs): done.**
   A scope-block that changes which ship in-scope actions target, and a generic
   fork/join `parallel` block, together enabling one program to fly multiple
-  ships concurrently (`docs/flotilla-plan.md` for the full design, `docs/decisions.md`
-  for shipping details). Browser-verified via `scripts/verify-flotilla.mjs`.
+  ships concurrently (`docs/decisions.md` for the full design and shipping
+  details). Covered by `SchedulerTests.fs`/`JobRunnerTests.fs`.
 - **Post-roadmap: full SpaceTraders API block coverage + dashboard rate-limit
   fix: done.** `scripts/api-block-gap.mjs` reports 0 missing operations — every
   remaining SpaceTraders action/info operation got a block (~38 new blocks;

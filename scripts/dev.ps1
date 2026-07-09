@@ -5,10 +5,6 @@
 #   pwsh scripts/dev.ps1 server    # foreground — app on http://localhost:5290 (needs fake running)
 #   pwsh scripts/dev.ps1 stop      # kill anything listening on 5196 / 5290
 #   pwsh scripts/dev.ps1 status    # show whether ports are in use
-#
-# Browser verification (with fake + server running):
-#   npm install
-#   npm run verify:browser
 
 param(
     [Parameter(Position = 0)]
@@ -64,10 +60,6 @@ SpaceKids dev servers (fake SpaceTraders API + local app)
   pwsh scripts/dev.ps1 server    App at $ServerUrl (set SpaceTraders__BaseUrl=$FakeBaseUrl)
   pwsh scripts/dev.ps1 stop      Free ports $FakePort and $ServerPort
   pwsh scripts/dev.ps1 status    Show port usage
-
-Browser checks (separate terminal, after fake + server are up):
-  npm install
-  npm run verify:browser
 
 Token for the fake: FAKE_TOKEN_1
 "@

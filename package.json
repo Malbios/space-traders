@@ -5,7 +5,6 @@
   "type": "module",
   "description": "Root Node tooling for SpaceKids browser verification (Playwright). Blockly bundling stays in src/SpaceKids.Client.",
   "scripts": {
-    "verify:browser": "node scripts/verify-flotilla.mjs",
     "test:blockly-host": "npm --prefix src/SpaceKids.Client run build && node scripts/test-blockly-host.mjs",
     "playwright:install": "playwright install chromium"
   },

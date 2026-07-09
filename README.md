@@ -11,9 +11,9 @@ See `plan.md` for the full build plan (product goals, architecture, milestones) 
 
 - .NET 10 SDK
 - Node.js (Blockly TS seam bundles via `dotnet build`; root `npm install` is only needed
-  for Playwright browser verification)
-- Google Chrome (preferred for `npm run verify:browser`; Playwright bundled Chromium is
-  the fallback — install with `npm run playwright:install`)
+  for the Playwright-driven `npm run test:blockly-host` check)
+- Playwright's bundled Chromium for `npm run test:blockly-host` — install with
+  `npm run playwright:install`
 
 ## Commands
 
@@ -35,11 +35,11 @@ Paste token `FAKE_TOKEN_1` in Settings when using the fake. The server must use
 `SpaceTraders__BaseUrl=http://localhost:5196/` (no `/v2/` suffix) — `dev.ps1 server`
 sets this automatically.
 
-### Browser verification (Playwright)
+### Blockly seam test (Playwright)
 
 ```pwsh
 npm install
-npm run verify:browser          # needs fake + server running (see above)
+npm run test:blockly-host       # no server needed — loads the built bundle directly
 ```
 
 ## Repository layout
