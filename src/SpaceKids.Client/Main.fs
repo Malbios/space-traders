@@ -2795,13 +2795,12 @@ let private viewDashboard (s: Strings) (state: DashboardState) dispatch =
             }
     }
 
-/// Entity inspector (visual-map feature): every field already on `Ship` — no
-/// data gap here, unlike waypoints (see `viewWaypointInspector`).
-let private viewShipInspector (s: Strings) (ship: Ship) dispatch =
+/// Every field already on `Ship` — no data gap here, unlike waypoints (see
+/// `viewWaypointInspector`). Shared by the visual map's ship entity inspector
+/// (`viewShipInspector`) and the Pilots tab's ship-detail box, since both just need
+/// "everything about this ship" with no inspector-specific chrome of their own.
+let private viewShipDetails (s: Strings) (ship: Ship) dispatch =
     div {
-        attr.style "border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem; margin: 0.5rem 0"
-        h3 { s.shipInspectorTitle ship.symbol }
-        button { on.click (fun _ -> dispatch CloseInspector); s.closeButton }
         p { s.roleLine ship.registration.role }
         p {
             s.waypointLabel
@@ -2825,6 +2824,15 @@ let private viewShipInspector (s: Strings) (ship: Ship) dispatch =
             }
         if ship.cooldown.remainingSeconds > 0 then
             p { s.cooldownLine ship.cooldown.remainingSeconds }
+    }
+
+/// Entity inspector (visual-map feature) chrome around `viewShipDetails`.
+let private viewShipInspector (s: Strings) (ship: Ship) dispatch =
+    div {
+        attr.style "border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem; margin: 0.5rem 0"
+        h3 { s.shipInspectorTitle ship.symbol }
+        button { on.click (fun _ -> dispatch CloseInspector); s.closeButton }
+        viewShipDetails s ship dispatch
     }
 
 /// Entity inspector (visual-map feature): unlike `Ship`, `Waypoint` is thin on
@@ -3453,22 +3461,33 @@ let private viewJobRunner model dispatch =
         | None -> p { s.pleaseLoginFirst }
         | Some state ->
             div {
-                label { s.shipLabel }
-                select {
-                    attr.value (model.selectedShipSymbol |> Option.defaultValue "")
-                    on.change (fun e -> dispatch (SelectShip(string e.Value)))
-                    option { attr.value ""; s.chooseOption }
-                    for ship in state.ships do
-                        option { attr.value ship.symbol; ship.symbol }
+                attr.style "display: flex; gap: 1rem; align-items: flex-start"
+                div {
+                    label { s.shipLabel }
+                    select {
+                        attr.value (model.selectedShipSymbol |> Option.defaultValue "")
+                        on.change (fun e -> dispatch (SelectShip(string e.Value)))
+                        option { attr.value ""; s.chooseOption }
+                        for ship in state.ships do
+                            option { attr.value ship.symbol; $"{ship.symbol} — {ship.registration.role}" }
+                    }
+                    button {
+                        // No ship-selected gate here (§14 follow-up) — a ship-agnostic
+                        // program is meant to start with no ship picked; the server
+                        // rejects a ship-requiring program with no ship instead.
+                        attr.disabled (model.currentProgramId.IsNone || model.startingJob)
+                        on.click (fun _ -> dispatch StartProgram)
+                        s.start
+                    }
                 }
-                button {
-                    // No ship-selected gate here (§14 follow-up) — a ship-agnostic
-                    // program is meant to start with no ship picked; the server
-                    // rejects a ship-requiring program with no ship instead.
-                    attr.disabled (model.currentProgramId.IsNone || model.startingJob)
-                    on.click (fun _ -> dispatch StartProgram)
-                    s.start
-                }
+                match model.selectedShipSymbol |> Option.bind (fun symbol -> state.ships |> List.tryFind (fun sh -> sh.symbol = symbol)) with
+                | Some ship ->
+                    div {
+                        attr.style "border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem"
+                        h4 { ship.symbol }
+                        viewShipDetails s ship dispatch
+                    }
+                | None -> ()
             }
             if model.currentProgramId.IsNone then
                 p { s.pleaseOpenProgramFirst }
