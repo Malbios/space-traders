@@ -3324,15 +3324,6 @@ let private viewShipyardCard (s: Strings) (model: Model) dispatch (waypoint: Way
         | None -> if model.shipyardsDataLoading.Contains waypoint.symbol then p { s.loadingEllipsis }
         | Some shipyard ->
             p { s.modificationsFeeLine shipyard.modificationsFee }
-            if not shipyard.transactions.IsEmpty then
-                p {
-                    attr.style "font-weight: bold; margin: 0.25rem 0"
-                    s.transactionsHeading
-                }
-                ul {
-                    for t in shipyard.transactions do
-                        li { s.transactionLine (t.shipType, t.price, System.DateTimeOffset.Parse t.timestamp) }
-                }
 
             if not shipyard.ships.IsEmpty then
                 ul {
@@ -3352,6 +3343,16 @@ let private viewShipyardCard (s: Strings) (model: Model) dispatch (waypoint: Way
             elif not shipyard.shipTypes.IsEmpty then
                 p { s.pricesHiddenHint }
                 ul { for t in shipyard.shipTypes do li { s.shipTypeNameLine t.``type`` } }
+
+            if not shipyard.transactions.IsEmpty then
+                p {
+                    attr.style "font-weight: bold; margin: 0.25rem 0"
+                    s.transactionsHeading
+                }
+                ul {
+                    for t in shipyard.transactions do
+                        li { s.transactionLine (t.shipType, t.price, System.DateTimeOffset.Parse t.timestamp) }
+                }
     }
 
 let private viewMarkets (s: Strings) (model: Model) (state: DashboardState) dispatch =
