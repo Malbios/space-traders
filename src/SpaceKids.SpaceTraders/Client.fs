@@ -11,6 +11,22 @@ exception SpaceTradersApiException of statusCode: int * body: string
 /// out the real `Retry-After` the server sent, instead of re-parsing status codes.
 exception SpaceTradersRateLimitException of retryAfterSeconds: float * body: string
 
+module SpaceTradersApiError =
+    /// SpaceTraders wraps every non-2xx response as `{"error":{"message":"...","code":...}}`
+    /// — extract just the human-readable message instead of ever showing the raw JSON body
+    /// a bare exception message would otherwise produce. Falls back to a plain status line
+    /// if the body doesn't parse (e.g. an upstream proxy/outage error page, not a real API
+    /// response). Reads the JSON directly via `JsonDocument` rather than a typed record —
+    /// `System.Text.Json`'s reflection-based deserializer can't invoke a private F# record's
+    /// generated constructor, and this envelope has no other use that would justify a public one.
+    let describeApiFailure (statusCode: int) (body: string) : string =
+        try
+            use doc = JsonDocument.Parse(body)
+            let message = doc.RootElement.GetProperty("error").GetProperty("message").GetString()
+            $"{message} ({statusCode})"
+        with _ ->
+            $"SpaceTraders-Anfrage fehlgeschlagen (Status {statusCode})."
+
 type SpaceTradersClient(httpClient: HttpClient) =
 
     static let jsonOptions =

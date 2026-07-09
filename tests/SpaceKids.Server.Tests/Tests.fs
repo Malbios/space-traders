@@ -7,6 +7,7 @@ open Xunit
 open SpaceKids.Core.Dsl
 open SpaceKids.Server
 open SpaceKids.Server.Persistence
+open SpaceKids.SpaceTraders
 
 let private tempDbPath () =
     Path.Combine(Path.GetTempPath(), $"spacekids-test-{Guid.NewGuid()}.db")
@@ -618,3 +619,15 @@ let ``defaultDbPath never points at the live dev database during dotnet test`` (
         normalized.EndsWith("SpaceKids.Server\spacekids.db", StringComparison.OrdinalIgnoreCase),
         $"defaultDbPath must not be the live dev DB, got \"{path}\""
     )
+
+// --- SpaceTradersApiError.describeApiFailure (clean error messages, not raw JSON dumps) -
+
+[<Fact>]
+let ``describeApiFailure extracts the API's own message instead of the raw JSON body`` () =
+    let body = """{"error":{"message":"Waypoint X1-XN65-A2 is not a jump gate.","code":404}}"""
+    Assert.Equal("Waypoint X1-XN65-A2 is not a jump gate. (404)", SpaceTradersApiError.describeApiFailure 404 body)
+
+[<Fact>]
+let ``describeApiFailure falls back to a plain status line for a body that isn't the expected envelope`` () =
+    let message = SpaceTradersApiError.describeApiFailure 502 "<html>Bad Gateway</html>"
+    Assert.Contains("502", message)

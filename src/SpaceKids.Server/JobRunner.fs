@@ -359,6 +359,8 @@ let rec private classifyException (ex: exn) : ApiResult =
     match ex with
     | RequestQueue.AmbiguousFailure msg -> ApiAmbiguous msg
     | :? System.AggregateException as agg when agg.InnerExceptions.Count = 1 -> classifyException agg.InnerExceptions.[0]
+    | SpaceTradersApiException(statusCode, body) -> ApiFailed(SpaceTradersApiError.describeApiFailure statusCode body)
+    | SpaceTradersRateLimitException(_, body) -> ApiFailed(SpaceTradersApiError.describeApiFailure 429 body)
     | _ -> ApiFailed ex.Message
 
 /// Executes one `QueuedAction` against the real `SpaceTradersClient`, through
