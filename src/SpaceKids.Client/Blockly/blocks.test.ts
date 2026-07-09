@@ -56,6 +56,53 @@ describe("sk_param_get", () => {
     });
 });
 
+describe("sk_custom_block_def mutator (input category + free label)", () => {
+    test("decompose/compose round-trips a new-style input's category and free label", () => {
+        const ws = new Blockly.Workspace();
+
+        try {
+            const defBlock = ws.newBlock("sk_custom_block_def") as Blockly.BlockSvg;
+            const def = Blockly.Blocks["sk_custom_block_def"];
+            def.init!.call(defBlock);
+            (defBlock as unknown as { skInputs: CustomBlockInputSpec[] }).skInputs = [
+                { name: "zielort", typeLabel: "Text", displayLabel: "Waypoint" },
+            ];
+
+            const container = def.decompose!.call(defBlock, ws);
+            const argBlock = container.getInputTargetBlock("STACK")!;
+            assert.equal(argBlock.getFieldValue("ARG_TYPE"), "Text");
+            assert.equal(argBlock.getFieldValue("ARG_LABEL"), "Waypoint");
+            assert.equal(argBlock.getFieldValue("ARG_NAME"), "zielort");
+
+            Blockly.Blocks["sk_custom_block_def_mutator_arg"].onchange!.call(argBlock, {} as Blockly.Events.Abstract);
+            def.compose!.call(defBlock, container);
+
+            const roundTripped = (defBlock as unknown as { skInputs: CustomBlockInputSpec[] }).skInputs;
+            assert.deepEqual(roundTripped, [{ name: "zielort", typeLabel: "Text", displayLabel: "Waypoint" }]);
+        } finally {
+            ws.dispose();
+        }
+    });
+
+    test("decompose maps an old, pre-free-label input to the Text category and preserves its old label", () => {
+        const ws = new Blockly.Workspace();
+
+        try {
+            const defBlock = ws.newBlock("sk_custom_block_def") as Blockly.BlockSvg;
+            const def = Blockly.Blocks["sk_custom_block_def"];
+            def.init!.call(defBlock);
+            (defBlock as unknown as { skInputs: CustomBlockInputSpec[] }).skInputs = [{ name: "schiff", typeLabel: "Schiff" }];
+
+            const container = def.decompose!.call(defBlock, ws);
+            const argBlock = container.getInputTargetBlock("STACK")!;
+            assert.equal(argBlock.getFieldValue("ARG_TYPE"), "Text", "old String-family label should map to the Text category");
+            assert.equal(argBlock.getFieldValue("ARG_LABEL"), "Schiff", "old input's own text should be preserved as its label");
+        } finally {
+            ws.dispose();
+        }
+    });
+});
+
 describe("sk_build_record", () => {
     test("loadExtraState/saveExtraState round-trip field names and rebuild FIELD_n inputs", () => {
         const ws = new Blockly.Workspace();

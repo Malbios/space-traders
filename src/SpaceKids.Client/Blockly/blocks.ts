@@ -44,35 +44,45 @@ export function registerTrivialBlocks(): void {
     };
 }
 
-/** One custom block input's shape (§9c). All six input types share this one Blockly
- * mutator-arg block (a type dropdown + a name field) rather than six separate block
- * types — inputs stay untyped value sockets with a text label only, consistent with
- * this project's existing "plain value sockets, not typed" simplification for the
- * block catalog (docs/04-block-catalog.md).
+/** One custom block input's shape (§9c). Every input is a plain value socket, typed
+ * only by its `typeLabel` category (Text/Number/List, real Blockly `check` type) — no
+ * per-input block types, consistent with this project's existing "plain value sockets,
+ * not typed" simplification for the block catalog (docs/04-block-catalog.md).
  *
- * `typeLabel` is purely decorative (no runtime type-checking depends on it) and is
- * persisted as-is once a custom block is saved — switching locale after saving does not
- * retroactively re-translate an already-saved input's stored `typeLabel`, only which
- * options are offered when adding a *new* one (a known, documented simplification,
- * same class as Milestone 11's "existing dev-stage rows aren't migrated"). */
+ * `typeLabel` drives the real socket check and crosses into the DSL compiler/validator
+ * (`Compiler.fs`'s `deriveCustomBlockSignature`, `Validator.fs`'s
+ * `numericInputTypeLabels`/`stringInputTypeLabels`/`listInputTypeLabels`) — it is
+ * persisted as-is once a custom block is saved, and switching locale afterward does not
+ * retroactively re-translate it, only which options the category picker offers for a
+ * *new* input (same class as Milestone 11's "existing dev-stage rows aren't migrated").
+ *
+ * `displayLabel` is purely cosmetic — free text the block's author types, shown to
+ * anyone using the custom block, with no bearing on type-checking. Falls back to
+ * `typeLabel` when absent/blank, which is exactly what every input saved before this
+ * field existed already has. */
 export interface CustomBlockInputSpec {
     name: string;
     typeLabel: string;
+    displayLabel?: string;
 }
 
-const INPUT_TYPE_LABELS_DE = ["Schiff", "Wegpunkt", "Ware", "Anzahl", "Preisgrenze", "Liste"] as const;
-const INPUT_TYPE_LABELS_EN = ["Ship", "Waypoint", "Good", "Number", "Price limit", "List"] as const;
+const INPUT_TYPE_CATEGORIES_DE = ["Text", "Anzahl", "Liste"] as const;
+const INPUT_TYPE_CATEGORIES_EN = ["Text", "Number", "List"] as const;
 
-export function inputTypeLabels(): readonly string[] {
-    return getCurrentLocale() === "en" ? INPUT_TYPE_LABELS_EN : INPUT_TYPE_LABELS_DE;
+export function inputTypeCategories(): readonly string[] {
+    return getCurrentLocale() === "en" ? INPUT_TYPE_CATEGORIES_EN : INPUT_TYPE_CATEGORIES_DE;
 }
 
 /** Milestone 13: a stored `typeLabel` may be either German or English text
  * (whichever locale was active when the input was created — switching locale
  * afterward doesn't retroactively re-translate an already-saved input, per the
  * doc comment on `CustomBlockInputSpec` above), so this maps both variants to
- * the same Blockly check type rather than assuming one locale. */
+ * the same Blockly check type rather than assuming one locale. Includes the
+ * pre-free-label decorative labels (Schiff/Wegpunkt/Ware/Preisgrenze/...) so
+ * already-saved custom blocks keep resolving forever, even though the category
+ * picker no longer offers them for new inputs. */
 const TYPE_LABEL_TO_CHECK: Record<string, string> = {
+    Text: "String",
     Schiff: "String",
     Ship: "String",
     Wegpunkt: "String",
@@ -89,6 +99,29 @@ const TYPE_LABEL_TO_CHECK: Record<string, string> = {
 
 function checkForTypeLabel(typeLabel: string): string | null {
     return TYPE_LABEL_TO_CHECK[typeLabel] ?? null;
+}
+
+/** Maps any (possibly legacy) `typeLabel` to one of the 3 current category labels in
+ * the active locale — used to pre-select the mutator's category picker when reopening
+ * an already-saved input (e.g. an old `"Schiff"` input reopens showing "Text"). */
+function categoryForTypeLabel(typeLabel: string): string {
+    const check = checkForTypeLabel(typeLabel) ?? "String";
+    const categories = inputTypeCategories();
+    switch (check) {
+        case "Number":
+            return categories[1]!;
+        case "List":
+            return categories[2]!;
+        default:
+            return categories[0]!;
+    }
+}
+
+/** Free-text label if the author typed one, else the (possibly legacy) `typeLabel`
+ * itself — shared by the def block's own input-row display and the caller block's
+ * socket label, so both always show the same thing. */
+function displayedLabel(input: CustomBlockInputSpec): string {
+    return input.displayLabel && input.displayLabel.trim() !== "" ? input.displayLabel : input.typeLabel;
 }
 
 export interface CustomBlockSignature {
@@ -148,7 +181,8 @@ export function registerDefinitionShellBlock(): void {
             for (const input of inputs) {
                 const argBlock = workspace.newBlock("sk_custom_block_def_mutator_arg");
                 (argBlock as Blockly.BlockSvg).initSvg?.();
-                argBlock.setFieldValue(input.typeLabel, "ARG_TYPE");
+                argBlock.setFieldValue(categoryForTypeLabel(input.typeLabel), "ARG_TYPE");
+                argBlock.setFieldValue(displayedLabel(input), "ARG_LABEL");
                 argBlock.setFieldValue(input.name, "ARG_NAME");
                 connection.connect(argBlock.previousConnection!);
                 connection = argBlock.nextConnection!;
@@ -159,8 +193,14 @@ export function registerDefinitionShellBlock(): void {
             const newInputs: CustomBlockInputSpec[] = [];
             let argBlock = containerBlock.getInputTargetBlock("STACK");
             while (argBlock) {
-                const b = argBlock as unknown as { skArgName?: string; skArgType?: string };
-                newInputs.push({ name: b.skArgName ?? "eingabe", typeLabel: b.skArgType ?? inputTypeLabels()[3]! });
+                const b = argBlock as unknown as { skArgName?: string; skArgType?: string; skArgLabel?: string };
+                const typeLabel = b.skArgType ?? inputTypeCategories()[0]!;
+                const label = b.skArgLabel?.trim();
+                newInputs.push({
+                    name: b.skArgName ?? "eingabe",
+                    typeLabel,
+                    displayLabel: label && label !== typeLabel ? label : undefined,
+                });
                 argBlock = argBlock.nextConnection && argBlock.nextConnection.targetBlock();
             }
             (this as unknown as { skInputs: CustomBlockInputSpec[] }).skInputs = newInputs;
@@ -186,7 +226,8 @@ export function registerDefinitionShellBlock(): void {
     Blockly.Blocks["sk_custom_block_def_mutator_arg"] = {
         init: function (this: Blockly.Block) {
             this.appendDummyInput()
-                .appendField(new Blockly.FieldDropdown(() => inputTypeLabels().map((t) => [t, t] as [string, string])), "ARG_TYPE")
+                .appendField(new Blockly.FieldDropdown(() => inputTypeCategories().map((t) => [t, t] as [string, string])), "ARG_TYPE")
+                .appendField(new Blockly.FieldTextInput(inputTypeCategories()[0]!), "ARG_LABEL")
                 .appendField(new Blockly.FieldTextInput("n"), "ARG_NAME");
             this.setPreviousStatement(true);
             this.setNextStatement(true);
@@ -194,8 +235,10 @@ export function registerDefinitionShellBlock(): void {
             this.contextMenu = false;
         },
         onchange: function (this: Blockly.Block) {
-            (this as unknown as { skArgName: string; skArgType: string }).skArgName = this.getFieldValue("ARG_NAME");
+            (this as unknown as { skArgName: string; skArgType: string; skArgLabel: string }).skArgName =
+                this.getFieldValue("ARG_NAME");
             (this as unknown as { skArgType: string }).skArgType = this.getFieldValue("ARG_TYPE");
+            (this as unknown as { skArgLabel: string }).skArgLabel = this.getFieldValue("ARG_LABEL");
         },
     };
 
@@ -212,7 +255,7 @@ function rebuildInputRow(block: Blockly.BlockSvg): void {
     const inputs = (block as unknown as { skInputs: CustomBlockInputSpec[] }).skInputs ?? [];
     const en = getCurrentLocale() === "en";
     inputs.forEach((input, index) => {
-        block.appendDummyInput(`INPUT_${index}`).appendField(`${en ? "Input" : "Eingabe"}: ${input.typeLabel} ${input.name}`);
+        block.appendDummyInput(`INPUT_${index}`).appendField(`${en ? "Input" : "Eingabe"}: ${displayedLabel(input)} ${input.name}`);
     });
 }
 
@@ -431,7 +474,7 @@ function rebuildCallerShape(block: Blockly.Block, customBlockId: string): void {
 
     const inputs = signature?.inputs ?? [];
     inputs.forEach((input) => {
-        block.appendValueInput(input.name).setCheck(checkForTypeLabel(input.typeLabel)).appendField(`${input.typeLabel} ${input.name}`);
+        block.appendValueInput(input.name).setCheck(checkForTypeLabel(input.typeLabel)).appendField(`${displayedLabel(input)} ${input.name}`);
     });
     (block as unknown as { skArgNames: string[] }).skArgNames = inputs.map((i) => i.name);
     block.setTooltip(

@@ -252,7 +252,7 @@ let programRequiresShip (program: CompiledProgram) : bool =
 /// `"Zahl"` never actually occurs (found in review: it was checked here but never
 /// produced by the compiler/client, so this check was silently dead in practice).
 let private numericInputTypeLabels = set [ "Anzahl"; "Number"; "Preisgrenze"; "Price limit" ]
-let private stringInputTypeLabels = set [ "Schiff"; "Ship"; "Wegpunkt"; "Waypoint"; "Ware"; "Good" ]
+let private stringInputTypeLabels = set [ "Text"; "Schiff"; "Ship"; "Wegpunkt"; "Waypoint"; "Ware"; "Good" ]
 let private listInputTypeLabels = set [ "Liste"; "List" ]
 
 let private numericRecordFields =

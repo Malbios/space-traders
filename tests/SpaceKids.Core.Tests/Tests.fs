@@ -713,6 +713,31 @@ let ``validate rejects an accessor number passed where a custom block expects a 
         Assert.Contains(errors, fun e -> e.message.Contains("Schiff") && e.message.Contains("falschen Typ"))
 
 [<Fact>]
+let ``validate rejects a number passed where a custom block expects the new free-label "Text" input type`` () =
+    let blockDef: CustomBlockDefinition =
+        { id = "needs-text"
+          signature = { inputs = [ { name = "Wegpunkt"; inputType = "Text" } ]; output = None; outputFields = None }
+          workspaceJson = simpleWaitBody }
+
+    let lookup =
+        function
+        | "needs-text" -> Some blockDef
+        | _ -> None
+
+    let argInputs = """"Wegpunkt": { "block": """ + numberBlock "n1" 5.0 + " }"
+
+    let json =
+        """{ "blocks": { "languageVersion": 0, "blocks": [ """
+        + customBlockCallJson "call1" "needs-text" argInputs
+        + """ ] } }"""
+
+    match Compiler.compileWorkspace De lookup json with
+    | Error errors -> Assert.Fail($"expected Ok, got errors: %A{errors}")
+    | Ok program ->
+        let errors = Validator.validate De program
+        Assert.Contains(errors, fun e -> e.message.Contains("Wegpunkt") && e.message.Contains("falschen Typ"))
+
+[<Fact>]
 let ``revalidateAgainstCurrentDefinitions catches a signature that changed after compile`` () =
     let originalSignature = { inputs = []; output = None; outputFields = None }
     let blockDef: CustomBlockDefinition =

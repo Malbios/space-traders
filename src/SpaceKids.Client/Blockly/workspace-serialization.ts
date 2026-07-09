@@ -9,7 +9,7 @@ export function serializeWorkspace(workspace: Blockly.Workspace): string {
 
 export function loadWorkspace(workspace: Blockly.Workspace, json: string): void {
     workspace.clear();
-    let state: unknown;
+    let state: { [key: string]: any };
     try {
         state = JSON.parse(json);
     } catch (err) {
