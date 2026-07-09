@@ -1243,13 +1243,9 @@ export function registerStockBlockChecks(): void {
  * variable genuinely reused for two different record shapes at different points in
  * one program is a known, accepted limitation (the tag is one value per variable,
  * not per assignment site), not something this is meant to solve. Idempotent
- * (patches the stock `init`/adds `onchange` once, safe to call once at seam init).
+ * (adds `onchange` once, safe to call once at seam init).
  */
 export function registerVariableTypeTagging(): void {
-    const originalVariablesSet = Blockly.Blocks["variables_set"].init;
-    Blockly.Blocks["variables_set"].init = function (this: Blockly.Block) {
-        originalVariablesSet.call(this);
-    };
     Blockly.Blocks["variables_set"].onchange = function (this: Blockly.Block) {
         const varModel = (this.getField("VAR") as Blockly.FieldVariable | null)?.getVariable();
         if (!varModel) {

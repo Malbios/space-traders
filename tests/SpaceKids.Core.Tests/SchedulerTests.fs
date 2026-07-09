@@ -1252,7 +1252,7 @@ let ``scrapShip reconciliation via fleet fetch, not ship state`` () =
     Assert.Equal(Completed, job3b.status)
     Assert.Equal(None, job3b.lastKnownShip)
 
-/// The compiler never produces an action type outside `ACTION_BLOCKS`, so this
+/// The compiler never produces an action type outside `actionBlocks`, so this
 /// defensive fallback in `emitApiAction` is only reachable via a hand-crafted
 /// `CompiledProgram` like this one — previously untested.
 [<Fact>]

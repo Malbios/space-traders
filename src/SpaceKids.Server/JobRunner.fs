@@ -704,7 +704,7 @@ let private runInfoRead
         | Some v -> v
         | None -> failwith $"Fehlendes Argument \"{name}\" für Info-Block {infoType}."
 
-    let endpoint, call =
+    let resolveEndpointAndCall () =
         match infoType with
         | "getShipInfo" ->
             $"getShipInfo:{shipSymbol}",
@@ -987,6 +987,7 @@ let private runInfoRead
 
     async {
         try
+            let endpoint, call = resolveEndpointAndCall ()
             return! RequestQueue.enqueue dbPath priority endpoint requestJson call
         with ex ->
             return classifyException ex

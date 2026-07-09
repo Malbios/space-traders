@@ -246,6 +246,20 @@ let ``fulfillContract completes an accepted contract whose deliveries are done``
         Assert.True(updated.contract.fulfilled))
 
 [<Fact>]
+let ``fulfillContract fails with a clear error for a contract that isn't accepted yet`` () =
+    use fixture = new AgentFixture()
+
+    withAgentTest (fun dbPath ->
+        let result =
+            withPumpedQueue 20.0 (fun () ->
+                AgentRemoting.fulfillContract fixture.Client dbPath App.seededToken "fake-contract-2"
+                |> Async.RunSynchronously)
+
+        match result with
+        | Error message -> Assert.Contains("400", message)
+        | Ok() -> Assert.Fail("expected fulfilling an unaccepted contract to fail"))
+
+[<Fact>]
 let ``loadFactions returns all factions and the agent's reputations`` () =
     use fixture = new AgentFixture()
 

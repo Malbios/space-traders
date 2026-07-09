@@ -5,7 +5,7 @@ open SpaceKids.Core.Dsl
 open SpaceKids.Core.Dsl.BlocklyJson
 
 /// Blockly-input-name -> DSL-arg-name pairs for the catalog action blocks (docs/04-block-catalog.md).
-let private ACTION_BLOCKS: Map<string, (string * string) list> =
+let private actionBlocks: Map<string, (string * string) list> =
     Map.ofList [
         "navigate", [ "DESTINATION", "destination" ]
         "orbit", []
@@ -43,7 +43,7 @@ let private ACTION_BLOCKS: Map<string, (string * string) list> =
 
 /// Same, for the 9 information blocks — these compile as effectful value blocks (§10),
 /// never as statements.
-let private INFO_BLOCKS: Map<string, (string * string) list> =
+let private infoBlocks: Map<string, (string * string) list> =
     Map.ofList [
         "getShipInfo", []
         "getFleetInfo", []
@@ -81,7 +81,7 @@ let private INFO_BLOCKS: Map<string, (string * string) list> =
 /// arms below). Mirrors `blocks-catalog.ts`'s `RECORD_FIELD_BLOCKS`/
 /// `catalogRecordFieldBlockTypes` (kept in sync manually; both are exhaustively
 /// listed in docs/04-block-catalog.md).
-let private GENERIC_ACCESSOR_TYPES: Set<string> =
+let private genericAccessorTypes: Set<string> =
     set [
         "shipField"
         "cargoField"
@@ -121,12 +121,12 @@ let private GENERIC_ACCESSOR_TYPES: Set<string> =
 /// blocks") — a program/custom block saved *before* that redesign has these old block
 /// types baked into its stored workspace JSON forever, and this compiler parses that
 /// raw JSON directly (`BlocklyJson.parseWorkspace`), independent of whatever the
-/// client currently renders. Unlike `GENERIC_ACCESSOR_TYPES`, the field name isn't
+/// client currently renders. Unlike `genericAccessorTypes`, the field name isn't
 /// read from a `FIELD` dropdown (these blocks never had one) — it's implied by the
 /// block's own type, hence a direct type-to-field map. Mirrors `blocks-catalog.ts`'s
-/// `LEGACY_ACCESSOR_BLOCKS` (kept in sync manually, same as `GENERIC_ACCESSOR_TYPES`
+/// `LEGACY_ACCESSOR_BLOCKS` (kept in sync manually, same as `genericAccessorTypes`
 /// already was).
-let private LEGACY_ACCESSOR_FIELD_NAMES: Map<string, string> =
+let private legacyAccessorFieldNames: Map<string, string> =
     Map [
         "shipName", "Name"
         "shipWaypoint", "Waypoint"
@@ -297,23 +297,23 @@ let rec private compileExpr (state: CompileState) (hoisted: ResizeArray<Instruct
             state.errors.Add { blockId = Some block.id; message = message }
             Literal(BoolLit false)
         | _ -> Literal(BoolLit false)
-    | t when INFO_BLOCKS.ContainsKey t ->
-        let args = compileArgs state hoisted block INFO_BLOCKS.[t]
+    | t when infoBlocks.ContainsKey t ->
+        let args = compileArgs state hoisted block infoBlocks.[t]
         let temp = newTemp state
         hoisted.Add(InfoRead(block.id, t, args, temp))
         TempRef temp
-    | t when GENERIC_ACCESSOR_TYPES.Contains t ->
+    | t when genericAccessorTypes.Contains t ->
         let fieldName = fieldString block "FIELD" |> Option.defaultValue ""
         Accessor(fieldName, compileInput state hoisted block "TARGET")
-    | t when LEGACY_ACCESSOR_FIELD_NAMES.ContainsKey t ->
-        Accessor(LEGACY_ACCESSOR_FIELD_NAMES.[t], compileInput state hoisted block "TARGET")
+    | t when legacyAccessorFieldNames.ContainsKey t ->
+        Accessor(legacyAccessorFieldNames.[t], compileInput state hoisted block "TARGET")
     | "sk_build_record" ->
         let fieldNames = recordFieldNames block
         let fields = fieldNames |> List.mapi (fun i name -> name, compileInput state hoisted block $"FIELD_{i}")
         RecordLiteral fields
     // Milestone 9/Part C — one dynamic accessor block per custom-block structured
     // output field (`accessor_<customBlockId>_<field>`), generated client-side rather
-    // than declared in the static `GENERIC_ACCESSOR_TYPES` set above. The field name
+    // than declared in the static `genericAccessorTypes` set above. The field name
     // is always the block type's own suffix, so no separate lookup table is needed.
     | t when t.StartsWith("accessor_") ->
         match t.LastIndexOf('_') with
@@ -445,9 +445,9 @@ and private compileStatement (state: CompileState) (block: RawBlock) : Instructi
         List.ofSeq hoisted
 
     match block.blockType with
-    | t when INFO_BLOCKS.ContainsKey t -> valueOnlyStatement ()
-    | t when GENERIC_ACCESSOR_TYPES.Contains t -> valueOnlyStatement ()
-    | t when LEGACY_ACCESSOR_FIELD_NAMES.ContainsKey t -> valueOnlyStatement ()
+    | t when infoBlocks.ContainsKey t -> valueOnlyStatement ()
+    | t when genericAccessorTypes.Contains t -> valueOnlyStatement ()
+    | t when legacyAccessorFieldNames.ContainsKey t -> valueOnlyStatement ()
     | t when t.StartsWith("accessor_") -> valueOnlyStatement ()
     | _ ->
         let instr =
@@ -516,7 +516,7 @@ and private compileStatement (state: CompileState) (block: RawBlock) : Instructi
             | "controls_flow_statements" ->
                 if fieldString block "FLOW" = Some "CONTINUE" then Continue block.id else Break block.id
             | "callCustomBlock" -> compileCustomBlockCall state hoisted block
-            | t when ACTION_BLOCKS.ContainsKey t -> ApiAction(block.id, t, compileArgs state hoisted block ACTION_BLOCKS.[t])
+            | t when actionBlocks.ContainsKey t -> ApiAction(block.id, t, compileArgs state hoisted block actionBlocks.[t])
             | other ->
                 let message =
                     match state.locale with

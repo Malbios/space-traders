@@ -834,7 +834,7 @@ let ``an accessor block compiles to Accessor over its TARGET input`` () =
 /// (docs/generic-accessor-block-plan.md) that generalizes the 21 fixed-shape
 /// `RECORD_FIELD_BLOCKS` types compiles identically to any of them — the compiler
 /// only ever reads the `FIELD` dropdown's value, never branches on which of the
-/// (now 22) `GENERIC_ACCESSOR_TYPES` block types produced it.
+/// (now 22) `genericAccessorTypes` block types produced it.
 [<Fact>]
 let ``the generic recordField block compiles to Accessor over its TARGET input, same as a fixed-shape accessor`` () =
     let json =
@@ -860,7 +860,7 @@ let ``the generic recordField block compiles to Accessor over its TARGET input, 
 /// The new nested ship-type detail accessors (`frameField` etc., added alongside
 /// `shipyardTypeField`'s new `Frame`/`Reactor`/`Engine`/`Modules`/`Mounts`/`Crew`
 /// fields) are plain `RECORD_FIELD_BLOCKS` entries like any other, so they compile
-/// through the exact same `GENERIC_ACCESSOR_TYPES` path — this locks in a chained
+/// through the exact same `genericAccessorTypes` path — this locks in a chained
 /// example (`shipType -> Frame -> ModuleSlots`) rather than re-testing the generic
 /// mechanism itself, which the `recordField`/`shipField` tests above already cover.
 [<Fact>]
@@ -894,7 +894,7 @@ let ``a chained nested accessor (frameField reading a Werft ship type's Frame) c
 /// without a migration path, breaking every already-saved program/custom block that
 /// used one (discovered live: a real saved program's workspace failed to render
 /// entirely, since Blockly errors on an unrecognized block type). `Compiler.fs`'s
-/// `LEGACY_ACCESSOR_FIELD_NAMES` restores compilation for these old block types.
+/// `legacyAccessorFieldNames` restores compilation for these old block types.
 [<Fact>]
 let ``a legacy pre-refactor accessor block (shipFuel) still compiles to Accessor over its TARGET input`` () =
     let json =

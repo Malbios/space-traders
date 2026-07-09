@@ -2934,7 +2934,7 @@ let internal interpolatedShipPosition (waypoints: Waypoint list) (ship: Ship) : 
             let ox, oy = float ship.nav.route.origin.x, float ship.nav.route.origin.y
             let dx, dy = float ship.nav.route.destination.x, float ship.nav.route.destination.y
             Some(ox + (dx - ox) * fraction, oy + (dy - oy) * fraction)
-        with _ ->
+        with :? System.FormatException ->
             None
     else
         waypoints

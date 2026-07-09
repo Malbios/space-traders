@@ -1672,7 +1672,7 @@ let configureApp (app: WebApplication) =
                             task {
                                 let contractId = routeContractId ctx
 
-                                let updatedContract =
+                                let result =
                                     lock
                                         shipLock
                                         (fun () ->
@@ -1683,13 +1683,21 @@ let configureApp (app: WebApplication) =
                                                 |> List.forall (fun good -> good.unitsFulfilled >= good.unitsRequired)
 
                                             if not contract.accepted || not deliveriesComplete then
-                                                failwith "Contract is not ready to be fulfilled."
+                                                Error "Contract is not ready to be fulfilled."
+                                            else
+                                                let updated = { contract with fulfilled = true }
+                                                contracts <- contracts.Add(contractId, updated)
+                                                Ok updated)
 
-                                            let updated = { contract with fulfilled = true }
-                                            contracts <- contracts.Add(contractId, updated)
-                                            updated)
-
-                                return ok { contract = updatedContract; agent = readAgent () }
+                                match result with
+                                | Error message ->
+                                    return
+                                        Results.Json(
+                                            {| error = {| code = 4002; message = message; requestId = "fake-fulfill" |} |},
+                                            statusCode = 400
+                                        )
+                                | Ok updatedContract ->
+                                    return ok { contract = updatedContract; agent = readAgent () }
                             })))
     )
     |> ignore

@@ -199,6 +199,20 @@ async function ensureWorkspaceReady(containerId: string, readOnly: boolean): Pro
     });
 }
 
+function injectWorkspace(
+    el: HTMLElement,
+    containerId: string,
+    customBlocks: CustomBlockToolboxEntry[],
+    dynamicAccessorTypes: string[],
+    readOnly: boolean,
+): Blockly.WorkspaceSvg {
+    return Blockly.inject(el, {
+        toolbox: buildCatalogToolbox(customBlocks, dynamicAccessorTypes, toolboxOptionsFor(containerId)) as Blockly.utils.toolbox.ToolboxDefinition,
+        readOnly,
+        theme: blocklyThemeFor(getTheme()),
+    });
+}
+
 function initWorkspace(containerId: string, readOnly: boolean): void {
     if (workspaces.has(containerId)) {
         return;
@@ -210,11 +224,7 @@ function initWorkspace(containerId: string, readOnly: boolean): void {
     customBlocksByContainer.set(containerId, []);
     dynamicAccessorTypesByContainer.set(containerId, []);
     changeLogByContainer.set(containerId, []);
-    const ws = Blockly.inject(el, {
-        toolbox: buildCatalogToolbox([], [], toolboxOptionsFor(containerId)) as Blockly.utils.toolbox.ToolboxDefinition,
-        readOnly,
-        theme: blocklyThemeFor(getTheme()),
-    });
+    const ws = injectWorkspace(el, containerId, [], [], readOnly);
     workspaces.set(containerId, ws);
     onWorkspaceChanged(containerId);
     applyGlobalCustomBlocksToContainer(containerId);
@@ -251,11 +261,7 @@ function setLocale(locale: Locale): void {
             continue;
         }
 
-        const newWs = Blockly.inject(el, {
-            toolbox: buildCatalogToolbox(customBlocks, dynamicAccessorTypes, toolboxOptionsFor(containerId)) as Blockly.utils.toolbox.ToolboxDefinition,
-            readOnly,
-            theme: blocklyThemeFor(getTheme()),
-        });
+        const newWs = injectWorkspace(el, containerId, customBlocks, dynamicAccessorTypes, readOnly);
         workspaces.set(containerId, newWs);
         customBlocksByContainer.set(containerId, customBlocks);
         dynamicAccessorTypesByContainer.set(containerId, dynamicAccessorTypes);

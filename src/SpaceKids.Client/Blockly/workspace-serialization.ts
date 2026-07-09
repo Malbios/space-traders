@@ -9,6 +9,11 @@ export function serializeWorkspace(workspace: Blockly.Workspace): string {
 
 export function loadWorkspace(workspace: Blockly.Workspace, json: string): void {
     workspace.clear();
-    const state = JSON.parse(json);
+    let state: unknown;
+    try {
+        state = JSON.parse(json);
+    } catch (err) {
+        throw new Error(`loadWorkspace: invalid workspace JSON (${(err as Error).message}).`);
+    }
     Blockly.serialization.workspaces.load(state, workspace);
 }
