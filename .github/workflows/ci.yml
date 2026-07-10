@@ -26,6 +26,12 @@ jobs:
       - name: Build
         run: dotnet build SpaceKids.slnx --configuration Release
 
+      # dotnet build already ran `npm ci` in this directory (see fsproj), so
+      # node_modules is ready here without a separate install step.
+      - name: Typecheck Client TS
+        run: npm run typecheck
+        working-directory: src/SpaceKids.Client
+
       - name: Test
         run: dotnet test SpaceKids.slnx --configuration Release --no-build
 
