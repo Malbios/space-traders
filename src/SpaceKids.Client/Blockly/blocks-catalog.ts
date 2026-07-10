@@ -821,7 +821,7 @@ function fieldSetFor(block: Blockly.Block): RecordFieldSpec[] {
         }
     }
 
-    return matchedCheck ? FIELD_SET_BY_CHECK[matchedCheck] : ALL_FIELDS_MERGED;
+    return (matchedCheck ? FIELD_SET_BY_CHECK[matchedCheck] : undefined) ?? ALL_FIELDS_MERGED;
 }
 
 /**
